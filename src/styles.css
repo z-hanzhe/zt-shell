@@ -1,0 +1,194 @@
+/* 全局浅色主题，风格参考 FinalShell 4.6.5 */
+
+:root {
+  /* 主色板 —— 浅色界面 */
+  --bg-window: #ffffff;
+  --bg-panel: #f4f6f8;
+  --bg-panel-alt: #eef1f4;
+  --border: #d5dbe0;
+  --border-light: #e6eaee;
+  --text: #2b2f36;
+  --text-secondary: #4a4f55;
+  --text-muted: #6b7178;
+  --accent: #3b6ea5;
+  --accent-hover: #4a7fbb;
+  --row-hover: #eaf1f8;
+  --table-head-top: #f3f6f9;
+  --table-head-bottom: #e6ecf2;
+
+  /* 终端保持深色 */
+  --terminal-bg: #12303d;
+  --terminal-bg2: #0f2833;
+  --terminal-text: #cfe3ea;
+  --terminal-green: #57d977;
+  --toolbar-dark: #33393f;
+
+  /* 状态与进度色 */
+  --success: #3b8f4b;
+  --warning: #e0a838;
+  --danger: #d0453f;
+  --progress-track: #e4e8ec;
+  --progress-cpu: #7fc47f;
+  --progress-mem: #f0a868;
+  --progress-warn: #f0a868;
+  --progress-danger: #e57373;
+
+  /* 尺寸 */
+  --tab-height: 32px;
+  --radius: 3px;
+
+  /* 兼容别名（浅色主题下的等价色，供既有组件引用） */
+  --bg-root: #ffffff;
+  --bg-panel-2: #eef1f4;
+  --bg-elevated: #f4f6f8;
+  --bg-hover: #eaf1f8;
+  --bg-active: #d9e6f4;
+  --text-primary: #2b2f36;
+
+  font-family: "Microsoft YaHei", "Segoe UI", "PingFang SC", -apple-system,
+    sans-serif;
+  font-size: 12px;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: #c9d2da;
+  user-select: none;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c3cad1;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #aab2ba;
+}
+
+/* 通用按钮 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn:hover {
+  background: var(--row-hover);
+  border-color: var(--accent);
+}
+.btn:active {
+  background: #dfe7f0;
+}
+.btn-primary {
+  background: linear-gradient(#5e86ad, #4a739c);
+  border-color: #4a739c;
+  color: #fff;
+}
+.btn-primary:hover {
+  background: linear-gradient(#6a92b9, #547fab);
+  border-color: #547fab;
+}
+.btn-primary:disabled,
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.btn-icon {
+  width: 28px;
+  padding: 0;
+}
+
+/* 通用输入框 */
+.input {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.input:focus {
+  border-color: var(--accent);
+}
+
+/* 弹窗遮罩与容器 */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal {
+  background: var(--bg-window);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  max-height: 85vh;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 38px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg-panel);
+}
+.modal-body {
+  padding: 14px;
+  overflow: auto;
+}
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+}

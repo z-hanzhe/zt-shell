@@ -1,0 +1,95 @@
+/**
+ * 会话 store：管理右上终端选项卡对应的活动会话
+ *
+ * 每个会话对应一个后端 SSH 连接（sessionId 即后端标识），
+ * 同时驱动左侧监控面板与右下文件管理器的数据来源
+ */
+
+import { defineStore } from "pinia";
+import { computed, ref } from "vue";
+import type { ConnectionConfig } from "../types";
+import { sshConnect, sshDisconnect } from "../api";
+import { genId } from "../utils";
+
+/** 会话连接状态 */
+export type SessionStatus = "connecting" | "connected" | "error";
+
+/** 一个活动会话 */
+export interface Session {
+  /** 会话唯一标识（同时作为后端 sessionId） */
+  id: string;
+  /** 选项卡显示名称 */
+  name: string;
+  /** 连接配置 */
+  config: ConnectionConfig;
+  /** 连接状态 */
+  status: SessionStatus;
+  /** 错误信息（status 为 error 时） */
+  error?: string;
+}
+
+export const useSessionsStore = defineStore("sessions", () => {
+  /** 活动会话列表 */
+  const sessions = ref<Session[]>([]);
+  /** 当前激活的会话 id */
+  const activeId = ref<string>("");
+
+  /** 当前激活的会话对象 */
+  const activeSession = computed(() =>
+    sessions.value.find((s) => s.id === activeId.value)
+  );
+
+  /** 按 id 更新会话状态，通过响应式数组元素修改以确保视图刷新 */
+  function setStatus(id: string, status: SessionStatus, error?: string) {
+    const s = sessions.value.find((x) => x.id === id);
+    if (s) {
+      s.status = status;
+      s.error = error;
+    }
+  }
+
+  /** 依据连接配置打开新会话并发起连接 */
+  async function open(config: ConnectionConfig) {
+    const id = genId();
+    const session: Session = {
+      id,
+      name: config.name || config.host,
+      config,
+      status: "connecting",
+    };
+    sessions.value.push(session);
+    activeId.value = id;
+
+    try {
+      // 后端以该会话 id 建立连接，前端与后端共用同一标识
+      await sshConnect({ ...config, id });
+      setStatus(id, "connected");
+    } catch (e) {
+      setStatus(id, "error", String(e));
+    }
+  }
+
+  /** 关闭并断开指定会话 */
+  async function close(id: string) {
+    const idx = sessions.value.findIndex((s) => s.id === id);
+    if (idx < 0) return;
+    const [removed] = sessions.value.splice(idx, 1);
+    try {
+      await sshDisconnect(removed.id);
+    } catch {
+      // 断开失败忽略，前端会话已移除
+    }
+    // 关闭后激活相邻选项卡
+    if (activeId.value === id) {
+      const next = sessions.value[idx] ?? sessions.value[idx - 1];
+      activeId.value = next ? next.id : "";
+    }
+  }
+
+  /** 激活指定会话 */
+  function activate(id: string) {
+    activeId.value = id;
+  }
+
+  return { sessions, activeId, activeSession, open, close, activate };
+});

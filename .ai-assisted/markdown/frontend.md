@@ -1,0 +1,21 @@
+前端结构
+
+入口与布局 main.ts创建app注册pinia引入styles.css与内置字体 App.vue自绘标题栏+主体+底部状态栏 主体手写flex+自定义拖拽分隔条 左监控固定像素宽右下文件区固定像素高 窗口缩放仅右上终端区自适应 分隔条通过mousemove改reactive的leftWidth/bottomHeight
+
+组件 src/components Icon.vue内置SVG图标避免图标库依赖 MonitorPanel.vue左监控 TerminalPanel.vue右上终端区含选项卡栏文件夹图标开连接管理器与设置按钮 Terminal.vue封装xterm单终端 BottomPanel.vue右下含选项卡默认文件管理器 FileManager.vue文件管理器 ConnectionManager.vue连接管理器弹窗参考conn.png ConnectionEditor.vue连接编辑弹窗 SettingsDialog.vue设置弹窗 TitleBar.vue自绘标题栏
+
+状态 src/stores connections.ts已保存连接持久化connections.json sessions.ts活动会话选项卡 open发起连接close断开activate激活 open通过setStatus按id查响应式数组元素改状态 勿直接改原始对象否则视图不刷新 settings.ts应用设置持久化settings.json 均用tauri-plugin-store的load options需含defaults字段与autoSave
+
+工具 src/utils.ts formatBytes formatRate formatUptime formatTime genId joinPath parentPath src/api.ts封装所有invoke调用 src/types.ts前后端对应类型
+
+样式 styles.css全局CSS变量 通用btn input modal类 组件内scoped样式 保留少量兼容别名bg-root等映射到浅色
+
+标题栏 TitleBar.vue tauri.conf关闭decorations 应用图标public/app-icon.png源自icons/32x32.png 最小化/最大化还原/关闭调getCurrentWindow API onResized同步最大化状态 拖拽与双击最大化用原生data-tauri-drag-region 勿手动mousedown+startDragging否则吞掉双击 logo与标题设pointer-events:none使拖拽落到标题栏 按钮不带drag-region保持可点击
+
+终端 Terminal.vue xterm实例存shallowRef避免响应式代理 loadAddon FitAddon自适应 ResizeObserver监听容器尺寸 连接成功后再setup 背景用不透明纯色#12303d 勿allowTransparency否则WebView2下渲染成纯黑 字体色#cfe3ea 光标绿#57d977 lineHeight1.25 字体取settings默认Consolas优先 doFit在容器不可见offsetHeight为0时跳过避免视口错乱 activate方法在选项卡重新激活时requestAnimationFrame后fit+refresh+scrollToBottom修复切换后滚动条需划顶才恢复 TerminalPanel切换时调activate
+
+字体内置 main.ts引入@fontsource/cascadia-mono的400与700 自托管随应用打包 终端字体栈Consolas优先再Cascadia Mono再Courier New Windows用系统Consolas与finalshell-ref一致 Mac/Linux无Consolas回落内置Cascadia Mono保证跨平台一致 vite按unicode-range分包运行时仅加载所需子集 UI中文仍用系统栈 内置完整CJK体积过大不采用
+
+文件列表 FileManager.vue行内操作按钮row-ops用visibility切换非display且tbody td固定height26px 避免悬停出现按钮致行变高抖动
+
+监控面板 MonitorPanel.vue按FinalShell布局 IP行 系统信息按钮蓝色渐变 运行负载 CPU内存交换meter进度条内嵌百分比与右侧用量 进程表 网络上下行+网卡下拉+滚动柱状图netHistory 磁盘表 采集间隔取settings

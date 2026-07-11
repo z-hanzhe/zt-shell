@@ -1,0 +1,43 @@
+[package]
+name = "tauri-app"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "tauri_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+# 连接配置等数据的本地持久化存储
+tauri-plugin-store = "2"
+# 本地文件选择/保存对话框（上传下载时选择本地路径）
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 纯 Rust 实现的 SSH 客户端，跨平台且无需 OpenSSL 依赖
+# 使用 ring 加密后端替代默认的 aws-lc-rs，避免 Windows 下构建需要 NASM
+russh = { version = "0.54", default-features = false, features = ["ring", "flate2", "rsa"] }
+# 基于 russh 的 SFTP 子系统实现，用于文件管理
+russh-sftp = "2"
+# russh 基于 tokio 异步运行时
+tokio = { version = "1", features = ["full"] }
+# 异步 trait 支持
+async-trait = "0.1"
+# 错误处理
+anyhow = "1"
+# 会话与配置的并发安全存取
+dashmap = "6"
+# 生成会话唯一标识
+uuid = { version = "1", features = ["v4"] }
