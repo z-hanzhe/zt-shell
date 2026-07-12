@@ -6,6 +6,6 @@ SFTP文件管理
 
 权限解析 format_permissions将FileType与mode转为drwxr-xr-x风格字符串
 
-前端 见FileManager.vue 路径导航 上级目录 刷新 手动输入路径跳转 上传下载用tauri-plugin-dialog选择本地路径 增删改重命名 会话切换或连接成功后sftpHome定位主目录
+前端 见FileManager.vue 顶部路径栏含上级刷新新建目录 右侧列表非根目录置顶...返回上级 手动输入路径跳转 下载用tauri-plugin-dialog选择本地路径 增删改重命名 会话切换或连接成功后sftpHome定位主目录并联动左侧树
 
 注意点 远端路径统一正斜杠 见utils.ts joinPath parentPath 目录暂不支持下载

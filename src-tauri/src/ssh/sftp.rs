@@ -37,6 +37,15 @@ fn format_permissions(file_type: &FileType, mode: u32) -> String {
     s
 }
 
+/// 将常见系统账号数字标识显示为名称，未知账号保留原始数字
+fn format_owner_id(id: Option<u32>, root_name: &str) -> String {
+    match id {
+        Some(0) => root_name.to_string(),
+        Some(value) => value.to_string(),
+        None => String::new(),
+    }
+}
+
 /// 列举远端目录内容
 pub async fn list_dir(sftp: &SftpSession, path: &str) -> Result<Vec<FileEntry>> {
     let mut entries = Vec::new();
@@ -56,8 +65,8 @@ pub async fn list_dir(sftp: &SftpSession, path: &str) -> Result<Vec<FileEntry>> 
             permissions,
             permissions_str: format_permissions(&file_type, permissions),
             modified: meta.mtime.unwrap_or(0) as u64,
-            owner: meta.uid.map(|u| u.to_string()).unwrap_or_default(),
-            group: meta.gid.map(|g| g.to_string()).unwrap_or_default(),
+            owner: format_owner_id(meta.uid, "root"),
+            group: format_owner_id(meta.gid, "root"),
         });
     }
     // 目录在前、文件在后，同类按名称排序
