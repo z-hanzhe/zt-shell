@@ -2,7 +2,7 @@
 /**
  * 右下文件管理器：SFTP 目录浏览（左目录树 + 右文件列表），支持上传下载增删改
  */
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
@@ -296,6 +296,15 @@ function isSelected(entry: FileEntry): boolean {
 function clearSelection() {
   selectedNames.value = new Set();
   selectionAnchor.value = "";
+}
+
+/** 按 Esc 清空文件列表选择 */
+function onFileKeyDown(event: KeyboardEvent) {
+  if (event.key !== "Escape" || dialog.open) return;
+  clearSelection();
+  marquee.active = false;
+  fileDrag.active = false;
+  fileDrag.target = "";
 }
 
 /** 单选指定条目 */
@@ -651,9 +660,14 @@ function startResize(event: MouseEvent) {
   window.addEventListener("mouseup", up);
 }
 
+onMounted(() => {
+  window.addEventListener("keydown", onFileKeyDown);
+});
+
 onBeforeUnmount(() => {
   stopResize?.();
   window.removeEventListener("pointermove", onFilePointerMove);
+  window.removeEventListener("keydown", onFileKeyDown);
 });
 
 /** 下载选中文件 */
