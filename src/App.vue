@@ -50,6 +50,8 @@ let dragging: "left" | "bottom" | null = null;
 let startPos = 0;
 let startSize = 0;
 
+const blockedBrowserKeys = new Set(["F3", "F5", "F7"]);
+
 /** 开始拖拽左侧分隔条 */
 function startDragLeft(e: MouseEvent) {
   dragging = "left";
@@ -96,6 +98,37 @@ function attachDragListeners() {
   document.addEventListener("mouseup", endDrag);
 }
 
+/** 阻止 WebView 中浏览器自带快捷键，避免覆盖桌面端交互 */
+function preventBrowserShortcut(e: KeyboardEvent) {
+  const key = e.key.toLowerCase();
+  const ctrlOrMeta = e.ctrlKey || e.metaKey;
+  if (
+    blockedBrowserKeys.has(e.key) ||
+    (ctrlOrMeta && ["f", "g", "r", "p", "s", "u"].includes(key)) ||
+    (e.ctrlKey && e.shiftKey && ["i", "j", "c", "r"].includes(key))
+  ) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}
+
+/** 阻止浏览器原生右键菜单 */
+function preventNativeContextMenu(e: MouseEvent) {
+  e.preventDefault();
+}
+
+/** 绑定全局浏览器默认行为拦截 */
+function attachBrowserGuards() {
+  window.addEventListener("keydown", preventBrowserShortcut, true);
+  window.addEventListener("contextmenu", preventNativeContextMenu, true);
+}
+
+/** 解绑全局浏览器默认行为拦截 */
+function detachBrowserGuards() {
+  window.removeEventListener("keydown", preventBrowserShortcut, true);
+  window.removeEventListener("contextmenu", preventNativeContextMenu, true);
+}
+
 /** 打开连接管理器发起的连接 */
 function onConnect(config: ConnectionConfig) {
   sessionsStore.open(config);
@@ -124,6 +157,7 @@ async function syncFilePath() {
 }
 
 onMounted(async () => {
+  attachBrowserGuards();
   // 加载本地持久化的连接与设置（浏览器预览环境下会失败，忽略即可）
   try {
     await Promise.all([connectionsStore.init(), settingsStore.init()]);
@@ -132,7 +166,10 @@ onMounted(async () => {
   }
 });
 
-onBeforeUnmount(endDrag);
+onBeforeUnmount(() => {
+  endDrag();
+  detachBrowserGuards();
+});
 </script>
 
 <template>
