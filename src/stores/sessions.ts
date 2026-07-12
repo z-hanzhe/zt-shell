@@ -10,6 +10,7 @@ import { computed, ref } from "vue";
 import type { ConnectionConfig } from "../types";
 import { sshConnect, sshDisconnect } from "../api";
 import { genId } from "../utils";
+import { useMonitorStore } from "./monitor";
 
 /** 会话连接状态 */
 export type SessionStatus = "connecting" | "connected" | "error";
@@ -64,6 +65,8 @@ export const useSessionsStore = defineStore("sessions", () => {
       // 后端以该会话 id 建立连接，前端与后端共用同一标识
       await sshConnect({ ...config, id });
       setStatus(id, "connected");
+      // 连接成功后启动持续监控，与激活的选项卡无关
+      useMonitorStore().start(id);
     } catch (e) {
       setStatus(id, "error", String(e));
     }
@@ -73,6 +76,8 @@ export const useSessionsStore = defineStore("sessions", () => {
   async function close(id: string) {
     const idx = sessions.value.findIndex((s) => s.id === id);
     if (idx < 0) return;
+    // 停止该会话监控
+    useMonitorStore().stop(id);
     const [removed] = sessions.value.splice(idx, 1);
     try {
       await sshDisconnect(removed.id);

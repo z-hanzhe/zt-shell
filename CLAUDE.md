@@ -23,7 +23,7 @@
 
 新增命令流程 在ssh模块实现能力 commands.rs加tauri命令 lib.rs注册handler src/api.ts加封装 涉及权限更新capabilities/default.json
 
-界面主题 参考FinalShell 4.6.5 采用浅色主题 面板浅灰白 仅终端保持深色青 见finalshell-ref.html于.ai-ignore
+界面主题 参考FinalShell 4.6.5 采用浅色主题 面板浅灰白 仅终端深色用Tokyo Night配色 见finalshell-ref.html于.ai-ignore
 
 调试须知 SSH等invoke能力仅在Tauri窗口内可用 浏览器localhost:1420仅供预览布局 invoke会因无Tauri运行时而失败 需npm run tauri dev在原生窗口测试连接
 
@@ -31,4 +31,4 @@ Vue响应式坑 pinia的ref数组中push普通对象后 勿直接改原始对象
 
 自绘标题栏 tauri.conf设decorations:false禁用系统标题栏 拖拽与双击最大化用原生data-tauri-drag-region属性 勿手动mousedown+startDragging会吞掉双击导致双击无法切换最大化 需core:window的minimize/toggle-maximize/unmaximize/close/start-dragging/is-maximized/internal-toggle-maximize权限
 
-终端样式 背景用不透明纯色#12303d 勿allowTransparency否则WebView2下渲染成纯黑 字体栈Consolas优先再回落内置Cascadia Mono 字体色#cfe3ea 贴近finalshell-ref
+终端配色 Tokyo Night 背景#1a1b26前景#c0caf5 完整16色ANSI调色板使ls --color等转义色正确高亮 见Terminal.vue的theme 背景用不透明纯色勿allowTransparency否则WebView2渲染成纯黑 字体栈Consolas优先再回落内置Cascadia Mono

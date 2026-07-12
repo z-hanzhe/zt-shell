@@ -1,4 +1,4 @@
-# ztShell
+# ZTShell
 
 基于 Tauri 2 + Vue 3 + Rust 构建的跨平台桌面端 SSH 客户端，界面布局借鉴 FinalShell。
 

@@ -20,7 +20,8 @@ export function formatRate(bytesPerSec: number): string {
 export function formatShort(bytes: number): string {
   if (bytes <= 0) return "0";
   const units = ["B", "K", "M", "G", "T", "P"];
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  // 下限 0 上限最后一档，避免小于 1 字节时索引为负取到 undefined
+  const i = Math.min(Math.max(Math.floor(Math.log(bytes) / Math.log(1024)), 0), units.length - 1);
   const value = bytes / Math.pow(1024, i);
   // 大于等于 100 或整数不带小数，否则保留一位
   const str = value >= 100 || i === 0 ? String(Math.round(value)) : value.toFixed(1);

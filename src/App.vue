@@ -39,7 +39,7 @@ const activeConnected = computed(() => active.value?.status === "connected");
 const layout = reactive({ leftWidth: 258, bottomHeight: 300 });
 
 /** 各面板尺寸约束（像素） */
-const LIMITS = { leftMin: 180, leftMax: 520, bottomMin: 120, bottomMax: 700 };
+const LIMITS = { leftMin: 240, leftMax: 520, bottomMin: 120, bottomMax: 700 };
 
 /** 当前拖拽状态 */
 let dragging: "left" | "bottom" | null = null;

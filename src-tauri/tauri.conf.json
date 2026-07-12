@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ztShell",
+  "productName": "ZTShell",
   "version": "0.1.0",
   "identifier": "com.administrator.tauri-app",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "ztShell",
+        "title": "ZTShell",
         "width": 1280,
         "height": 800,
         "minWidth": 900,

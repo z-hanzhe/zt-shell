@@ -38,6 +38,8 @@ export interface NetInterface {
   txRate: number;
   rxTotal: number;
   txTotal: number;
+  /** 是否为物理网卡 */
+  isPhysical: boolean;
 }
 
 /** 磁盘使用 */
@@ -56,6 +58,8 @@ export interface ProcessInfo {
   name: string;
   cpu: number;
   mem: number;
+  /** 实际内存占用（字节） */
+  memBytes: number;
 }
 
 /** 完整监控数据 */

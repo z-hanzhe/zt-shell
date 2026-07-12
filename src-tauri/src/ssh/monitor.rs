@@ -19,8 +19,9 @@ echo '###LOADAVG###'; cat /proc/loadavg 2>/dev/null
 echo '###STAT1###'; head -1 /proc/stat 2>/dev/null
 echo '###MEM###'; cat /proc/meminfo 2>/dev/null
 echo '###NET1###'; cat /proc/net/dev 2>/dev/null
+echo '###PHYS###'; for i in /sys/class/net/*; do [ -e "$i/device" ] && basename "$i"; done 2>/dev/null
 echo '###DISK###'; df -kP 2>/dev/null
-echo '###PROC###'; ps -eo pid,comm,%cpu,%mem --sort=-%cpu 2>/dev/null | head -16
+echo '###PROC###'; ps -eo pid,comm,%cpu,%mem,rss --sort=-%cpu 2>/dev/null | head -16
 sleep 0.5
 echo '###STAT2###'; head -1 /proc/stat 2>/dev/null
 echo '###NET2###'; cat /proc/net/dev 2>/dev/null
@@ -41,6 +42,8 @@ pub struct NetInterface {
     pub rx_total: u64,
     /// 累计发送字节数
     pub tx_total: u64,
+    /// 是否为物理网卡（依据 /sys/class/net/<name>/device 是否存在判定）
+    pub is_physical: bool,
 }
 
 /// 磁盘分区使用情况
@@ -73,6 +76,8 @@ pub struct ProcessInfo {
     pub cpu: f64,
     /// 内存占用百分比
     pub mem: f64,
+    /// 实际内存占用（字节，来自 RSS）
+    pub mem_bytes: u64,
 }
 
 /// 一次采集得到的完整监控数据
@@ -238,6 +243,9 @@ pub async fn collect(manager: &SessionManager, session_id: &str) -> Result<Monit
     // 网卡速率（0.5 秒采样间隔）
     let net1 = parse_net(&get("NET1"));
     let net2 = parse_net(&get("NET2"));
+    // 物理网卡名集合
+    let phys: std::collections::HashSet<String> =
+        get("PHYS").lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
     let interval = 0.5_f64;
     for (name, (rx2, tx2)) in &net2 {
         let (rx1, tx1) = net1.get(name).copied().unwrap_or((*rx2, *tx2));
@@ -247,6 +255,7 @@ pub async fn collect(manager: &SessionManager, session_id: &str) -> Result<Monit
             tx_rate: ((tx2.saturating_sub(tx1)) as f64 / interval) as u64,
             rx_total: *rx2,
             tx_total: *tx2,
+            is_physical: phys.contains(name),
         });
     }
     data.net_interfaces.sort_by(|a, b| a.name.cmp(&b.name));
@@ -278,7 +287,7 @@ pub async fn collect(manager: &SessionManager, session_id: &str) -> Result<Monit
     // 进程（首行为表头）
     for line in get("PROC").lines().skip(1) {
         let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() < 4 {
+        if f.len() < 5 {
             continue;
         }
         data.processes.push(ProcessInfo {
@@ -286,6 +295,8 @@ pub async fn collect(manager: &SessionManager, session_id: &str) -> Result<Monit
             name: f[1].to_string(),
             cpu: f[2].parse().unwrap_or(0.0),
             mem: f[3].parse().unwrap_or(0.0),
+            // ps 的 rss 单位为 KiB，转字节
+            mem_bytes: f[4].parse::<u64>().unwrap_or(0) * 1024,
         });
     }
 

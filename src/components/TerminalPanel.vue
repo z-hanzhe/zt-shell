@@ -222,7 +222,7 @@ watch(
   font-family: "Consolas", monospace;
 }
 .term-status.error {
-  color: #ff8a8a;
+  color: #f7768e;
 }
 .welcome {
   display: flex;
@@ -231,6 +231,6 @@ watch(
   justify-content: center;
   height: 100%;
   gap: 16px;
-  color: #6f8a95;
+  color: #565f89;
 }
 </style>

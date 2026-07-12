@@ -29,15 +29,35 @@ let unlistenClose: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let opened = false;
 
-/** xterm 主题，与 FinalShell 终端风格保持一致（用不透明纯色背景，WebView 下透明会渲染成纯黑） */
+/**
+ * xterm 主题：Tokyo Night 配色
+ * 完整 16 色 ANSI 调色板，使 ls --color、日志高亮等 ANSI 转义色正确渲染
+ * 背景用不透明纯色，WebView 下透明会渲染成纯黑
+ */
 const theme = {
-  background: "#12303d",
-  foreground: "#cfe3ea",
-  cursor: "#57d977",
-  cursorAccent: "#12303d",
-  selectionBackground: "#2f5866",
-  black: "#0f2833",
-  brightBlack: "#5a7683",
+  background: "#1a1b26",
+  foreground: "#c0caf5",
+  cursor: "#c0caf5",
+  cursorAccent: "#1a1b26",
+  selectionBackground: "#28344a",
+  // 标准色
+  black: "#15161e",
+  red: "#f7768e",
+  green: "#9ece6a",
+  yellow: "#e0af68",
+  blue: "#7aa2f7",
+  magenta: "#bb9af7",
+  cyan: "#7dcfff",
+  white: "#a9b1d6",
+  // 亮色
+  brightBlack: "#414868",
+  brightRed: "#f7768e",
+  brightGreen: "#9ece6a",
+  brightYellow: "#e0af68",
+  brightBlue: "#7aa2f7",
+  brightMagenta: "#bb9af7",
+  brightCyan: "#7dcfff",
+  brightWhite: "#c0caf5",
 };
 
 /** 初始化终端并绑定事件 */
@@ -152,12 +172,12 @@ defineExpose({ fit: doFit, activate });
 .terminal-wrap {
   width: 100%;
   height: 100%;
-  background: #12303d;
+  background: #1a1b26;
   overflow: hidden;
 }
 .terminal-body {
   width: 100%;
   height: 100%;
-  padding: 4px 6px;
+  padding: 6px 12px;
 }
 </style>

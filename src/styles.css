@@ -16,11 +16,11 @@
   --table-head-top: #f3f6f9;
   --table-head-bottom: #e6ecf2;
 
-  /* 终端保持深色 */
-  --terminal-bg: #12303d;
-  --terminal-bg2: #0f2833;
-  --terminal-text: #cfe3ea;
-  --terminal-green: #57d977;
+  /* 终端深色主题（Tokyo Night） */
+  --terminal-bg: #1a1b26;
+  --terminal-bg2: #16161e;
+  --terminal-text: #c0caf5;
+  --terminal-green: #9ece6a;
   --toolbar-dark: #33393f;
 
   /* 状态与进度色 */

@@ -57,7 +57,7 @@ onBeforeUnmount(() => {
   <!-- data-tauri-drag-region：整条标题栏可拖拽窗口，双击切换最大化/还原 -->
   <div class="titlebar" data-tauri-drag-region>
     <img class="logo" src="/app-icon.png" alt="logo" draggable="false" />
-    <div class="app-title">ztShell</div>
+    <div class="app-title">ZTShell</div>
 
     <!-- 窗口控制按钮（不含 drag-region，保持可点击） -->
     <div class="win-btns">
