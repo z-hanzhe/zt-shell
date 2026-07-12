@@ -30,6 +30,10 @@ const settingsStore = useSettingsStore();
 const showConnManager = ref(false);
 /** 设置弹窗可见性 */
 const showSettings = ref(false);
+/** 终端面板引用，用于文件区与终端互相同步路径 */
+const terminalPanelRef = ref<InstanceType<typeof TerminalPanel>>();
+/** 底部面板引用，用于根据终端路径更新文件管理器 */
+const bottomPanelRef = ref<InstanceType<typeof BottomPanel>>();
 
 /** 当前激活会话（用于状态栏与子面板） */
 const active = computed(() => sessionsStore.activeSession);
@@ -102,6 +106,23 @@ async function onSaveSettings(settings: AppSettings) {
   await settingsStore.update(settings);
 }
 
+/** 将文件管理器地址栏路径同步到当前终端 */
+function syncTerminalPath(path: string) {
+  terminalPanelRef.value?.cdActiveTerminal(path)?.catch((e: unknown) => {
+    console.warn("同步路径到终端失败", e);
+  });
+}
+
+/** 将当前终端路径同步到文件管理器地址栏 */
+async function syncFilePath() {
+  try {
+    const path = await terminalPanelRef.value?.requestActiveTerminalCwd();
+    if (path) await bottomPanelRef.value?.setFilePath(path);
+  } catch (e) {
+    console.warn("同步终端路径到文件管理器失败", e);
+  }
+}
+
 onMounted(async () => {
   // 加载本地持久化的连接与设置（浏览器预览环境下会失败，忽略即可）
   try {
@@ -137,6 +158,7 @@ onBeforeUnmount(endDrag);
       <div class="right-pane">
         <div class="terminal-region">
           <TerminalPanel
+            ref="terminalPanelRef"
             @open-conn-manager="showConnManager = true"
             @open-settings="showSettings = true"
           />
@@ -148,8 +170,11 @@ onBeforeUnmount(endDrag);
         <!-- 底部文件区（固定高） -->
         <div class="bottom-region" :style="{ height: layout.bottomHeight + 'px' }">
           <BottomPanel
+            ref="bottomPanelRef"
             :session-id="active?.id ?? ''"
             :connected="activeConnected"
+            @sync-terminal-path="syncTerminalPath"
+            @sync-file-path="syncFilePath"
           />
         </div>
       </div>

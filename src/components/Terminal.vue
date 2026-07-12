@@ -28,6 +28,8 @@ let unlistenData: UnlistenFn | null = null;
 let unlistenClose: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let opened = false;
+let pwdBuffer = "";
+const pendingPwdRequests = new Map<string, (path: string) => void>();
 
 /**
  * xterm 主题：Tokyo Night 配色
@@ -60,6 +62,30 @@ const theme = {
   brightWhite: "#c0caf5",
 };
 
+/** 将路径转为 POSIX shell 单引号参数 */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+/** 写入终端字节 */
+function writeToTerminal(data: string): Promise<void> {
+  const bytes = Array.from(new TextEncoder().encode(data));
+  return terminalWrite(props.sessionId, bytes);
+}
+
+/** 从输出中捕获专用 OSC 当前目录标记 */
+function capturePwdMarkers(bytes: number[]) {
+  const text = new TextDecoder().decode(new Uint8Array(bytes));
+  pwdBuffer = (pwdBuffer + text).slice(-4096);
+  const marker = /\x1b\]6973;ZTSHELL_PWD=([^:]+):([^\x07]*)\x07/g;
+  let match: RegExpExecArray | null;
+  while ((match = marker.exec(pwdBuffer))) {
+    pendingPwdRequests.get(match[1])?.(match[2]);
+    pendingPwdRequests.delete(match[1]);
+  }
+  if (!pwdBuffer.includes("\x1b]")) pwdBuffer = "";
+}
+
 /** 初始化终端并绑定事件 */
 async function setup() {
   if (!container.value || opened) return;
@@ -84,6 +110,7 @@ async function setup() {
   const dataEvent = `terminal://data//${props.sessionId}`;
   const closeEvent = `terminal://close//${props.sessionId}`;
   unlistenData = await listen<number[]>(dataEvent, (e) => {
+    capturePwdMarkers(e.payload);
     t.write(new Uint8Array(e.payload));
   });
   unlistenClose = await listen(closeEvent, () => {
@@ -92,8 +119,7 @@ async function setup() {
 
   // 用户输入回传后端
   t.onData((data) => {
-    const bytes = Array.from(new TextEncoder().encode(data));
-    terminalWrite(props.sessionId, bytes).catch(() => {});
+    writeToTerminal(data).catch(() => {});
   });
 
   // 开启后端终端通道
@@ -138,6 +164,33 @@ function activate() {
   });
 }
 
+/** 将交互终端当前目录切换到指定路径 */
+function cdTo(path: string) {
+  if (!term.value || !props.connected) return Promise.resolve();
+  return writeToTerminal(`cd -- ${shellQuote(path)}\r`);
+}
+
+/** 请求交互终端回传当前目录 */
+function requestCwd(): Promise<string> {
+  if (!term.value || !props.connected) return Promise.reject(new Error("终端未连接"));
+  const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      pendingPwdRequests.delete(token);
+      reject(new Error("获取终端路径超时"));
+    }, 3000);
+    pendingPwdRequests.set(token, (path) => {
+      window.clearTimeout(timer);
+      resolve(path || "/");
+    });
+    writeToTerminal(`printf '\\033]6973;ZTSHELL_PWD=${token}:%s\\007' "$PWD"\r`).catch((e) => {
+      window.clearTimeout(timer);
+      pendingPwdRequests.delete(token);
+      reject(e);
+    });
+  });
+}
+
 // 连接成功后再初始化终端
 watch(
   () => props.connected,
@@ -156,10 +209,11 @@ onBeforeUnmount(() => {
   unlistenData?.();
   unlistenClose?.();
   term.value?.dispose();
+  pendingPwdRequests.clear();
 });
 
 // 暴露刷新方法供父组件在切换选项卡后调用
-defineExpose({ fit: doFit, activate });
+defineExpose({ fit: doFit, activate, cdTo, requestCwd });
 </script>
 
 <template>

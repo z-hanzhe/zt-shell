@@ -12,10 +12,26 @@ defineProps<{
   connected: boolean;
 }>();
 
+const emit = defineEmits<{
+  (e: "sync-terminal-path", path: string): void;
+  (e: "sync-file-path"): void;
+}>();
+
+/** 文件管理器组件引用，用于外部同步路径 */
+const fileManagerRef = ref<InstanceType<typeof FileManager>>();
+
 /** 选项卡定义，当前内置文件管理器，后续可扩展 */
 const tabs = [{ key: "files", label: "文件" }];
 /** 当前激活选项卡 */
 const activeTab = ref("files");
+
+/** 根据终端当前目录更新文件管理器路径 */
+function setFilePath(path: string) {
+  activeTab.value = "files";
+  return fileManagerRef.value?.setPathFromTerminal(path);
+}
+
+defineExpose({ setFilePath });
 </script>
 
 <template>
@@ -32,9 +48,12 @@ const activeTab = ref("files");
     </div>
     <div class="tab-content">
       <FileManager
+        ref="fileManagerRef"
         v-show="activeTab === 'files'"
         :session-id="sessionId"
         :connected="connected"
+        @sync-terminal-path="emit('sync-terminal-path', $event)"
+        @sync-file-path="emit('sync-file-path')"
       />
     </div>
   </div>

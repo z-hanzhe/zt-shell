@@ -17,6 +17,16 @@ const store = useSessionsStore();
 /** 各会话终端组件引用，用于切换选项卡后触发尺寸自适应 */
 const termRefs = ref<Record<string, InstanceType<typeof Terminal>>>({});
 
+/** 将当前激活终端切换到指定目录 */
+function cdActiveTerminal(path: string) {
+  return termRefs.value[store.activeId]?.cdTo(path);
+}
+
+/** 获取当前激活终端的目录 */
+function requestActiveTerminalCwd() {
+  return termRefs.value[store.activeId]?.requestCwd();
+}
+
 // 切换激活会话后，等 DOM 显示再重新适配终端尺寸并刷新视口
 watch(
   () => store.activeId,
@@ -24,6 +34,8 @@ watch(
     nextTick(() => termRefs.value[id]?.activate());
   }
 );
+
+defineExpose({ cdActiveTerminal, requestActiveTerminalCwd });
 </script>
 
 <template>

@@ -44,6 +44,8 @@ const paths: Record<string, string> = {
   winRestore: "M8 8V6a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-2M5 9h10v10H5V9z",
   copy: "M9 9h10a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V10a1 1 0 0 1 1-1zM5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1",
   arrowDown: "M12 5v14M5 12l7 7 7-7",
+  pathToTerminal: "M6 4h12v4M6 20h12v-4M12 16V8M9 11l3-3 3 3",
+  pathToFile: "M6 4h12v4M6 20h12v-4M12 8v8M9 13l3 3 3-3",
 };
 
 const d = computed(() => paths[props.name] ?? "");

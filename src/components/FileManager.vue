@@ -25,6 +25,11 @@ const props = defineProps<{
   connected: boolean;
 }>();
 
+const emit = defineEmits<{
+  (e: "sync-terminal-path", path: string): void;
+  (e: "sync-file-path"): void;
+}>();
+
 /** 当前目录 */
 const cwd = ref("/");
 /** 目录条目 */
@@ -336,6 +341,23 @@ function goPath(path: string) {
   setCwd(path.trim() || "/");
 }
 
+/** 将文件管理路径同步到终端 */
+function syncPathToTerminal() {
+  if (!props.connected) return;
+  emit("sync-terminal-path", cwd.value);
+}
+
+/** 从终端读取当前路径并同步到文件管理 */
+function syncPathFromTerminal() {
+  if (!props.connected) return;
+  emit("sync-file-path");
+}
+
+/** 供父组件根据终端路径更新地址栏 */
+function setPathFromTerminal(path: string) {
+  return setCwd(path);
+}
+
 /** 点击目录树节点后右侧显示该目录 */
 function selectTreeNode(path: string) {
   setCwd(path);
@@ -522,6 +544,8 @@ watch(
   },
   { immediate: true }
 );
+
+defineExpose({ setPathFromTerminal });
 </script>
 
 <template>
@@ -542,6 +566,12 @@ watch(
         :value="cwd"
         @keyup.enter="goPath(($event.target as HTMLInputElement).value)"
       />
+      <button class="ic sync" title="同步地址栏路径到终端" :disabled="!connected" @click="syncPathToTerminal">
+        <Icon name="pathToTerminal" :size="15" />
+      </button>
+      <button class="ic sync" title="同步终端路径到地址栏" :disabled="!connected" @click="syncPathFromTerminal">
+        <Icon name="pathToFile" :size="15" />
+      </button>
     </div>
 
     <div class="file-body">
@@ -684,6 +714,17 @@ watch(
 .file-toolbar .ic:hover {
   background: var(--row-hover);
   color: var(--accent);
+}
+.file-toolbar .ic:disabled {
+  color: #aab2bb;
+  cursor: not-allowed;
+}
+.file-toolbar .ic:disabled:hover {
+  background: transparent;
+  color: #aab2bb;
+}
+.file-toolbar .sync {
+  color: #4d657d;
 }
 .path-input {
   flex: 1;
