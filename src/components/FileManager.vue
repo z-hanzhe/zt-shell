@@ -6,6 +6,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
+import TextEditorDialog from "./TextEditorDialog.vue";
 import {
   sftpList,
   sftpHome,
@@ -14,6 +15,8 @@ import {
   sftpCreateDir,
   sftpRename,
   sftpDownload,
+  sftpRead,
+  sftpWrite,
 } from "../api";
 import type { FileEntry } from "../types";
 import { formatShort, formatTime, joinPath, parentPath } from "../utils";
@@ -73,6 +76,10 @@ const dialog = reactive<DialogState>({
 const marquee = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 });
 /** 拖拽移动状态 */
 const fileDrag = reactive({ active: false, count: 0, x: 0, y: 0, target: "" });
+/** 右键菜单状态 */
+const contextMenu = reactive({ open: false, x: 0, y: 0 });
+/** 文本编辑器状态 */
+const editor = reactive({ open: false, path: "", content: "" });
 
 /** 鼠标拖拽清理函数 */
 let stopResize: (() => void) | undefined;
@@ -92,6 +99,18 @@ type PointerAction = {
   baseSelected: Set<string>;
   toggle: boolean;
 };
+type MenuAction =
+  | "refresh"
+  | "edit"
+  | "copyPath"
+  | "rename"
+  | "upload"
+  | "download"
+  | "packDownload"
+  | "newFile"
+  | "newDir"
+  | "delete";
+type MenuItem = { action: MenuAction; label: string; disabled: boolean };
 type DialogState = {
   open: boolean;
   type: "info" | "confirm" | "prompt";
@@ -132,6 +151,33 @@ const visibleEntries = computed(() => {
 
 /** 可选择的真实文件条目 */
 const selectableEntries = computed(() => visibleEntries.value.filter((entry) => entry.name !== "..."));
+
+/** 当前选中的真实条目 */
+const selectedEntries = computed(() => entries.value.filter((entry) => selectedNames.value.has(entry.name)));
+
+/** 右键菜单项 */
+const contextMenuItems = computed<MenuItem[]>(() => {
+  const count = selectedEntries.value.length;
+  const first = selectedEntries.value[0];
+  const multi = count > 1;
+  const singleDir = count === 1 && first?.isDir;
+  return [
+    { action: "refresh", label: "刷新", disabled: false },
+    { action: "edit", label: "编辑文本", disabled: count !== 1 || singleDir || multi },
+    { action: "copyPath", label: "复制路径", disabled: count !== 1 || multi },
+    { action: "rename", label: "重命名", disabled: count !== 1 || multi },
+    { action: "upload", label: "上传", disabled: false },
+    { action: "download", label: "下载", disabled: count !== 1 || singleDir || multi },
+    { action: "packDownload", label: "打包下载", disabled: count === 0 },
+    { action: "newFile", label: "新建文件", disabled: false },
+    { action: "newDir", label: "新建文件夹", disabled: false },
+    { action: "delete", label: "删除", disabled: count === 0 },
+  ];
+});
+
+const CONTEXT_MENU_WIDTH = 140;
+const CONTEXT_MENU_HEIGHT = 248;
+const CONTEXT_MENU_MARGIN = 8;
 
 /** 扁平化后的目录树节点 */
 const treeNodes = computed(() => {
@@ -298,13 +344,30 @@ function clearSelection() {
   selectionAnchor.value = "";
 }
 
+/** 关闭右键菜单 */
+function closeContextMenu() {
+  contextMenu.open = false;
+}
+
 /** 按 Esc 清空文件列表选择 */
 function onFileKeyDown(event: KeyboardEvent) {
   if (event.key !== "Escape" || dialog.open) return;
+  if (contextMenu.open) {
+    closeContextMenu();
+    return;
+  }
   clearSelection();
   marquee.active = false;
   fileDrag.active = false;
   fileDrag.target = "";
+}
+
+/** 点击应用任意非菜单区域时关闭右键菜单 */
+function onGlobalPointerDown(event: PointerEvent) {
+  if (!contextMenu.open) return;
+  const target = event.target as HTMLElement;
+  if (target.closest(".context-menu")) return;
+  closeContextMenu();
 }
 
 /** 单选指定条目 */
@@ -395,6 +458,27 @@ function onEntryPointerDown(entry: FileEntry, event: PointerEvent) {
   };
   window.addEventListener("pointermove", onFilePointerMove);
   window.addEventListener("pointerup", onFilePointerUp, { once: true });
+}
+
+/** 打开右键菜单，右键本身不改变当前选择 */
+function onEntryContextMenu(event: MouseEvent) {
+  event.preventDefault();
+  openContextMenu(event);
+}
+
+/** 在空白区域打开右键菜单 */
+function onFileListContextMenu(event: MouseEvent) {
+  event.preventDefault();
+  const target = event.target as HTMLElement;
+  if (target.closest("tr.file-row") || target.closest("thead")) return;
+  openContextMenu(event);
+}
+
+/** 定位右键菜单 */
+function openContextMenu(event: MouseEvent) {
+  contextMenu.open = true;
+  contextMenu.x = Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_MARGIN);
+  contextMenu.y = Math.min(event.clientY, window.innerHeight - CONTEXT_MENU_HEIGHT - CONTEXT_MENU_MARGIN);
 }
 
 /** 开始空白区域框选 */
@@ -507,6 +591,98 @@ async function moveSelectedTo(targetDir: string) {
     await loadTreeDir(targetDir);
   } catch (e) {
     showMessage("移动失败", String(e));
+  }
+}
+
+/** 执行右键菜单动作 */
+async function runMenuAction(item: MenuItem) {
+  if (item.disabled) return;
+  closeContextMenu();
+  switch (item.action) {
+    case "refresh":
+      await refresh();
+      break;
+    case "edit":
+      await onEditText();
+      break;
+    case "copyPath":
+      await copySelectedPath();
+      break;
+    case "rename":
+      if (selectedEntries.value[0]) await onRename(selectedEntries.value[0]);
+      break;
+    case "upload":
+      showMessage("上传", "上传功能后续实现");
+      break;
+    case "download":
+      if (selectedEntries.value[0]) await onDownload(selectedEntries.value[0]);
+      break;
+    case "packDownload":
+      showMessage("打包下载", "打包下载功能后续实现");
+      break;
+    case "newFile":
+      await onNewFile();
+      break;
+    case "newDir":
+      await onNewDir();
+      break;
+    case "delete":
+      await onDeleteSelected();
+      break;
+  }
+}
+
+/** 复制单个选中项完整路径 */
+async function copySelectedPath() {
+  const entry = selectedEntries.value[0];
+  if (!entry) return;
+  try {
+    await navigator.clipboard.writeText(joinPath(cwd.value, entry.name));
+  } catch (e) {
+    showMessage("复制失败", String(e));
+  }
+}
+
+/** 根据内容粗略判断二进制文件 */
+function isLikelyBinary(bytes: number[]): boolean {
+  if (bytes.length === 0) return false;
+  const sample = bytes.slice(0, Math.min(bytes.length, 4096));
+  if (sample.includes(0)) return true;
+  const controlCount = sample.filter((byte) => byte < 32 && ![9, 10, 13].includes(byte)).length;
+  return controlCount / sample.length > 0.08;
+}
+
+/** 打开文本编辑器 */
+async function onEditText() {
+  const entry = selectedEntries.value[0];
+  if (!entry || entry.isDir) return;
+  const path = joinPath(cwd.value, entry.name);
+  if (entry.size > 1024 * 1024) {
+    const confirmed = await showConfirm("编辑确认", "文件大于 1MB，是否继续打开编辑？");
+    if (!confirmed) return;
+  }
+  try {
+    const bytes = await sftpRead(props.sessionId, path);
+    if (isLikelyBinary(bytes)) {
+      const confirmed = await showConfirm("编辑确认", "文件可能不是文本文件，是否继续打开编辑？");
+      if (!confirmed) return;
+    }
+    editor.path = path;
+    editor.content = new TextDecoder().decode(new Uint8Array(bytes));
+    editor.open = true;
+  } catch (e) {
+    showMessage("打开失败", String(e));
+  }
+}
+
+/** 保存文本编辑内容 */
+async function onEditorSave(value: string, done: () => void) {
+  try {
+    await sftpWrite(props.sessionId, editor.path, Array.from(new TextEncoder().encode(value)));
+    await refresh();
+    done();
+  } catch (e) {
+    showMessage("保存失败", String(e));
   }
 }
 
@@ -662,12 +838,14 @@ function startResize(event: MouseEvent) {
 
 onMounted(() => {
   window.addEventListener("keydown", onFileKeyDown);
+  window.addEventListener("pointerdown", onGlobalPointerDown);
 });
 
 onBeforeUnmount(() => {
   stopResize?.();
   window.removeEventListener("pointermove", onFilePointerMove);
   window.removeEventListener("keydown", onFileKeyDown);
+  window.removeEventListener("pointerdown", onGlobalPointerDown);
 });
 
 /** 下载选中文件 */
@@ -685,20 +863,46 @@ async function onDownload(entry: FileEntry) {
   }
 }
 
-/** 删除选中项 */
-async function onDelete(entry: FileEntry) {
-  const confirmed = await showConfirm("删除确认", `确定删除「${entry.name}」？`);
+/** 删除当前选中的条目 */
+async function onDeleteSelected() {
+  await deleteEntries(selectedEntries.value);
+}
+
+/** 批量删除文件或目录 */
+async function deleteEntries(targets: FileEntry[]) {
+  if (targets.length === 0) return;
+  const message =
+    targets.length === 1
+      ? `是否删除「${targets[0].name}」？`
+      : `是否删除 ${targets.length} 个文件？`;
+  const confirmed = await showConfirm("删除确认", message);
   if (!confirmed) return;
-  const path = joinPath(cwd.value, entry.name);
   try {
-    if (entry.isDir) {
-      await sftpRemoveDir(props.sessionId, path);
-    } else {
-      await sftpRemoveFile(props.sessionId, path);
+    for (const entry of targets) {
+      const path = joinPath(cwd.value, entry.name);
+      if (entry.isDir) {
+        await sftpRemoveDir(props.sessionId, path);
+      } else {
+        await sftpRemoveFile(props.sessionId, path);
+      }
     }
+    clearSelection();
+    invalidateTreeDirs(cwd.value);
     await refresh();
   } catch (e) {
     showMessage("删除失败", String(e));
+  }
+}
+
+/** 新建文件 */
+async function onNewFile() {
+  const name = await showPrompt("新建文件", "请输入新文件名称", "新文件名称", "", joinPath(cwd.value, "{value}"));
+  if (!name?.trim()) return;
+  try {
+    await sftpWrite(props.sessionId, joinPath(cwd.value, name.trim()), []);
+    await refresh();
+  } catch (e) {
+    showMessage("创建失败", String(e));
   }
 }
 
@@ -866,7 +1070,12 @@ defineExpose({ setPathFromTerminal });
       <div class="tree-resizer" @mousedown="startResize"></div>
 
       <!-- 文件列表 -->
-      <div ref="fileListRef" class="file-list" @pointerdown="onFileListPointerDown">
+      <div
+        ref="fileListRef"
+        class="file-list"
+        @pointerdown="onFileListPointerDown"
+        @contextmenu="onFileListContextMenu"
+      >
         <div v-if="!connected" class="fm-tip">未连接会话</div>
         <div v-else-if="loading" class="fm-tip">加载中…</div>
         <div v-else-if="error" class="fm-tip error">{{ error }}</div>
@@ -898,6 +1107,7 @@ defineExpose({ setPathFromTerminal });
               :class="{ selected: isSelected(entry), 'drop-target': fileDrag.target === (entry.name === '...' ? parentPath(cwd) : joinPath(cwd, entry.name)) }"
               :data-name="entry.name"
               @pointerdown="onEntryPointerDown(entry, $event)"
+              @contextmenu="onEntryContextMenu($event)"
               @dblclick="onOpen(entry)"
             >
               <td class="name" :title="cellTitle(entry, 'name')">
@@ -907,17 +1117,6 @@ defineExpose({ setPathFromTerminal });
                   :class="entry.isDir ? 'ic-folder' : 'ic-file'"
                 />
                 <span class="ellipsis">{{ entry.name }}</span>
-                <span class="row-ops">
-                  <button v-if="!entry.isDir" title="下载" @click.stop="onDownload(entry)">
-                    <Icon name="download" :size="12" />
-                  </button>
-                  <button v-if="entry.name !== '...'" title="重命名" @click.stop="onRename(entry)">
-                    <Icon name="edit" :size="12" />
-                  </button>
-                  <button v-if="entry.name !== '...'" class="danger" title="删除" @click.stop="onDelete(entry)">
-                    <Icon name="trash" :size="12" />
-                  </button>
-                </span>
               </td>
               <td class="size" :title="cellTitle(entry, 'size')">{{ entry.isDir ? "" : formatShort(entry.size) }}</td>
               <td :title="cellTitle(entry, 'type')">{{ fileType(entry) }}</td>
@@ -942,6 +1141,21 @@ defineExpose({ setPathFromTerminal });
         >
           移动 {{ fileDrag.count }} 项
         </div>
+        <div
+          v-if="contextMenu.open"
+          class="context-menu"
+          :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+          @click.stop
+        >
+          <button
+            v-for="item in contextMenuItems"
+            :key="item.action"
+            :disabled="item.disabled"
+            @click="runMenuAction(item)"
+          >
+            {{ item.label }}
+          </button>
+        </div>
       </div>
     </div>
     <AppDialog
@@ -955,6 +1169,13 @@ defineExpose({ setPathFromTerminal });
       :hint-template="dialog.hintTemplate"
       @confirm="onDialogConfirm"
       @cancel="onDialogCancel"
+    />
+    <TextEditorDialog
+      :open="editor.open"
+      :path="editor.path"
+      :content="editor.content"
+      @save="onEditorSave"
+      @close="editor.open = false"
     />
   </div>
 </template>
@@ -1191,37 +1412,6 @@ defineExpose({ setPathFromTerminal });
   white-space: nowrap;
 }
 
-/* 行内操作按钮 */
-.row-ops {
-  display: flex;
-  visibility: hidden;
-  gap: 2px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-.file-list tr:hover .row-ops {
-  visibility: visible;
-}
-.row-ops button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: none;
-  border-radius: 3px;
-  background: transparent;
-  color: #778;
-  cursor: pointer;
-}
-.row-ops button:hover {
-  background: #e3e9f0;
-  color: var(--accent);
-}
-.row-ops button.danger:hover {
-  color: var(--danger);
-}
-
 .fm-tip {
   padding: 24px;
   text-align: center;
@@ -1248,5 +1438,36 @@ defineExpose({ setPathFromTerminal });
   color: #2c5f91;
   font-size: 12px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+.context-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid #b8c6d6;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+.context-menu button {
+  display: block;
+  width: 100%;
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: #333;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.context-menu button:hover:not(:disabled) {
+  background: var(--row-hover);
+  color: var(--accent);
+}
+.context-menu button:disabled {
+  color: #aab2bb;
+  cursor: not-allowed;
 }
 </style>

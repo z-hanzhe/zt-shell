@@ -3,6 +3,7 @@
 use anyhow::{anyhow, Result};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::FileType;
+use tokio::io::AsyncWriteExt;
 
 use super::types::FileEntry;
 
@@ -87,9 +88,16 @@ pub async fn read_file(sftp: &SftpSession, path: &str) -> Result<Vec<u8>> {
 
 /// 将内容写入远端文件（覆盖）
 pub async fn write_file(sftp: &SftpSession, path: &str, data: &[u8]) -> Result<()> {
-    sftp.write(path, data)
+    let mut file = sftp
+        .create(path)
         .await
-        .map_err(|e| anyhow!("写入文件失败：{}", e))
+        .map_err(|e| anyhow!("创建文件失败：{}", e))?;
+    file.write_all(data)
+        .await
+        .map_err(|e| anyhow!("写入文件失败：{}", e))?;
+    file.flush()
+        .await
+        .map_err(|e| anyhow!("刷新文件失败：{}", e))
 }
 
 /// 删除远端文件
