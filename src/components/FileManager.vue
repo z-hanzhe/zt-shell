@@ -38,8 +38,10 @@ const entries = ref<FileEntry[]>([]);
 const loading = ref(false);
 /** 错误信息 */
 const error = ref("");
-/** 选中项名称 */
-const selected = ref<string>("");
+/** 选中项名称集合 */
+const selectedNames = ref<Set<string>>(new Set());
+/** 多选锚点，用于 Shift 范围选择 */
+const selectionAnchor = ref("");
 /** 已展开的目录路径 */
 const expandedDirs = ref<Set<string>>(new Set(["/"]));
 /** 目录树节点缓存 */
@@ -48,6 +50,8 @@ const treeChildren = ref<Record<string, FileEntry[]>>({});
 const treeWidth = ref(190);
 /** 目录树滚动容器 */
 const dirTreeRef = ref<HTMLElement | null>(null);
+/** 文件列表滚动容器 */
+const fileListRef = ref<HTMLElement | null>(null);
 /** 排序状态 */
 const sortState = ref<{ key: SortKey; direction: SortDirection }>({
   key: "name",
@@ -65,14 +69,29 @@ const dialog = reactive<DialogState>({
   hintTemplate: "",
   resolve: undefined,
 });
+/** 鼠标框选状态 */
+const marquee = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 });
+/** 拖拽移动状态 */
+const fileDrag = reactive({ active: false, count: 0, x: 0, y: 0, target: "" });
 
 /** 鼠标拖拽清理函数 */
 let stopResize: (() => void) | undefined;
+let pointerAction: PointerAction | null = null;
 
 type SortKey = "name" | "size" | "type" | "modified" | "permissions" | "owner";
 type SortDirection = "asc" | "desc";
 type TreeNode = { path: string; name: string; depth: number };
 type ColumnKey = SortKey;
+type PointerMode = "select" | "drag";
+type PointerAction = {
+  mode: PointerMode;
+  entry?: FileEntry;
+  startX: number;
+  startY: number;
+  moved: boolean;
+  baseSelected: Set<string>;
+  toggle: boolean;
+};
 type DialogState = {
   open: boolean;
   type: "info" | "confirm" | "prompt";
@@ -110,6 +129,9 @@ const visibleEntries = computed(() => {
   if (cwd.value === "/") return sorted;
   return [createParentEntry(), ...sorted];
 });
+
+/** 可选择的真实文件条目 */
+const selectableEntries = computed(() => visibleEntries.value.filter((entry) => entry.name !== "..."));
 
 /** 扁平化后的目录树节点 */
 const treeNodes = computed(() => {
@@ -165,6 +187,20 @@ async function loadTreeDir(path: string) {
   };
 }
 
+/** 使目录树缓存失效，下次需要时重新加载真实目录 */
+function invalidateTreeDirs(...paths: string[]) {
+  const next = { ...treeChildren.value };
+  for (const path of paths) delete next[path];
+  treeChildren.value = next;
+}
+
+/** 重新加载仍处于展开状态的目录，避免缓存失效后左侧树临时变空 */
+async function reloadExpandedTreeDirs(...paths: string[]) {
+  for (const path of [...new Set(paths)]) {
+    if (expandedDirs.value.has(path)) await loadTreeDir(path);
+  }
+}
+
 /** 确保当前路径在目录树中可见并选中 */
 async function syncTreeToCwd() {
   if (!props.sessionId || !props.connected) return;
@@ -184,7 +220,7 @@ async function syncTreeToCwd() {
 /** 统一切换当前目录 */
 async function setCwd(path: string) {
   cwd.value = normalizePath(path);
-  selected.value = "";
+  clearSelection();
   await refresh();
   await syncTreeToCwd();
 }
@@ -249,6 +285,220 @@ function setSort(key: SortKey) {
 function sortMark(key: SortKey): string {
   if (sortState.value.key !== key) return "";
   return sortState.value.direction === "asc" ? "↑" : "↓";
+}
+
+/** 判断条目是否被选中 */
+function isSelected(entry: FileEntry): boolean {
+  return selectedNames.value.has(entry.name);
+}
+
+/** 清空文件列表选择 */
+function clearSelection() {
+  selectedNames.value = new Set();
+  selectionAnchor.value = "";
+}
+
+/** 单选指定条目 */
+function selectSingle(name: string) {
+  selectedNames.value = new Set([name]);
+  selectionAnchor.value = name;
+}
+
+/** 切换指定条目的选中状态 */
+function toggleSelection(name: string) {
+  const next = new Set(selectedNames.value);
+  if (next.has(name)) next.delete(name);
+  else next.add(name);
+  selectedNames.value = next;
+  selectionAnchor.value = name;
+}
+
+/** 按 Shift 范围选择 */
+function selectRange(name: string) {
+  const names = selectableEntries.value.map((entry) => entry.name);
+  const from = names.indexOf(selectionAnchor.value || name);
+  const to = names.indexOf(name);
+  if (from < 0 || to < 0) {
+    selectSingle(name);
+    return;
+  }
+  const [start, end] = from < to ? [from, to] : [to, from];
+  selectedNames.value = new Set(names.slice(start, end + 1));
+}
+
+/** 根据修饰键选择条目 */
+function selectByMouse(entry: FileEntry, event: MouseEvent | PointerEvent) {
+  if (entry.name === "...") return;
+  if (event.shiftKey) selectRange(entry.name);
+  else if (event.ctrlKey || event.metaKey) toggleSelection(entry.name);
+  else selectSingle(entry.name);
+}
+
+/** 文件列表行 DOM */
+function entryRows(): HTMLElement[] {
+  return Array.from(fileListRef.value?.querySelectorAll<HTMLElement>("tbody tr.file-row") ?? []);
+}
+
+/** 目录树节点 DOM */
+function treeItems(): HTMLElement[] {
+  return Array.from(dirTreeRef.value?.querySelectorAll<HTMLElement>(".dir-item") ?? []);
+}
+
+/** 按坐标查找命中的元素，避免拖拽浮层遮挡 elementFromPoint */
+function hitElement<T extends HTMLElement>(items: T[], x: number, y: number): T | undefined {
+  return items.find((item) => {
+    const rect = item.getBoundingClientRect();
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  });
+}
+
+/** DOM 矩形是否相交 */
+function rectsIntersect(a: DOMRect, b: DOMRect): boolean {
+  return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+}
+
+/** 按框选矩形更新选中项 */
+function updateMarqueeSelection() {
+  const rect = new DOMRect(marquee.x, marquee.y, marquee.width, marquee.height);
+  const next = new Set(pointerAction?.baseSelected ?? []);
+  for (const row of entryRows()) {
+    const name = row.dataset.name;
+    if (!name || !rectsIntersect(rect, row.getBoundingClientRect())) continue;
+    if (pointerAction?.toggle && pointerAction.baseSelected.has(name)) next.delete(name);
+    else next.add(name);
+  }
+  selectedNames.value = next;
+}
+
+/** 开始文件行指针交互：已选中项拖拽移动，未选中项拖动框选 */
+function onEntryPointerDown(entry: FileEntry, event: PointerEvent) {
+  if (event.button !== 0 || entry.name === "...") return;
+  const target = event.target as HTMLElement;
+  if (target.closest("button") || target.closest(".col-resizer")) return;
+  pointerAction = {
+    mode: isSelected(entry) && !event.ctrlKey && !event.metaKey && !event.shiftKey ? "drag" : "select",
+    entry,
+    startX: event.clientX,
+    startY: event.clientY,
+    moved: false,
+    baseSelected: event.ctrlKey || event.metaKey ? new Set(selectedNames.value) : new Set(),
+    toggle: event.ctrlKey || event.metaKey,
+  };
+  window.addEventListener("pointermove", onFilePointerMove);
+  window.addEventListener("pointerup", onFilePointerUp, { once: true });
+}
+
+/** 开始空白区域框选 */
+function onFileListPointerDown(event: PointerEvent) {
+  if (event.button !== 0) return;
+  const target = event.target as HTMLElement;
+  if (target.closest("tr.file-row") || target.closest("thead") || target.closest("button") || target.closest("input")) return;
+  pointerAction = {
+    mode: "select",
+    startX: event.clientX,
+    startY: event.clientY,
+    moved: false,
+    baseSelected: event.ctrlKey || event.metaKey ? new Set(selectedNames.value) : new Set(),
+    toggle: event.ctrlKey || event.metaKey,
+  };
+  if (!event.ctrlKey && !event.metaKey && !event.shiftKey) clearSelection();
+  window.addEventListener("pointermove", onFilePointerMove);
+  window.addEventListener("pointerup", onFilePointerUp, { once: true });
+}
+
+/** 文件行指针移动：超过阈值后进入拖拽或框选 */
+function onFilePointerMove(event: PointerEvent) {
+  if (!pointerAction) return;
+  const dx = event.clientX - pointerAction.startX;
+  const dy = event.clientY - pointerAction.startY;
+  if (!pointerAction.moved && Math.hypot(dx, dy) < 4) return;
+  pointerAction.moved = true;
+  if (pointerAction.mode === "drag") {
+    fileDrag.active = true;
+    fileDrag.count = selectedNames.value.size;
+    fileDrag.x = event.clientX + 12;
+    fileDrag.y = event.clientY + 12;
+    fileDrag.target = findDropTarget(event.clientX, event.clientY);
+    return;
+  }
+  const left = Math.min(pointerAction.startX, event.clientX);
+  const top = Math.min(pointerAction.startY, event.clientY);
+  marquee.active = true;
+  marquee.x = left;
+  marquee.y = top;
+  marquee.width = Math.abs(dx);
+  marquee.height = Math.abs(dy);
+  updateMarqueeSelection();
+}
+
+/** 文件行指针结束：点击选择或执行拖拽移动 */
+async function onFilePointerUp(event: PointerEvent) {
+  window.removeEventListener("pointermove", onFilePointerMove);
+  if (!pointerAction) return;
+  const action = pointerAction;
+  pointerAction = null;
+  marquee.active = false;
+  if (fileDrag.active) {
+    const target = fileDrag.target;
+    fileDrag.active = false;
+    fileDrag.target = "";
+    if (target) await moveSelectedTo(target);
+    return;
+  }
+  if (!action.moved && action.entry) selectByMouse(action.entry, event);
+}
+
+/** 查找鼠标下可投放的目录 */
+function findDropTarget(x: number, y: number): string {
+  const treeItem = hitElement(treeItems(), x, y);
+  const treePath = treeItem?.dataset.path;
+  if (treePath && canDropTo(treePath)) return treePath;
+
+  const row = hitElement(entryRows(), x, y);
+  const name = row?.dataset.name;
+  if (name === "...") {
+    const target = parentPath(cwd.value);
+    return canDropTo(target) ? target : "";
+  }
+  if (!name) return "";
+  const entry = visibleEntries.value.find((item) => item.name === name);
+  const target = joinPath(cwd.value, name);
+  if (!entry?.isDir || selectedNames.value.has(name)) return "";
+  return canDropTo(target) ? target : "";
+}
+
+/** 判断目标目录是否可接收当前选中项 */
+function canDropTo(targetDir: string): boolean {
+  if (!targetDir || targetDir === cwd.value) return false;
+  return [...selectedNames.value].every((name) => {
+    const source = joinPath(cwd.value, name);
+    return targetDir !== source && !targetDir.startsWith(`${source}/`);
+  });
+}
+
+/** 将选中文件移动到目标目录 */
+async function moveSelectedTo(targetDir: string) {
+  const names = [...selectedNames.value];
+  if (names.length === 0) return;
+  const message =
+    names.length === 1
+      ? `是否将「${names[0]}」移动至「${targetDir}」目录？`
+      : `是否将 ${names.length} 个文件移动至「${targetDir}」目录？`;
+  const confirmed = await showConfirm("移动确认", message);
+  if (!confirmed) return;
+  try {
+    for (const name of names) {
+      await sftpRename(props.sessionId, joinPath(cwd.value, name), joinPath(targetDir, name));
+    }
+    clearSelection();
+    invalidateTreeDirs(cwd.value, parentPath(cwd.value), targetDir, parentPath(targetDir));
+    await refresh();
+    await syncTreeToCwd();
+    await reloadExpandedTreeDirs(parentPath(cwd.value), targetDir, parentPath(targetDir));
+    await loadTreeDir(targetDir);
+  } catch (e) {
+    showMessage("移动失败", String(e));
+  }
 }
 
 /** 获取表格单元格完整内容 */
@@ -403,6 +653,7 @@ function startResize(event: MouseEvent) {
 
 onBeforeUnmount(() => {
   stopResize?.();
+  window.removeEventListener("pointermove", onFilePointerMove);
 });
 
 /** 下载选中文件 */
@@ -443,7 +694,7 @@ async function onNewDir() {
   if (!name?.trim()) return;
   try {
     await sftpCreateDir(props.sessionId, joinPath(cwd.value, name.trim()));
-    treeChildren.value = { ...treeChildren.value, [cwd.value]: [] };
+    invalidateTreeDirs(cwd.value);
     await refresh();
     await syncTreeToCwd();
   } catch (e) {
@@ -461,7 +712,7 @@ async function onRename(entry: FileEntry) {
       joinPath(cwd.value, entry.name),
       joinPath(cwd.value, newName.trim())
     );
-    treeChildren.value = { ...treeChildren.value, [cwd.value]: [] };
+    invalidateTreeDirs(cwd.value);
     await refresh();
   } catch (e) {
     showMessage("重命名失败", String(e));
@@ -580,9 +831,10 @@ defineExpose({ setPathFromTerminal });
         <div
           v-for="node in treeNodes"
           :key="node.path"
-          :class="['dir-item', { active: cwd === node.path, root: node.path === '/' }]"
+          :class="['dir-item', { active: cwd === node.path, root: node.path === '/', 'drop-target': fileDrag.target === node.path }]"
           :style="{ paddingLeft: `${node.path === '/' ? 4 : 4 + (node.depth - 1) * 16}px` }"
           :title="node.path"
+          :data-path="node.path"
           @click="selectTreeNode(node.path)"
           @dblclick.stop="onTreeDblClick(node.path)"
         >
@@ -600,7 +852,7 @@ defineExpose({ setPathFromTerminal });
       <div class="tree-resizer" @mousedown="startResize"></div>
 
       <!-- 文件列表 -->
-      <div class="file-list">
+      <div ref="fileListRef" class="file-list" @pointerdown="onFileListPointerDown">
         <div v-if="!connected" class="fm-tip">未连接会话</div>
         <div v-else-if="loading" class="fm-tip">加载中…</div>
         <div v-else-if="error" class="fm-tip error">{{ error }}</div>
@@ -628,8 +880,10 @@ defineExpose({ setPathFromTerminal });
             <tr
               v-for="entry in visibleEntries"
               :key="entry.name"
-              :class="{ selected: selected === entry.name }"
-              @click="selected = entry.name"
+              class="file-row"
+              :class="{ selected: isSelected(entry), 'drop-target': fileDrag.target === (entry.name === '...' ? parentPath(cwd) : joinPath(cwd, entry.name)) }"
+              :data-name="entry.name"
+              @pointerdown="onEntryPointerDown(entry, $event)"
               @dblclick="onOpen(entry)"
             >
               <td class="name" :title="cellTitle(entry, 'name')">
@@ -662,6 +916,18 @@ defineExpose({ setPathFromTerminal });
             </tr>
           </tbody>
         </table>
+        <div
+          v-if="marquee.active"
+          class="selection-marquee"
+          :style="{ left: `${marquee.x}px`, top: `${marquee.y}px`, width: `${marquee.width}px`, height: `${marquee.height}px` }"
+        ></div>
+        <div
+          v-if="fileDrag.active"
+          class="drag-badge"
+          :style="{ left: `${fileDrag.x}px`, top: `${fileDrag.y}px` }"
+        >
+          移动 {{ fileDrag.count }} 项
+        </div>
       </div>
     </div>
     <AppDialog
@@ -783,6 +1049,10 @@ defineExpose({ setPathFromTerminal });
 .dir-item.active {
   background: #d9e6f4;
 }
+.dir-item.drop-target {
+  background: #cfe2f6;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 .dir-item.root {
   gap: 3px;
 }
@@ -874,6 +1144,10 @@ defineExpose({ setPathFromTerminal });
 .file-list tbody tr.selected td {
   background: #d9e6f4;
 }
+.file-list tbody tr.drop-target td {
+  background: #cfe2f6;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 .file-list td.name {
   display: flex;
   align-items: center;
@@ -941,5 +1215,24 @@ defineExpose({ setPathFromTerminal });
 }
 .fm-tip.error {
   color: var(--danger);
+}
+.selection-marquee {
+  position: fixed;
+  z-index: 20;
+  pointer-events: none;
+  border: 1px solid #5b8ec5;
+  background: rgba(91, 142, 197, 0.16);
+}
+.drag-badge {
+  position: fixed;
+  z-index: 21;
+  pointer-events: none;
+  padding: 4px 8px;
+  border: 1px solid #7fa2c9;
+  border-radius: 3px;
+  background: #eef6ff;
+  color: #2c5f91;
+  font-size: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
 }
 </style>
