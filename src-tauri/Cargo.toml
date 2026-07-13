@@ -28,7 +28,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 纯 Rust 实现的 SSH 客户端，跨平台且无需 OpenSSL 依赖
 # 使用 ring 加密后端替代默认的 aws-lc-rs，避免 Windows 下构建需要 NASM
-russh = { version = "0.54", default-features = false, features = ["ring", "flate2", "rsa"] }
+russh = { version = "0.55", default-features = false, features = ["ring", "flate2", "rsa"] }
 # 基于 russh 的 SFTP 子系统实现，用于文件管理
 russh-sftp = "2"
 # russh 基于 tokio 异步运行时
