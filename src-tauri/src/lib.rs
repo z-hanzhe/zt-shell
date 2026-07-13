@@ -27,6 +27,7 @@ pub fn run() {
             commands::sftp_rename,
             commands::sftp_upload,
             commands::sftp_download,
+            commands::sftp_set_sudo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

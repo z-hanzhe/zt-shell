@@ -17,6 +17,7 @@ import {
   sftpDownload,
   sftpRead,
   sftpWrite,
+  sftpSetSudo,
 } from "../api";
 import type { FileEntry } from "../types";
 import { formatShort, formatTime, joinPath, parentPath } from "../utils";
@@ -41,6 +42,8 @@ const entries = ref<FileEntry[]>([]);
 const loading = ref(false);
 /** 错误信息 */
 const error = ref("");
+/** 是否启用 sudo 提权文件管理 */
+const sudoActive = ref(false);
 /** 选中项名称集合 */
 const selectedNames = ref<Set<string>>(new Set());
 /** 多选锚点，用于 Shift 范围选择 */
@@ -729,6 +732,30 @@ function startColumnResize(key: ColumnKey, event: MouseEvent) {
   window.addEventListener("mouseup", up);
 }
 
+/** 切换 sudo 提权模式：成功后以新权限重载当前目录与目录树，失败回滚开关 */
+async function toggleSudo(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const enabled = target.checked;
+  if (!props.sessionId || !props.connected) {
+    target.checked = false;
+    sudoActive.value = false;
+    return;
+  }
+  try {
+    await sftpSetSudo(props.sessionId, enabled);
+    sudoActive.value = enabled;
+    clearSelection();
+    treeChildren.value = {};
+    expandedDirs.value = new Set(["/"]);
+    await refresh();
+    await syncTreeToCwd();
+  } catch (e) {
+    // 提权失败回滚复选框与状态
+    target.checked = sudoActive.value;
+    showMessage("提权失败", String(e));
+  }
+}
+
 /** 刷新当前目录 */
 async function refresh() {
   if (!props.sessionId || !props.connected) {
@@ -996,6 +1023,8 @@ function onDialogCancel() {
 watch(
   () => [props.sessionId, props.connected] as const,
   async ([id, conn]) => {
+    // 切换会话或断开时重置提权状态（后端为新会话默认普通权限）
+    sudoActive.value = false;
     if (id && conn) {
       try {
         cwd.value = await sftpHome(id);
@@ -1041,6 +1070,10 @@ defineExpose({ setPathFromTerminal });
       <button class="ic sync" title="同步终端路径到地址栏" :disabled="!connected" @click="syncPathFromTerminal">
         <Icon name="pathToFile" :size="15" />
       </button>
+      <label class="sudo-toggle" :class="{ on: sudoActive }" title="以 sudo 提权执行文件操作（谨慎使用）">
+        <input type="checkbox" :checked="sudoActive" :disabled="!connected" @change="toggleSudo" />
+        <span>sudo</span>
+      </label>
     </div>
 
     <div class="file-body">
@@ -1226,6 +1259,38 @@ defineExpose({ setPathFromTerminal });
 }
 .file-toolbar .sync {
   color: #4d657d;
+}
+/* sudo 提权复选框：勾选后红背景警示 */
+.sudo-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  color: #556;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+}
+.sudo-toggle input {
+  margin: 0;
+  cursor: pointer;
+}
+.sudo-toggle.on {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.sudo-toggle:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.sudo-toggle:has(input:disabled) input {
+  cursor: not-allowed;
 }
 .path-input {
   flex: 1;

@@ -1,6 +1,7 @@
 基于 Tauri2 + Rust 构建的跨平台桌面端 SSH 工具 ZTShell，项目将全程由 AI 开发，开发中需注意：
 
 - 架构视野：开发时应具备项目整体架构视野，主动识别并抽离高复用模块（样式/工具函数/业务组件等等）
+- 需求评估：收到需求后，先评估技术合理性及实现复杂度。不合理或复杂度高时，主动提示并给出替代方案或分步建议。
 - 跨平台：Tauri 代码优先全平台兼容（Win/Mac/Linux/国产），至少 Win + Mac
 - 三方库：需求实现前判断自己编写或第三方库。第三方库需申请并附理由，注意考虑跨平台兼容
 - 规范维护：项目规范应自行维护至 AGENTS.md / CLAUDE.md 的 Prompt 节下便于 AI 工作（仅修改节后内容，节前为用户区），俩文件内容保持一致
@@ -18,6 +19,8 @@
 关键约定 前端sessionId与后端sessionId共用同一标识由前端genId生成 Tauri命令前端invoke传camelCase键后端snake_case参数 ConnectionConfig等结构体serde用rename_all camelCase 终端事件terminal://data//{sessionId}与terminal://close//{sessionId} tauri-plugin-store的load的options需含defaults字段
 
 监控限制 仅支持Linux远端 依赖标准/proc与coreutils df ps
+
+文件管理sudo提权 会话可切普通/sudo两种SFTP sudo走专用通道exec sudo -S复用登录密码 提示走stderr而russh into_stream只读stdout故不污染二进制协议 无需PTY 仅Linux 详见sftp.md
 
 新增命令流程 在ssh模块实现能力 commands.rs加tauri命令 lib.rs注册handler src/api.ts加封装 涉及权限更新capabilities/default.json
 

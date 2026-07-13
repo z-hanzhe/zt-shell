@@ -1,6 +1,6 @@
 # ZTShell
 
-基于 Tauri 2 + Vue 3 + Rust 构建的跨平台桌面端 SSH 客户端，界面布局借鉴 FinalShell。
+基于 Tauri 2 + Vue 3 + Rust 构建的跨平台桌面端 SSH 客户端 ZTShell，布局借鉴 FinalShell 及其他同款优秀工具
 
 ## 功能
 
@@ -36,6 +36,4 @@ npm run tauri build
 - 监控功能依赖远端为 Linux（读取 `/proc` 及 `df` / `ps`），Windows / 其他远端暂不支持监控。
 - 项目由 AI 全程开发，规范与功能文档见 `AGENTS.md` / `CLAUDE.md` 的 Prompt 节与 `.ai-assisted/markdown/`。
 
-## 推荐 IDE
-
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+![homepage.jpg](./.ai-assisted/img/homepage.jpg)

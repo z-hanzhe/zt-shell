@@ -184,3 +184,13 @@ pub async fn sftp_download(
     let sftp = map_err(manager.sftp(&session_id).await)?;
     map_err(sftp::download(&sftp, &remote_path, &local_path).await)
 }
+
+/// 切换会话的 sudo 提权文件管理开关
+#[tauri::command]
+pub async fn sftp_set_sudo(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+    enabled: bool,
+) -> CmdResult<()> {
+    map_err(manager.set_sudo(&session_id, enabled).await)
+}

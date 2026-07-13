@@ -112,3 +112,8 @@ export function sftpDownload(
 ): Promise<void> {
   return invoke("sftp_download", { sessionId, remotePath, localPath });
 }
+
+/** 切换 sudo 提权文件管理开关 */
+export function sftpSetSudo(sessionId: string, enabled: boolean): Promise<void> {
+  return invoke("sftp_set_sudo", { sessionId, enabled });
+}

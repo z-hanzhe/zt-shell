@@ -200,4 +200,80 @@ impl SshSession {
             .map_err(|e| anyhow!("请求 SFTP 子系统失败：{}", e))?;
         Ok(channel)
     }
+
+    /// 以 sudo 提权方式开启 SFTP 通道，返回底层通道供上层建立 SFTP 会话
+    ///
+    /// 通过 `exec sudo -S` 在专用通道上以 root 身份启动 sftp-server：登录密码从 stdin 喂入，
+    /// sudo 的密码提示与报错走 stderr（russh 的 into_stream 只读 stdout 故不污染二进制协议）。
+    /// 命令内跨发行版探测 sftp-server 路径，握手用自定义提示符 `__ZTPW__` 与就绪哨兵 `__ZTOK__`
+    pub async fn open_sudo_sftp_channel(&self, password: &str) -> Result<russh::Channel<client::Msg>> {
+        // 自定义 sudo 密码提示符与握手哨兵，避免依赖随系统语言变化的默认提示文案
+        const PROMPT: &str = "__ZTPW__";
+        const READY: &str = "__ZTOK__";
+        const MISSING: &str = "__ZTNO__";
+        // 探测常见 sftp-server 路径后免密提示启动，printf 就绪哨兵再 exec 交接给 SFTP 协议
+        let command = concat!(
+            "sudo -S -p __ZTPW__ -- sh -c '",
+            "for p in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server ",
+            "/usr/lib/ssh/sftp-server /usr/libexec/sftp-server /usr/lib/sftp-server; do ",
+            "[ -x \"$p\" ] && P=\"$p\" && break; done; ",
+            "[ -n \"$P\" ] || { echo __ZTNO__ >&2; exit 1; }; ",
+            "printf __ZTOK__; exec \"$P\"'"
+        );
+
+        let mut channel = self
+            .handle
+            .channel_open_session()
+            .await
+            .map_err(|e| anyhow!("打开提权通道失败：{}", e))?;
+        channel
+            .exec(true, command.as_bytes())
+            .await
+            .map_err(|e| anyhow!("启动提权 SFTP 失败：{}", e))?;
+
+        // 握手：喂密码并等待就绪哨兵。stdout 累积匹配 READY，stderr 提示符区分首次询问与密码错误
+        let mut stdout = Vec::new();
+        let mut password_sent = false;
+        loop {
+            match channel.wait().await {
+                Some(ChannelMsg::Data { data }) => {
+                    stdout.extend_from_slice(&data);
+                    if find_bytes(&stdout, READY.as_bytes()).is_some() {
+                        return Ok(channel);
+                    }
+                }
+                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    let text = String::from_utf8_lossy(&data);
+                    if text.contains(MISSING) {
+                        return Err(anyhow!("远端未找到 sftp-server，无法提权"));
+                    }
+                    if text.contains(PROMPT) {
+                        if password_sent {
+                            // 再次出现密码提示，说明上次密码错误
+                            return Err(anyhow!("sudo 密码错误或该用户无 sudo 权限"));
+                        }
+                        channel
+                            .data(format!("{}\n", password).as_bytes())
+                            .await
+                            .map_err(|e| anyhow!("发送提权密码失败：{}", e))?;
+                        password_sent = true;
+                    }
+                }
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                    return Err(anyhow!("提权失败，请检查 sudo 权限与密码"));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// 在字节切片中查找子序列首次出现的位置
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
