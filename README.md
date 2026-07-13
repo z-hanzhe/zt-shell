@@ -2,6 +2,8 @@
 
 基于 Tauri 2 + Vue 3 + Rust 构建的跨平台桌面端 SSH 客户端 ZTShell，布局借鉴 FinalShell 及其他同款优秀工具
 
+![homepage.jpg](./.ai-assisted/img/homepage.jpg)
+
 ## 功能
 
 - 三栏可拉伸布局：左侧系统监控面板、右上 SSH 终端区、右下文件管理器
@@ -35,5 +37,4 @@ npm run tauri build
 
 - 监控功能依赖远端为 Linux（读取 `/proc` 及 `df` / `ps`），Windows / 其他远端暂不支持监控。
 - 项目由 AI 全程开发，规范与功能文档见 `AGENTS.md` / `CLAUDE.md` 的 Prompt 节与 `.ai-assisted/markdown/`。
-
-![homepage.jpg](./.ai-assisted/img/homepage.jpg)
+- 对待实现的需求感兴趣，可参考 `.ai-assisted/TODO.md` 文件
