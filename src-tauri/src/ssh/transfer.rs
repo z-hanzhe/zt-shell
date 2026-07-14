@@ -56,6 +56,8 @@ const MAX_ATTEMPTS: u32 = 3;
 const RETRY_DELAY_MS: u64 = 2000;
 /// 文件总数确认阈值，超过时提示打包压缩
 const CONFIRM_THRESHOLD: u64 = 100;
+/// 待传文件与未完成任务的合计上限，超过时直接拒绝创建
+const MAX_TOTAL_FILES: u64 = 300;
 /// 进度推送节流间隔（毫秒）
 const TICK_MS: u64 = 300;
 
@@ -327,6 +329,38 @@ impl TransferManager {
         }
     }
 
+    /// 统计当前未完成的文件任务数（不含聚合目录节点，不分上传下载）
+    fn active_file_count(&self) -> u64 {
+        self.tasks
+            .iter()
+            .filter(|t| {
+                let status = t.status();
+                !t.is_dir && status != ST_COMPLETED && status != ST_CANCELLED
+            })
+            .count() as u64
+    }
+
+    /// 校验本次文件数量：与未完成任务合计超过上限时拒绝，超过确认阈值且未强制时要求确认
+    fn check_file_count(&self, file_count: u64, force: bool) -> Result<Option<TransferCreateResult>> {
+        let active = self.active_file_count();
+        if file_count + active > MAX_TOTAL_FILES {
+            if active > 0 {
+                return Err(anyhow!(
+                    "本次共 {} 个文件，加上传输中的 {} 个任务已超过最大 {} 个文件限制，请分批传输或打包压缩后传输",
+                    file_count, active, MAX_TOTAL_FILES
+                ));
+            }
+            return Err(anyhow!(
+                "本次共 {} 个文件，超过最大 {} 个文件限制，请分批传输或打包压缩后传输",
+                file_count, MAX_TOTAL_FILES
+            ));
+        }
+        if !force && file_count > CONFIRM_THRESHOLD {
+            return Ok(Some(TransferCreateResult { need_confirm: true, file_count }));
+        }
+        Ok(None)
+    }
+
     /// 创建上传任务：枚举本地路径，超过阈值且未强制时仅返回统计
     pub async fn create_upload(
         &self,
@@ -349,8 +383,8 @@ impl TransferManager {
                 None => 1,
             })
             .sum();
-        if !force && file_count > CONFIRM_THRESHOLD {
-            return Ok(TransferCreateResult { need_confirm: true, file_count });
+        if let Some(result) = self.check_file_count(file_count, force)? {
+            return Ok(result);
         }
 
         for (root_path, root_name, root_is_dir, entries) in scans {
@@ -464,8 +498,8 @@ impl TransferManager {
                 scans.push((item, None, size));
             }
         }
-        if !force && file_count > CONFIRM_THRESHOLD {
-            return Ok(TransferCreateResult { need_confirm: true, file_count });
+        if let Some(result) = self.check_file_count(file_count, force)? {
+            return Ok(result);
         }
 
         let local_root_dir = PathBuf::from(&local_dir);

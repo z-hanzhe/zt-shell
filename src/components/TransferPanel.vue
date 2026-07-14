@@ -48,7 +48,8 @@ type MenuAction =
   | "resumeAll"
   | "remove"
   | "removeAll"
-  | "retryFailed";
+  | "retryFailed"
+  | "clearCompleted";
 type MenuItem = { action: MenuAction; label: string; disabled: boolean };
 type ColumnKey =
   | "name"
@@ -105,7 +106,7 @@ const COLUMN_MIN_WIDTHS: Record<ColumnKey, number> = {
 };
 
 const CONTEXT_MENU_WIDTH = 148;
-const CONTEXT_MENU_HEIGHT = 184;
+const CONTEXT_MENU_HEIGHT = 208;
 const CONTEXT_MENU_MARGIN = 8;
 
 /** 父任务标识到子任务列表的映射（保持后端顺序） */
@@ -144,6 +145,11 @@ function isPausable(status: TransferStatus): boolean {
   return status === "pending" || status === "running" || status === "packing";
 }
 
+/** 已完成的顶层任务标识（用于清空已完成，后端会级联删除子树） */
+const completedRootIds = computed(() =>
+  transfersStore.tasks.filter((t) => !t.parentId && t.status === "completed").map((t) => t.id)
+);
+
 /** 右键菜单项 */
 const contextMenuItems = computed<MenuItem[]>(() => {
   const all = transfersStore.tasks;
@@ -155,6 +161,7 @@ const contextMenuItems = computed<MenuItem[]>(() => {
     { action: "remove", label: "删除", disabled: selectedTasks.value.length === 0 },
     { action: "removeAll", label: "全部删除", disabled: all.length === 0 },
     { action: "retryFailed", label: "重试失败的作业", disabled: !all.some((t) => t.status === "failed") },
+    { action: "clearCompleted", label: "清空已完成的任务", disabled: completedRootIds.value.length === 0 },
   ];
 });
 
@@ -406,6 +413,10 @@ async function runMenuAction(item: MenuItem) {
       case "retryFailed":
         await transferRetryFailed();
         break;
+      case "clearCompleted":
+        await transferRemove(completedRootIds.value);
+        clearSelection();
+        break;
     }
   } catch (e) {
     console.warn("传输任务操作失败", e);
@@ -496,17 +507,19 @@ onBeforeUnmount(() => {
             @dblclick="onRowDblClick(row)"
           >
             <td class="name" :title="row.task.name">
-              <span class="indent" :style="{ width: `${row.depth * 16}px` }"></span>
-              <button v-if="row.hasChildren" class="tree-toggle" @click.stop="toggleExpand(row.task.id)">
-                <Icon name="chevronRight" :size="11" :class="{ expanded: expandedIds.has(row.task.id) }" />
-              </button>
-              <span v-else class="toggle-placeholder"></span>
-              <Icon
-                :name="row.task.isDir ? 'folder' : 'file'"
-                :size="13"
-                :class="row.task.isDir ? 'ic-folder' : 'ic-file'"
-              />
-              <span class="ellipsis">{{ row.task.name }}</span>
+              <div class="cell-flex">
+                <span class="indent" :style="{ width: `${row.depth * 16}px` }"></span>
+                <button v-if="row.hasChildren" class="tree-toggle" @click.stop="toggleExpand(row.task.id)">
+                  <Icon name="chevronRight" :size="11" :class="{ expanded: expandedIds.has(row.task.id) }" />
+                </button>
+                <span v-else class="toggle-placeholder"></span>
+                <Icon
+                  :name="row.task.isDir ? 'folder' : 'file'"
+                  :size="13"
+                  :class="row.task.isDir ? 'ic-folder' : 'ic-file'"
+                />
+                <span class="ellipsis">{{ row.task.name }}</span>
+              </div>
             </td>
             <td :title="row.task.error || statusText(row.task)">
               <span :class="['status-text', row.task.status]">{{ statusText(row.task) }}</span>
@@ -520,14 +533,16 @@ onBeforeUnmount(() => {
             <td class="size" :title="sizeText(row.task)">{{ sizeText(row.task) }}</td>
             <td :title="row.task.localPath">{{ row.task.localPath }}</td>
             <td class="kind">
-              <Icon
-                :name="row.task.kind === 'upload' ? 'arrowUp' : 'arrowDown'"
-                :size="12"
-                :class="row.task.kind === 'upload' ? 'ic-upload' : 'ic-download'"
-              />
-              <span :class="row.task.kind === 'upload' ? 'ic-upload' : 'ic-download'">
-                {{ row.task.kind === "upload" ? "上传" : "下载" }}
-              </span>
+              <div class="cell-flex kind-flex">
+                <Icon
+                  :name="row.task.kind === 'upload' ? 'arrowUp' : 'arrowDown'"
+                  :size="12"
+                  :class="row.task.kind === 'upload' ? 'ic-upload' : 'ic-download'"
+                />
+                <span :class="row.task.kind === 'upload' ? 'ic-upload' : 'ic-download'">
+                  {{ row.task.kind === "upload" ? "上传" : "下载" }}
+                </span>
+              </div>
             </td>
             <td :title="row.task.remotePath">{{ row.task.remotePath }}</td>
             <td class="speed">{{ speedText(row.task) }}</td>
@@ -629,15 +644,22 @@ onBeforeUnmount(() => {
   background: #d9e6f4;
 }
 .transfer-list td.name {
+  overflow: hidden;
+}
+/* 单元格内 flex 容器：保持 td 的 table-cell 垂直居中不被破坏 */
+.cell-flex {
   display: flex;
   align-items: center;
   gap: 4px;
   overflow: hidden;
 }
-.transfer-list td.name .ellipsis {
+.cell-flex .ellipsis {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.kind-flex {
+  gap: 3px;
 }
 .indent {
   flex: 0 0 auto;
@@ -717,11 +739,6 @@ onBeforeUnmount(() => {
   mix-blend-mode: multiply;
 }
 /* 操作类型 */
-.transfer-list td.kind {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
 .ic-upload {
   color: #d64545;
 }

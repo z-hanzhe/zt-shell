@@ -4,6 +4,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
 import TextEditorDialog from "./TextEditorDialog.vue";
@@ -23,6 +24,7 @@ import {
 } from "../api";
 import type { FileEntry } from "../types";
 import { formatShort, formatTime, joinPath, parentPath } from "../utils";
+import { useTransfersStore } from "../stores/transfers";
 
 const props = defineProps<{
   /** 当前会话标识，空表示无活动会话 */
@@ -75,6 +77,7 @@ const dialog = reactive<DialogState>({
   placeholder: "",
   confirmText: "确定",
   hintTemplate: "",
+  confirmDanger: false,
   resolve: undefined,
 });
 /** 鼠标框选状态 */
@@ -85,10 +88,18 @@ const fileDrag = reactive({ active: false, count: 0, x: 0, y: 0, target: "" });
 const contextMenu = reactive({ open: false, x: 0, y: 0 });
 /** 文本编辑器状态 */
 const editor = reactive({ open: false, path: "", content: "" });
+/** 系统文件拖入悬停提示 */
+const dropHover = ref(false);
+
+const transfersStore = useTransfersStore();
 
 /** 鼠标拖拽清理函数 */
 let stopResize: (() => void) | undefined;
 let pointerAction: PointerAction | null = null;
+/** 系统文件拖拽事件反注册函数 */
+let unlistenDragDrop: (() => void) | undefined;
+/** 上传完成后的延迟刷新计时器（合并批量完成） */
+let uploadRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
 type SortKey = "name" | "size" | "type" | "modified" | "permissions" | "owner";
 type SortDirection = "asc" | "desc";
@@ -126,6 +137,8 @@ type DialogState = {
   placeholder: string;
   confirmText: string;
   hintTemplate: string;
+  /** 确认按钮是否使用红色警示样式 */
+  confirmDanger: boolean;
   resolve?: (value: string | boolean | null) => void;
 };
 
@@ -356,8 +369,13 @@ function closeContextMenu() {
   contextMenu.open = false;
 }
 
-/** 按 Esc 清空文件列表选择 */
+/** 全局按键：F5 刷新当前目录，Esc 清空文件列表选择 */
 function onFileKeyDown(event: KeyboardEvent) {
+  if (event.key === "F5") {
+    // App 层已拦截浏览器刷新，这里借 F5 刷新文件管理
+    if (props.connected && !dialog.open) refresh();
+    return;
+  }
   if (event.key !== "Escape" || dialog.open) return;
   if (contextMenu.open) {
     closeContextMenu();
@@ -870,17 +888,64 @@ function startResize(event: MouseEvent) {
   window.addEventListener("mouseup", up);
 }
 
-onMounted(() => {
-  window.addEventListener("keydown", onFileKeyDown);
+onMounted(async () => {
+  // 捕获阶段注册，确保 F5 不被 App 层浏览器快捷键拦截影响
+  window.addEventListener("keydown", onFileKeyDown, true);
   window.addEventListener("pointerdown", onGlobalPointerDown);
+  // 注册系统文件拖入上传（仅 Tauri 环境有效，浏览器预览下静默失败）
+  try {
+    unlistenDragDrop = await getCurrentWebview().onDragDropEvent((event) => {
+      const payload = event.payload;
+      if (!props.connected) {
+        dropHover.value = false;
+        return;
+      }
+      if (payload.type === "enter" || payload.type === "over") {
+        dropHover.value = isInFileList(payload.position);
+      } else if (payload.type === "drop") {
+        const inside = isInFileList(payload.position);
+        dropHover.value = false;
+        if (inside && payload.paths.length > 0) startUpload(payload.paths);
+      } else {
+        dropHover.value = false;
+      }
+    });
+  } catch (e) {
+    console.warn("注册文件拖拽失败（可能非 Tauri 环境）", e);
+  }
 });
 
 onBeforeUnmount(() => {
   stopResize?.();
+  unlistenDragDrop?.();
+  clearTimeout(uploadRefreshTimer);
   window.removeEventListener("pointermove", onFilePointerMove);
-  window.removeEventListener("keydown", onFileKeyDown);
+  window.removeEventListener("keydown", onFileKeyDown, true);
   window.removeEventListener("pointerdown", onGlobalPointerDown);
 });
+
+/** 判断窗口物理坐标是否落在右侧文件列表区域内 */
+function isInFileList(position: { x: number; y: number }): boolean {
+  const rect = fileListRef.value?.getBoundingClientRect();
+  if (!rect) return false;
+  // Tauri 拖拽事件坐标为物理像素，需按缩放比转换为 CSS 像素
+  const scale = window.devicePixelRatio || 1;
+  const x = position.x / scale;
+  const y = position.y / scale;
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+// 上传任务完成后延迟刷新当前目录，合并批量任务的密集完成事件
+watch(
+  () => transfersStore.uploadDoneTick,
+  () => {
+    if (!props.connected) return;
+    clearTimeout(uploadRefreshTimer);
+    uploadRefreshTimer = setTimeout(() => {
+      refresh();
+    }, 600);
+  }
+);
 
 /** 上传文件：弹出系统文件选择框（支持多选），任务同步到传输面板 */
 async function onUploadFiles() {
@@ -905,7 +970,8 @@ async function startUpload(paths: string[]) {
       const confirmed = await showConfirm(
         "上传确认",
         `共 ${result.fileCount} 个文件，超过100个文件建议打包压缩后传输`,
-        "坚持传输"
+        "坚持传输",
+        true
       );
       if (!confirmed) return;
       await transferUpload(props.sessionId, paths, cwd.value, true);
@@ -931,7 +997,8 @@ async function onDownloadSelected() {
       const confirmed = await showConfirm(
         "下载确认",
         `共 ${result.fileCount} 个文件，超过100个文件建议打包压缩后传输`,
-        "坚持传输"
+        "坚持传输",
+        true
       );
       if (!confirmed) return;
       await transferDownload(props.sessionId, items, dir, true);
@@ -1040,10 +1107,10 @@ function showMessage(title: string, message: string) {
   openDialogState("info", title, message, "确定");
 }
 
-/** 显示确认弹窗，可自定义确认按钮文案 */
-function showConfirm(title: string, message: string, confirmText = "确定"): Promise<boolean> {
+/** 显示确认弹窗，可自定义确认按钮文案与红色警示样式 */
+function showConfirm(title: string, message: string, confirmText = "确定", danger = false): Promise<boolean> {
   return new Promise((resolve) => {
-    openDialogState("confirm", title, message, confirmText, "", "", "", (value) => resolve(value === true));
+    openDialogState("confirm", title, message, confirmText, "", "", "", (value) => resolve(value === true), danger);
   });
 }
 
@@ -1071,9 +1138,10 @@ function openDialogState(
   placeholder = "",
   defaultValue = "",
   hintTemplate = "",
-  resolve?: DialogState["resolve"]
+  resolve?: DialogState["resolve"],
+  confirmDanger = false
 ) {
-  Object.assign(dialog, { open: true, type, title, message, confirmText, placeholder, defaultValue, hintTemplate, resolve });
+  Object.assign(dialog, { open: true, type, title, message, confirmText, placeholder, defaultValue, hintTemplate, confirmDanger, resolve });
 }
 
 /** 确认通用弹窗 */
@@ -1174,12 +1242,13 @@ defineExpose({ setPathFromTerminal });
       <div class="tree-resizer" @mousedown="startResize"></div>
 
       <!-- 文件列表 -->
-      <div
-        ref="fileListRef"
-        class="file-list"
-        @pointerdown="onFileListPointerDown"
-        @contextmenu="onFileListContextMenu"
-      >
+      <div class="file-list-wrap">
+        <div
+          ref="fileListRef"
+          class="file-list"
+          @pointerdown="onFileListPointerDown"
+          @contextmenu="onFileListContextMenu"
+        >
         <div v-if="!connected" class="fm-tip">未连接会话</div>
         <div v-else-if="loading" class="fm-tip">加载中…</div>
         <div v-else-if="error" class="fm-tip error">{{ error }}</div>
@@ -1260,6 +1329,8 @@ defineExpose({ setPathFromTerminal });
             {{ item.label }}
           </button>
         </div>
+        </div>
+        <div v-if="dropHover" class="drop-overlay">松开鼠标上传到当前目录</div>
       </div>
     </div>
     <AppDialog
@@ -1271,6 +1342,7 @@ defineExpose({ setPathFromTerminal });
       :placeholder="dialog.placeholder"
       :confirm-text="dialog.confirmText"
       :hint-template="dialog.hintTemplate"
+      :confirm-danger="dialog.confirmDanger"
       @confirm="onDialogConfirm"
       @cancel="onDialogCancel"
     />
@@ -1452,10 +1524,30 @@ defineExpose({ setPathFromTerminal });
 }
 
 /* 文件列表 */
+.file-list-wrap {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+}
 .file-list {
   flex: 1;
   overflow: auto;
   min-width: 0;
+}
+/* 系统文件拖入提示遮罩 */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  background: rgba(91, 142, 197, 0.08);
+  color: var(--accent);
+  font-size: 13px;
+  pointer-events: none;
 }
 .file-list table {
   width: max-content;

@@ -125,9 +125,16 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* 红色警示主按钮（用于坚持传输等需警示的确认操作） */
+.btn-danger {
+  background: linear-gradient(#d9534f, #c9302c);
+  border-color: #c9302c;
+  color: #fff;
+}
 .btn-danger:hover {
-  border-color: var(--danger);
-  color: var(--danger);
+  background: linear-gradient(#e0605c, #d9534f);
+  border-color: #d9534f;
+  color: #fff;
 }
 .btn-icon {
   width: 28px;

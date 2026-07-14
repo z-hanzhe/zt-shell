@@ -15,6 +15,8 @@ import { transferList } from "../api";
 export const useTransfersStore = defineStore("transfers", () => {
   /** 全部任务（后端创建顺序，父任务先于子任务） */
   const tasks = ref<TransferTask[]>([]);
+  /** 上传任务完成计数，文件管理器据此感知刷新时机 */
+  const uploadDoneTick = ref(0);
   /** 是否已初始化监听 */
   let started = false;
 
@@ -48,6 +50,10 @@ export const useTransfersStore = defineStore("transfers", () => {
       for (const update of event.payload) {
         const task = map.get(update.id);
         if (!task) continue;
+        // 上传任务转为完成时递增信号，供文件管理器刷新目录
+        if (task.kind === "upload" && task.status !== "completed" && update.status === "completed") {
+          uploadDoneTick.value++;
+        }
         task.status = update.status;
         task.transferred = update.transferred;
         task.total = update.total;
@@ -60,5 +66,5 @@ export const useTransfersStore = defineStore("transfers", () => {
     tasks.value = await transferList();
   }
 
-  return { tasks, byId, activeCount, init };
+  return { tasks, byId, activeCount, uploadDoneTick, init };
 });

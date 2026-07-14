@@ -22,6 +22,8 @@ const props = withDefaults(
     confirmText?: string;
     /** 取消按钮文案 */
     cancelText?: string;
+    /** 确认按钮是否使用红色警示样式 */
+    confirmDanger?: boolean;
     /** 输入提示模板，使用 {value} 表示当前输入值 */
     hintTemplate?: string;
   }>(),
@@ -32,6 +34,7 @@ const props = withDefaults(
     placeholder: "",
     confirmText: "确定",
     cancelText: "取消",
+    confirmDanger: false,
     hintTemplate: "",
   }
 );
@@ -86,7 +89,7 @@ function submit() {
       </div>
       <div class="modal-footer">
         <button v-if="type !== 'info'" class="btn" @click="emit('cancel')">{{ cancelText }}</button>
-        <button class="btn btn-primary" @click="submit">{{ confirmText }}</button>
+        <button :class="['btn', confirmDanger ? 'btn-danger' : 'btn-primary']" @click="submit">{{ confirmText }}</button>
       </div>
     </div>
   </div>
