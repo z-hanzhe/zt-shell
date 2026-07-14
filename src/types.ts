@@ -135,5 +135,8 @@ export interface TransferProgress {
 /** 创建传输任务的返回：needConfirm 为 true 时未建任务，需确认后强制重调 */
 export interface TransferCreateResult {
   needConfirm: boolean;
+  /** 本次待传文件数 */
   fileCount: number;
+  /** 会话内已存在的未完成任务数 */
+  activeCount: number;
 }

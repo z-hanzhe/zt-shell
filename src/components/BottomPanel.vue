@@ -8,7 +8,7 @@ import FileManager from "./FileManager.vue";
 import TransferPanel from "./TransferPanel.vue";
 import { useTransfersStore } from "../stores/transfers";
 
-defineProps<{
+const props = defineProps<{
   /** 当前会话标识 */
   sessionId: string;
   /** 会话是否已连接 */
@@ -33,8 +33,16 @@ const tabs = [
 /** 当前激活选项卡 */
 const activeTab = ref("files");
 
-/** 传输角标数量（上限 99） */
-const transferBadge = computed(() => Math.min(transfersStore.activeCount, 99));
+/** 传输角标数量：当前会话执行中的文件任务数（上限 99） */
+const transferBadge = computed(() => {
+  const count = transfersStore.tasks.filter(
+    (t) =>
+      t.sessionId === props.sessionId &&
+      !t.isDir &&
+      (t.status === "pending" || t.status === "running" || t.status === "packing")
+  ).length;
+  return Math.min(count, 99);
+});
 
 /** 根据终端当前目录更新文件管理器路径 */
 function setFilePath(path: string) {
@@ -69,7 +77,7 @@ defineExpose({ setFilePath });
         @sync-terminal-path="emit('sync-terminal-path', $event)"
         @sync-file-path="emit('sync-file-path')"
       />
-      <TransferPanel v-show="activeTab === 'transfers'" />
+      <TransferPanel v-show="activeTab === 'transfers'" :session-id="sessionId" />
     </div>
   </div>
 </template>

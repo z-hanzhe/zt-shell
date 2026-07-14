@@ -26,9 +26,15 @@ pub async fn ssh_connect(
     map_err(manager.connect(&config).await)
 }
 
-/// 断开并释放会话
+/// 断开并释放会话，同时清理该会话的全部传输任务
 #[tauri::command]
-pub async fn ssh_disconnect(manager: State<'_, SessionManager>, session_id: String) -> CmdResult<()> {
+pub async fn ssh_disconnect(
+    app: AppHandle,
+    manager: State<'_, SessionManager>,
+    transfers: State<'_, TransferManager>,
+    session_id: String,
+) -> CmdResult<()> {
+    transfers.remove_session(&app, &session_id);
     manager.disconnect(&session_id);
     Ok(())
 }
@@ -130,7 +136,7 @@ pub async fn sftp_remove_file(
     map_err(sftp::remove_file(&sftp, &path).await)
 }
 
-/// 删除远端目录
+/// 递归删除远端目录及其全部内容
 #[tauri::command]
 pub async fn sftp_remove_dir(
     manager: State<'_, SessionManager>,
@@ -138,7 +144,7 @@ pub async fn sftp_remove_dir(
     path: String,
 ) -> CmdResult<()> {
     let sftp = map_err(manager.sftp(&session_id).await)?;
-    map_err(sftp::remove_dir(&sftp, &path).await)
+    map_err(sftp::remove_dir_all(&sftp, &path).await)
 }
 
 /// 创建远端目录
@@ -288,12 +294,13 @@ pub async fn transfer_remove(
     Ok(())
 }
 
-/// 重试全部失败的传输任务
+/// 重试失败的传输任务，sessionId 为空表示全部会话
 #[tauri::command]
 pub async fn transfer_retry_failed(
     app: AppHandle,
     transfers: State<'_, TransferManager>,
+    session_id: Option<String>,
 ) -> CmdResult<()> {
-    transfers.retry_failed(&app);
+    transfers.retry_failed(&app, session_id.as_deref());
     Ok(())
 }

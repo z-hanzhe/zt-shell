@@ -170,7 +170,7 @@ export function transferRemove(ids?: string[]): Promise<void> {
   return invoke("transfer_remove", { ids: ids ?? null });
 }
 
-/** 重试全部失败的传输任务 */
-export function transferRetryFailed(): Promise<void> {
-  return invoke("transfer_retry_failed");
+/** 重试失败的传输任务，不传 sessionId 表示全部会话 */
+export function transferRetryFailed(sessionId?: string): Promise<void> {
+  return invoke("transfer_retry_failed", { sessionId: sessionId ?? null });
 }

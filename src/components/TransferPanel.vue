@@ -1,9 +1,11 @@
 <script setup lang="ts">
 /**
- * 传输面板：上传/下载任务列表，文件夹任务支持展开收起，
- * 支持 Ctrl/Shift 多选与框选，右键菜单提供暂停/继续/删除/重试操作
+ * 传输面板：当前会话的上传/下载任务列表，文件夹任务支持展开收起，
+ * 支持 Ctrl/Shift 多选与框选，右键菜单提供暂停/继续/删除/重试等操作
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
 import {
   transferPause,
@@ -14,6 +16,11 @@ import {
 import { useTransfersStore } from "../stores/transfers";
 import type { TransferStatus, TransferTask } from "../types";
 import { formatDuration, formatRate, formatSizeFixed } from "../utils";
+
+const props = defineProps<{
+  /** 当前会话标识，仅展示该会话的任务 */
+  sessionId: string;
+}>();
 
 const transfersStore = useTransfersStore();
 
@@ -29,6 +36,16 @@ const listRef = ref<HTMLElement | null>(null);
 const marquee = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 });
 /** 右键菜单状态 */
 const contextMenu = reactive({ open: false, x: 0, y: 0 });
+/** 通用弹窗状态（提示与删除确认） */
+const dialog = reactive({
+  open: false,
+  type: "info" as "info" | "confirm",
+  title: "",
+  message: "",
+  confirmText: "确定",
+  confirmDanger: false,
+  resolve: undefined as ((value: boolean) => void) | undefined,
+});
 
 /** 指针交互状态（点击选择或拖动框选） */
 let pointerAction: PointerAction | null = null;
@@ -42,6 +59,8 @@ type PointerAction = {
   toggle: boolean;
 };
 type MenuAction =
+  | "showError"
+  | "reveal"
   | "pause"
   | "pauseAll"
   | "resume"
@@ -106,13 +125,23 @@ const COLUMN_MIN_WIDTHS: Record<ColumnKey, number> = {
 };
 
 const CONTEXT_MENU_WIDTH = 148;
-const CONTEXT_MENU_HEIGHT = 208;
 const CONTEXT_MENU_MARGIN = 8;
+const CONTEXT_MENU_ITEM_HEIGHT = 24;
+
+/** 当前会话的任务列表（其他会话的任务不可见） */
+const sessionTasks = computed(() =>
+  transfersStore.tasks.filter((t) => t.sessionId === props.sessionId)
+);
+
+/** 当前会话的顶层任务标识（“全部”类操作的作用范围，后端级联子树） */
+const sessionRootIds = computed(() =>
+  sessionTasks.value.filter((t) => !t.parentId).map((t) => t.id)
+);
 
 /** 父任务标识到子任务列表的映射（保持后端顺序） */
 const childrenMap = computed(() => {
   const map = new Map<string, TransferTask[]>();
-  for (const task of transfersStore.tasks) {
+  for (const task of sessionTasks.value) {
     const key = task.parentId ?? "";
     const list = map.get(key);
     if (list) list.push(task);
@@ -137,7 +166,7 @@ const rows = computed<Row[]>(() => {
 
 /** 当前选中的任务列表 */
 const selectedTasks = computed(() =>
-  transfersStore.tasks.filter((t) => selectedIds.value.has(t.id))
+  sessionTasks.value.filter((t) => selectedIds.value.has(t.id))
 );
 
 /** 判断任务是否处于可暂停状态 */
@@ -147,13 +176,19 @@ function isPausable(status: TransferStatus): boolean {
 
 /** 已完成的顶层任务标识（用于清空已完成，后端会级联删除子树） */
 const completedRootIds = computed(() =>
-  transfersStore.tasks.filter((t) => !t.parentId && t.status === "completed").map((t) => t.id)
+  sessionTasks.value.filter((t) => !t.parentId && t.status === "completed").map((t) => t.id)
 );
 
-/** 右键菜单项 */
+/** 右键菜单项：失败任务单选时首项为查看失败信息，其后为在资源管理器中打开 */
 const contextMenuItems = computed<MenuItem[]>(() => {
-  const all = transfersStore.tasks;
-  return [
+  const all = sessionTasks.value;
+  const single = selectedTasks.value.length === 1 ? selectedTasks.value[0] : undefined;
+  const items: MenuItem[] = [];
+  if (single?.status === "failed") {
+    items.push({ action: "showError", label: "查看失败信息", disabled: false });
+  }
+  items.push({ action: "reveal", label: "在资源管理器中打开", disabled: !single });
+  items.push(
     { action: "pause", label: "暂停", disabled: !selectedTasks.value.some((t) => isPausable(t.status)) },
     { action: "pauseAll", label: "全部暂停", disabled: !all.some((t) => isPausable(t.status)) },
     { action: "resume", label: "继续", disabled: !selectedTasks.value.some((t) => t.status === "paused") },
@@ -161,8 +196,9 @@ const contextMenuItems = computed<MenuItem[]>(() => {
     { action: "remove", label: "删除", disabled: selectedTasks.value.length === 0 },
     { action: "removeAll", label: "全部删除", disabled: all.length === 0 },
     { action: "retryFailed", label: "重试失败的作业", disabled: !all.some((t) => t.status === "failed") },
-    { action: "clearCompleted", label: "清空已完成的任务", disabled: completedRootIds.value.length === 0 },
-  ];
+    { action: "clearCompleted", label: "清空已完成的任务", disabled: completedRootIds.value.length === 0 }
+  );
+  return items;
 });
 
 /** 状态展示文案 */
@@ -362,9 +398,10 @@ function onPointerUp(event: PointerEvent) {
   if (!action.moved && action.task) selectByMouse(action.task, event);
 }
 
-/** 行右键：打开菜单且不改变当前选择 */
-function onRowContextMenu(event: MouseEvent) {
+/** 行右键：右键未选中项等同空白处右键，先清空选择再打开菜单 */
+function onRowContextMenu(task: TransferTask, event: MouseEvent) {
   event.preventDefault();
+  if (!isSelected(task)) clearSelection();
   openContextMenu(event);
 }
 
@@ -376,11 +413,66 @@ function onListContextMenu(event: MouseEvent) {
   openContextMenu(event);
 }
 
-/** 定位右键菜单（边缘收敛不超出视口） */
+/** 定位右键菜单（按当前菜单项数计算高度，边缘收敛不超出视口） */
 function openContextMenu(event: MouseEvent) {
+  const height = contextMenuItems.value.length * CONTEXT_MENU_ITEM_HEIGHT + 8;
   contextMenu.open = true;
   contextMenu.x = Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_MARGIN);
-  contextMenu.y = Math.min(event.clientY, window.innerHeight - CONTEXT_MENU_HEIGHT - CONTEXT_MENU_MARGIN);
+  contextMenu.y = Math.min(event.clientY, window.innerHeight - height - CONTEXT_MENU_MARGIN);
+}
+
+/** 显示提示弹窗 */
+function showMessage(title: string, message: string) {
+  Object.assign(dialog, { open: true, type: "info", title, message, confirmText: "确定", confirmDanger: false, resolve: undefined });
+}
+
+/** 显示确认弹窗，可自定义确认按钮文案与红色警示样式 */
+function showConfirm(title: string, message: string, confirmText = "确定", danger = false): Promise<boolean> {
+  return new Promise((resolve) => {
+    Object.assign(dialog, { open: true, type: "confirm", title, message, confirmText, confirmDanger: danger, resolve });
+  });
+}
+
+/** 确认通用弹窗 */
+function onDialogConfirm() {
+  const resolve = dialog.resolve;
+  dialog.open = false;
+  resolve?.(true);
+}
+
+/** 取消通用弹窗 */
+function onDialogCancel() {
+  const resolve = dialog.resolve;
+  dialog.open = false;
+  resolve?.(false);
+}
+
+/** 删除前确认：目标中含未完成任务时红色警示确认 */
+async function confirmRemove(targets: TransferTask[], all: boolean): Promise<boolean> {
+  const unfinished = targets.filter((t) => t.status !== "completed").length;
+  if (unfinished === 0) return true;
+  const message = all
+    ? `当前会话还有 ${unfinished} 个未完成的任务，删除后无法恢复，是否仍然删除全部任务？`
+    : `选中任务中有 ${unfinished} 个未完成，删除后无法恢复，是否仍然删除？`;
+  return showConfirm("删除确认", message, "仍然删除", true);
+}
+
+/** 在系统资源管理器中打开任务对应的本地文件并选中 */
+async function revealSelectedTask() {
+  const task = selectedTasks.value[0];
+  if (!task) return;
+  try {
+    await revealItemInDir(task.localPath);
+  } catch {
+    // 文件尚未生成时退而打开其所在目录
+    const idx = Math.max(task.localPath.lastIndexOf("\\"), task.localPath.lastIndexOf("/"));
+    const parent = idx > 0 ? task.localPath.slice(0, idx) : task.localPath;
+    try {
+      await openPath(parent);
+    } catch (e) {
+      showMessage("打开失败", String(e));
+    }
+  }
 }
 
 /** 执行右键菜单动作 */
@@ -390,28 +482,40 @@ async function runMenuAction(item: MenuItem) {
   const ids = [...selectedIds.value];
   try {
     switch (item.action) {
+      case "showError": {
+        const task = selectedTasks.value[0];
+        if (task) showMessage("失败信息", task.error || "未记录失败原因");
+        break;
+      }
+      case "reveal":
+        await revealSelectedTask();
+        break;
       case "pause":
         await transferPause(ids);
         break;
       case "pauseAll":
-        await transferPause();
+        await transferPause(sessionRootIds.value);
         break;
       case "resume":
         await transferResume(ids);
         break;
       case "resumeAll":
-        await transferResume();
+        await transferResume(sessionRootIds.value);
         break;
       case "remove":
+        if (!(await confirmRemove(selectedTasks.value, false))) break;
         await transferRemove(ids);
         clearSelection();
         break;
-      case "removeAll":
-        await transferRemove();
+      case "removeAll": {
+        const roots = sessionTasks.value.filter((t) => !t.parentId);
+        if (!(await confirmRemove(roots, true))) break;
+        await transferRemove(sessionRootIds.value);
         clearSelection();
         break;
+      }
       case "retryFailed":
-        await transferRetryFailed();
+        await transferRetryFailed(props.sessionId);
         break;
       case "clearCompleted":
         await transferRemove(completedRootIds.value);
@@ -425,7 +529,7 @@ async function runMenuAction(item: MenuItem) {
 
 /** 按 Esc 关闭菜单或清空选择 */
 function onKeyDown(event: KeyboardEvent) {
-  if (event.key !== "Escape") return;
+  if (event.key !== "Escape" || dialog.open) return;
   if (contextMenu.open) {
     closeContextMenu();
     return;
@@ -433,6 +537,15 @@ function onKeyDown(event: KeyboardEvent) {
   clearSelection();
   marquee.active = false;
 }
+
+// 切换会话时清理选择与菜单，避免跨会话残留
+watch(
+  () => props.sessionId,
+  () => {
+    clearSelection();
+    closeContextMenu();
+  }
+);
 
 /** 点击应用任意非菜单区域时关闭右键菜单 */
 function onGlobalPointerDown(event: PointerEvent) {
@@ -503,7 +616,7 @@ onBeforeUnmount(() => {
             :class="{ selected: isSelected(row.task) }"
             :data-id="row.task.id"
             @pointerdown="onRowPointerDown(row.task, $event)"
-            @contextmenu="onRowContextMenu($event)"
+            @contextmenu="onRowContextMenu(row.task, $event)"
             @dblclick="onRowDblClick(row)"
           >
             <td class="name" :title="row.task.name">
@@ -573,6 +686,16 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
+    <AppDialog
+      :open="dialog.open"
+      :type="dialog.type"
+      :title="dialog.title"
+      :message="dialog.message"
+      :confirm-text="dialog.confirmText"
+      :confirm-danger="dialog.confirmDanger"
+      @confirm="onDialogConfirm"
+      @cancel="onDialogCancel"
+    />
   </div>
 </template>
 

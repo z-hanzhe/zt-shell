@@ -22,7 +22,7 @@ import {
   transferDownload,
   transferPackDownload,
 } from "../api";
-import type { FileEntry } from "../types";
+import type { FileEntry, TransferCreateResult } from "../types";
 import { formatShort, formatTime, joinPath, parentPath } from "../utils";
 import { useTransfersStore } from "../stores/transfers";
 
@@ -485,9 +485,10 @@ function onEntryPointerDown(entry: FileEntry, event: PointerEvent) {
   window.addEventListener("pointerup", onFilePointerUp, { once: true });
 }
 
-/** 打开右键菜单，右键本身不改变当前选择 */
-function onEntryContextMenu(event: MouseEvent) {
+/** 行右键：右键未选中项等同空白处右键，先清空选择再打开菜单 */
+function onEntryContextMenu(entry: FileEntry, event: MouseEvent) {
   event.preventDefault();
+  if (entry.name === "..." || !isSelected(entry)) clearSelection();
   openContextMenu(event);
 }
 
@@ -935,11 +936,11 @@ function isInFileList(position: { x: number; y: number }): boolean {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
-// 上传任务完成后延迟刷新当前目录，合并批量任务的密集完成事件
+// 当前会话的上传任务完成后延迟刷新当前目录，合并批量任务的密集完成事件
 watch(
   () => transfersStore.uploadDoneTick,
   () => {
-    if (!props.connected) return;
+    if (!props.connected || transfersStore.uploadDoneSession !== props.sessionId) return;
     clearTimeout(uploadRefreshTimer);
     uploadRefreshTimer = setTimeout(() => {
       refresh();
@@ -961,18 +962,21 @@ async function onUploadDirs() {
   await startUpload(Array.isArray(picked) ? picked : [picked]);
 }
 
+/** 拼接超量传输确认提示文案 */
+function buildTransferConfirmMessage(result: TransferCreateResult): string {
+  if (result.activeCount > 0) {
+    return `本次共 ${result.fileCount} 个文件，加上传输中的 ${result.activeCount} 个任务已超过 50 个，建议打包压缩后传输`;
+  }
+  return `共 ${result.fileCount} 个文件，超过 50 个建议打包压缩后传输`;
+}
+
 /** 创建上传任务：文件总数超过阈值时提示打包压缩，确认后坚持传输 */
 async function startUpload(paths: string[]) {
   if (paths.length === 0) return;
   try {
     const result = await transferUpload(props.sessionId, paths, cwd.value, false);
     if (result.needConfirm) {
-      const confirmed = await showConfirm(
-        "上传确认",
-        `共 ${result.fileCount} 个文件，超过100个文件建议打包压缩后传输`,
-        "坚持传输",
-        true
-      );
+      const confirmed = await showConfirm("上传确认", buildTransferConfirmMessage(result), "坚持传输", true);
       if (!confirmed) return;
       await transferUpload(props.sessionId, paths, cwd.value, true);
     }
@@ -994,12 +998,7 @@ async function onDownloadSelected() {
   try {
     const result = await transferDownload(props.sessionId, items, dir, false);
     if (result.needConfirm) {
-      const confirmed = await showConfirm(
-        "下载确认",
-        `共 ${result.fileCount} 个文件，超过100个文件建议打包压缩后传输`,
-        "坚持传输",
-        true
-      );
+      const confirmed = await showConfirm("下载确认", buildTransferConfirmMessage(result), "坚持传输", true);
       if (!confirmed) return;
       await transferDownload(props.sessionId, items, dir, true);
     }
@@ -1033,14 +1032,22 @@ async function onDeleteSelected() {
   await deleteEntries(selectedEntries.value);
 }
 
-/** 批量删除文件或目录 */
+/** 批量删除文件或目录（目录连同其中全部内容一并删除） */
 async function deleteEntries(targets: FileEntry[]) {
   if (targets.length === 0) return;
-  const message =
-    targets.length === 1
-      ? `是否删除「${targets[0].name}」？`
-      : `是否删除 ${targets.length} 个文件？`;
-  const confirmed = await showConfirm("删除确认", message);
+  const dirCount = targets.filter((entry) => entry.isDir).length;
+  let message: string;
+  if (targets.length === 1) {
+    message = targets[0].isDir
+      ? `是否删除文件夹「${targets[0].name}」？其中的全部内容将一并删除`
+      : `是否删除「${targets[0].name}」？`;
+  } else {
+    message =
+      dirCount > 0
+        ? `是否删除 ${targets.length} 个项目？其中 ${dirCount} 个文件夹将连同全部内容一并删除`
+        : `是否删除 ${targets.length} 个文件？`;
+  }
+  const confirmed = await showConfirm("删除确认", message, "删除", true);
   if (!confirmed) return;
   try {
     for (const entry of targets) {
@@ -1280,7 +1287,7 @@ defineExpose({ setPathFromTerminal });
               :class="{ selected: isSelected(entry), 'drop-target': fileDrag.target === (entry.name === '...' ? parentPath(cwd) : joinPath(cwd, entry.name)) }"
               :data-name="entry.name"
               @pointerdown="onEntryPointerDown(entry, $event)"
-              @contextmenu="onEntryContextMenu($event)"
+              @contextmenu="onEntryContextMenu(entry, $event)"
               @dblclick="onOpen(entry)"
             >
               <td class="name" :title="cellTitle(entry, 'name')">

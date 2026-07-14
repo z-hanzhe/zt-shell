@@ -23,6 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 
 use super::manager::SessionManager;
+use super::sftp::format_sftp_error;
 
 /// 任务状态：等待中
 const ST_PENDING: u8 = 0;
@@ -54,10 +55,10 @@ const CHUNK_SIZE: usize = 64 * 1024;
 const MAX_ATTEMPTS: u32 = 3;
 /// 自动重试间隔（毫秒）
 const RETRY_DELAY_MS: u64 = 2000;
-/// 文件总数确认阈值，超过时提示打包压缩
-const CONFIRM_THRESHOLD: u64 = 100;
-/// 待传文件与未完成任务的合计上限，超过时直接拒绝创建
-const MAX_TOTAL_FILES: u64 = 300;
+/// 文件总数确认阈值（本次文件数与会话内未完成任务之和），超过时提示打包压缩
+const CONFIRM_THRESHOLD: u64 = 50;
+/// 文件总数上限（本次文件数与会话内未完成任务之和），超过时直接拒绝创建
+const MAX_TOTAL_FILES: u64 = 100;
 /// 进度推送节流间隔（毫秒）
 const TICK_MS: u64 = 300;
 
@@ -196,7 +197,10 @@ pub struct TransferProgressDto {
 #[serde(rename_all = "camelCase")]
 pub struct TransferCreateResult {
     pub need_confirm: bool,
+    /// 本次待传文件数
     pub file_count: u64,
+    /// 会话内已存在的未完成任务数
+    pub active_count: u64,
 }
 
 /// 下载入参中的远端条目
@@ -329,34 +333,47 @@ impl TransferManager {
         }
     }
 
-    /// 统计当前未完成的文件任务数（不含聚合目录节点，不分上传下载）
-    fn active_file_count(&self) -> u64 {
+    /// 统计指定会话内未完成的文件任务数（不含聚合目录节点，不分上传下载）
+    fn active_file_count(&self, session_id: &str) -> u64 {
         self.tasks
             .iter()
             .filter(|t| {
                 let status = t.status();
-                !t.is_dir && status != ST_COMPLETED && status != ST_CANCELLED
+                t.session_id == session_id
+                    && !t.is_dir
+                    && status != ST_COMPLETED
+                    && status != ST_CANCELLED
             })
             .count() as u64
     }
 
-    /// 校验本次文件数量：与未完成任务合计超过上限时拒绝，超过确认阈值且未强制时要求确认
-    fn check_file_count(&self, file_count: u64, force: bool) -> Result<Option<TransferCreateResult>> {
-        let active = self.active_file_count();
-        if file_count + active > MAX_TOTAL_FILES {
+    /// 校验本次文件数量（与会话内未完成任务合计）：超过上限时拒绝，超过确认阈值且未强制时要求确认
+    fn check_file_count(
+        &self,
+        session_id: &str,
+        file_count: u64,
+        force: bool,
+    ) -> Result<Option<TransferCreateResult>> {
+        let active = self.active_file_count(session_id);
+        let total = file_count + active;
+        if total > MAX_TOTAL_FILES {
             if active > 0 {
                 return Err(anyhow!(
-                    "本次共 {} 个文件，加上传输中的 {} 个任务已超过最大 {} 个文件限制，请分批传输或打包压缩后传输",
+                    "本次共 {} 个文件，加上传输中的 {} 个任务已超过最大 {} 个文件限制，推荐打包压缩后传输",
                     file_count, active, MAX_TOTAL_FILES
                 ));
             }
             return Err(anyhow!(
-                "本次共 {} 个文件，超过最大 {} 个文件限制，请分批传输或打包压缩后传输",
+                "本次共 {} 个文件，超过最大 {} 个文件限制，推荐打包压缩后传输",
                 file_count, MAX_TOTAL_FILES
             ));
         }
-        if !force && file_count > CONFIRM_THRESHOLD {
-            return Ok(Some(TransferCreateResult { need_confirm: true, file_count }));
+        if !force && total > CONFIRM_THRESHOLD {
+            return Ok(Some(TransferCreateResult {
+                need_confirm: true,
+                file_count,
+                active_count: active,
+            }));
         }
         Ok(None)
     }
@@ -383,7 +400,7 @@ impl TransferManager {
                 None => 1,
             })
             .sum();
-        if let Some(result) = self.check_file_count(file_count, force)? {
+        if let Some(result) = self.check_file_count(session_id, file_count, force)? {
             return Ok(result);
         }
 
@@ -464,7 +481,7 @@ impl TransferManager {
             }
         }
         self.emit_changed(app);
-        Ok(TransferCreateResult { need_confirm: false, file_count })
+        Ok(TransferCreateResult { need_confirm: false, file_count, active_count: 0 })
     }
 
     /// 创建下载任务：枚举远端路径，超过阈值且未强制时仅返回统计
@@ -498,7 +515,7 @@ impl TransferManager {
                 scans.push((item, None, size));
             }
         }
-        if let Some(result) = self.check_file_count(file_count, force)? {
+        if let Some(result) = self.check_file_count(session_id, file_count, force)? {
             return Ok(result);
         }
 
@@ -583,7 +600,7 @@ impl TransferManager {
             }
         }
         self.emit_changed(app);
-        Ok(TransferCreateResult { need_confirm: false, file_count })
+        Ok(TransferCreateResult { need_confirm: false, file_count, active_count: 0 })
     }
 
     /// 创建打包下载任务：远端 tar 打包后作为单文件下载，完成后清理远端临时包
@@ -773,11 +790,16 @@ impl TransferManager {
         self.emit_changed(app);
     }
 
-    /// 重试所有失败的任务（断点续传接续已传部分）
-    pub fn retry_failed(&self, app: &AppHandle) {
+    /// 重试失败的任务（断点续传接续已传部分），session_id 为空时重试全部会话
+    pub fn retry_failed(&self, app: &AppHandle, session_id: Option<&str>) {
         for task in self.collect_targets(None, false) {
             if task.status() != ST_FAILED {
                 continue;
+            }
+            if let Some(sid) = session_id {
+                if task.session_id != sid {
+                    continue;
+                }
             }
             task.error.lock().unwrap().clear();
             task.status.store(ST_PENDING, Ordering::SeqCst);
@@ -789,6 +811,26 @@ impl TransferManager {
             }
         }
         self.emit_changed(app);
+    }
+
+    /// 移除指定会话的全部传输任务（会话断开时调用，避免遗留不可见的僵尸任务）
+    pub fn remove_session(&self, app: &AppHandle, session_id: &str) {
+        let ids: Vec<String> = self
+            .order
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| {
+                self.tasks
+                    .get(*id)
+                    .map(|t| t.session_id == session_id)
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        if !ids.is_empty() {
+            self.remove(app, Some(ids));
+        }
     }
 
     /// 进度循环单次采样：计算速度、聚合目录、累计耗时，返回相对上次的增量
@@ -976,7 +1018,7 @@ async fn scan_remote_dir(sftp: &SftpSession, root: &str) -> Result<Vec<ScanEntry
         let read = sftp
             .read_dir(&abs)
             .await
-            .map_err(|e| anyhow!("读取远端目录失败（{}）：{}", abs, e))?;
+            .map_err(|e| anyhow!("读取远端目录失败（{}）：{}", abs, format_sftp_error(&e)))?;
         for item in read {
             let name = item.file_name();
             let child_rel = if rel.is_empty() { name.clone() } else { format!("{}/{}", rel, name) };
@@ -1021,7 +1063,7 @@ async fn ensure_remote_dir(
         if let Err(e) = sftp.create_dir(&prefix).await {
             // 并发场景下可能已被其他任务创建，再确认一次
             if sftp.metadata(&prefix).await.is_err() {
-                return Err(anyhow!("创建远端目录失败（{}）：{}", prefix, e));
+                return Err(anyhow!("创建远端目录失败（{}）：{}", prefix, format_sftp_error(&e)));
             }
         }
         tm.dir_cache.insert(key);
@@ -1179,7 +1221,7 @@ async fn run_upload_once(app: &AppHandle, task: &Arc<TaskState>) -> Result<bool>
     let mut remote = sftp
         .open_with_flags(&task.remote_path, flags)
         .await
-        .map_err(|e| anyhow!("打开远端文件失败：{}", e))?;
+        .map_err(|e| anyhow!("打开远端文件失败：{}", format_sftp_error(&e)))?;
     if offset > 0 {
         local
             .seek(std::io::SeekFrom::Start(offset))
@@ -1228,7 +1270,7 @@ async fn stream_download(sftp: &SftpSession, task: &Arc<TaskState>, remote_path:
     let total = sftp
         .metadata(remote_path)
         .await
-        .map_err(|e| anyhow!("读取远端文件信息失败：{}", e))?
+        .map_err(|e| anyhow!("读取远端文件信息失败：{}", format_sftp_error(&e)))?
         .size
         .unwrap_or(0);
     task.total.store(total, Ordering::SeqCst);
@@ -1257,7 +1299,7 @@ async fn stream_download(sftp: &SftpSession, task: &Arc<TaskState>, remote_path:
     let mut remote = sftp
         .open_with_flags(remote_path, OpenFlags::READ)
         .await
-        .map_err(|e| anyhow!("打开远端文件失败：{}", e))?;
+        .map_err(|e| anyhow!("打开远端文件失败：{}", format_sftp_error(&e)))?;
     // 不截断打开以支持续传，首次运行由 set_len(0) 显式清空
     let mut local = tokio::fs::OpenOptions::new()
         .create(true)

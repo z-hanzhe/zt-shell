@@ -13,10 +13,12 @@ import type { TransferProgress, TransferTask } from "../types";
 import { transferList } from "../api";
 
 export const useTransfersStore = defineStore("transfers", () => {
-  /** 全部任务（后端创建顺序，父任务先于子任务） */
+  /** 全部任务（后端创建顺序，父任务先于子任务），按 sessionId 区分所属会话 */
   const tasks = ref<TransferTask[]>([]);
   /** 上传任务完成计数，文件管理器据此感知刷新时机 */
   const uploadDoneTick = ref(0);
+  /** 最近完成上传任务所属的会话标识，供文件管理器过滤非当前会话的完成事件 */
+  const uploadDoneSession = ref("");
   /** 是否已初始化监听 */
   let started = false;
 
@@ -26,16 +28,6 @@ export const useTransfersStore = defineStore("transfers", () => {
     for (const t of tasks.value) map.set(t.id, t);
     return map;
   });
-
-  /** 正在执行的文件任务数（等待中/传输中/打包中），用于选项卡角标 */
-  const activeCount = computed(
-    () =>
-      tasks.value.filter(
-        (t) =>
-          !t.isDir &&
-          (t.status === "pending" || t.status === "running" || t.status === "packing")
-      ).length
-  );
 
   /** 初始化事件监听并拉取当前任务列表（仅 Tauri 环境下有效） */
   async function init() {
@@ -52,6 +44,7 @@ export const useTransfersStore = defineStore("transfers", () => {
         if (!task) continue;
         // 上传任务转为完成时递增信号，供文件管理器刷新目录
         if (task.kind === "upload" && task.status !== "completed" && update.status === "completed") {
+          uploadDoneSession.value = task.sessionId;
           uploadDoneTick.value++;
         }
         task.status = update.status;
@@ -66,5 +59,5 @@ export const useTransfersStore = defineStore("transfers", () => {
     tasks.value = await transferList();
   }
 
-  return { tasks, byId, activeCount, uploadDoneTick, init };
+  return { tasks, byId, uploadDoneTick, uploadDoneSession, init };
 });
