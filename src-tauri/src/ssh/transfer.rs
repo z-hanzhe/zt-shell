@@ -201,6 +201,15 @@ pub struct TransferCreateResult {
     pub file_count: u64,
     /// 会话内已存在的未完成任务数
     pub active_count: u64,
+    /// 目标位置已存在的同名条目，非空时未建任务需前端确认覆盖
+    pub exist_names: Vec<String>,
+}
+
+impl TransferCreateResult {
+    /// 任务已创建的正常返回
+    fn created(file_count: u64) -> Self {
+        Self { need_confirm: false, file_count, active_count: 0, exist_names: Vec::new() }
+    }
 }
 
 /// 下载入参中的远端条目
@@ -270,7 +279,7 @@ fn remote_parent(path: &str) -> String {
 }
 
 /// 单引号转义 shell 参数，防止特殊字符破坏命令
-fn shell_quote(value: &str) -> String {
+pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
@@ -373,6 +382,7 @@ impl TransferManager {
                 need_confirm: true,
                 file_count,
                 active_count: active,
+                exist_names: Vec::new(),
             }));
         }
         Ok(None)
@@ -386,6 +396,7 @@ impl TransferManager {
         local_paths: Vec<String>,
         remote_dir: String,
         force: bool,
+        overwrite: bool,
     ) -> Result<TransferCreateResult> {
         // 本地枚举放入阻塞线程，避免大目录卡住异步运行时
         let paths = local_paths.clone();
@@ -402,6 +413,27 @@ impl TransferManager {
             .sum();
         if let Some(result) = self.check_file_count(session_id, file_count, force)? {
             return Ok(result);
+        }
+
+        // 目标位置同名检测：未确认覆盖时收集已存在的顶层条目名返回前端确认
+        if !overwrite {
+            let manager = app.state::<SessionManager>();
+            let sftp = manager.sftp(session_id).await?;
+            let mut exist_names = Vec::new();
+            for (_, root_name, _, _) in &scans {
+                let remote_root = join_remote(&remote_dir, root_name);
+                if sftp.metadata(&remote_root).await.is_ok() {
+                    exist_names.push(root_name.clone());
+                }
+            }
+            if !exist_names.is_empty() {
+                return Ok(TransferCreateResult {
+                    need_confirm: false,
+                    file_count,
+                    active_count: 0,
+                    exist_names,
+                });
+            }
         }
 
         for (root_path, root_name, root_is_dir, entries) in scans {
@@ -481,7 +513,7 @@ impl TransferManager {
             }
         }
         self.emit_changed(app);
-        Ok(TransferCreateResult { need_confirm: false, file_count, active_count: 0 })
+        Ok(TransferCreateResult::created(file_count))
     }
 
     /// 创建下载任务：枚举远端路径，超过阈值且未强制时仅返回统计
@@ -492,6 +524,7 @@ impl TransferManager {
         items: Vec<RemoteItemArg>,
         local_dir: String,
         force: bool,
+        overwrite: bool,
     ) -> Result<TransferCreateResult> {
         let manager = app.state::<SessionManager>();
         let sftp = manager.sftp(session_id).await?;
@@ -520,6 +553,32 @@ impl TransferManager {
         }
 
         let local_root_dir = PathBuf::from(&local_dir);
+
+        // 本地同名检测：未确认覆盖时收集已存在的顶层条目名返回前端确认
+        if !overwrite {
+            let mut exist_names = Vec::new();
+            for (item, _, _) in &scans {
+                let name = item
+                    .path
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&item.path)
+                    .to_string();
+                if local_root_dir.join(&name).exists() {
+                    exist_names.push(name);
+                }
+            }
+            if !exist_names.is_empty() {
+                return Ok(TransferCreateResult {
+                    need_confirm: false,
+                    file_count,
+                    active_count: 0,
+                    exist_names,
+                });
+            }
+        }
+
         for (item, entries, size) in scans {
             let name = item
                 .path
@@ -600,7 +659,7 @@ impl TransferManager {
             }
         }
         self.emit_changed(app);
-        Ok(TransferCreateResult { need_confirm: false, file_count, active_count: 0 })
+        Ok(TransferCreateResult::created(file_count))
     }
 
     /// 创建打包下载任务：远端 tar 打包后作为单文件下载，完成后清理远端临时包

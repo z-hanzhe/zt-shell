@@ -233,8 +233,12 @@ function sizeText(task: TransferTask): string {
   return `${formatSizeFixed(task.transferred)}/${formatSizeFixed(task.total)}`;
 }
 
-/** 速度列：仅传输中展示 */
+/** 速度列：传输中显示实时速度，已完成显示平均速度 */
 function speedText(task: TransferTask): string {
+  if (task.status === "completed") {
+    if (task.total <= 0 || task.elapsedMs <= 0) return "";
+    return formatRate(task.total / (task.elapsedMs / 1000));
+  }
   if (task.status !== "running" || task.speed <= 0) return "";
   return formatRate(task.speed);
 }

@@ -171,4 +171,11 @@ impl SessionManager {
         }
         Ok(())
     }
+
+    /// 查询会话当前是否处于 sudo 提权文件管理模式
+    pub async fn is_sudo(&self, session_id: &str) -> Result<bool> {
+        let entry = self.entry(session_id)?;
+        let active = *entry.sudo_active.lock().await;
+        Ok(active)
+    }
 }

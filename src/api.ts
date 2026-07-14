@@ -120,24 +120,26 @@ export function sftpSetSudo(sessionId: string, enabled: boolean): Promise<void> 
   return invoke("sftp_set_sudo", { sessionId, enabled });
 }
 
-/** 创建上传任务，force 为 false 且文件总数超过阈值时仅返回统计不建任务 */
+/** 创建上传任务，force 确认超量、overwrite 确认覆盖，未确认时仅返回统计 */
 export function transferUpload(
   sessionId: string,
   localPaths: string[],
   remoteDir: string,
-  force: boolean
+  force: boolean,
+  overwrite: boolean
 ): Promise<TransferCreateResult> {
-  return invoke("transfer_upload", { sessionId, localPaths, remoteDir, force });
+  return invoke("transfer_upload", { sessionId, localPaths, remoteDir, force, overwrite });
 }
 
-/** 创建下载任务，force 含义同上传 */
+/** 创建下载任务，force 与 overwrite 含义同上传 */
 export function transferDownload(
   sessionId: string,
   items: { path: string; isDir: boolean }[],
   localDir: string,
-  force: boolean
+  force: boolean,
+  overwrite: boolean
 ): Promise<TransferCreateResult> {
-  return invoke("transfer_download", { sessionId, items, localDir, force });
+  return invoke("transfer_download", { sessionId, items, localDir, force, overwrite });
 }
 
 /** 创建打包下载任务（远端 tar 打包后下载） */

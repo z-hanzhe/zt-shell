@@ -104,6 +104,13 @@ function attachDragListeners() {
 function preventBrowserShortcut(e: KeyboardEvent) {
   const key = e.key.toLowerCase();
   const ctrlOrMeta = e.ctrlKey || e.metaKey;
+  // Monaco 编辑器内部放行查找/替换/跳转行快捷键，交由编辑器处理
+  if (
+    (e.target as HTMLElement)?.closest?.(".monaco-editor") &&
+    (e.key === "F3" || (ctrlOrMeta && ["f", "h", "g"].includes(key)))
+  ) {
+    return;
+  }
   if (
     blockedBrowserKeys.has(e.key) ||
     (ctrlOrMeta && ["f", "g", "r", "p", "s", "u"].includes(key)) ||

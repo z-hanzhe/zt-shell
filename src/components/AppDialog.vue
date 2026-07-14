@@ -12,8 +12,8 @@ const props = withDefaults(
     title: string;
     /** 主体提示文案 */
     message?: string;
-    /** 弹窗类型 */
-    type?: "info" | "confirm" | "prompt";
+    /** 弹窗类型，loading 为进行中提示（无按钮且不可关闭） */
+    type?: "info" | "confirm" | "prompt" | "loading";
     /** 输入框默认值 */
     defaultValue?: string;
     /** 输入框占位文案 */
@@ -67,16 +67,26 @@ watch(
 function submit() {
   emit("confirm", inputValue.value);
 }
+
+/** 请求取消：进行中弹窗不可关闭 */
+function requestCancel() {
+  if (props.type === "loading") return;
+  emit("cancel");
+}
 </script>
 
 <template>
-  <div v-if="open" class="modal-mask" @mousedown.self="emit('cancel')" @keydown.esc="emit('cancel')">
+  <div v-if="open" class="modal-mask" @mousedown.self="requestCancel" @keydown.esc="requestCancel">
     <div class="modal app-dialog" role="dialog" aria-modal="true">
       <div class="modal-header">
         <span>{{ title }}</span>
       </div>
       <div class="modal-body app-dialog-body">
-        <div v-if="message" class="app-dialog-message">{{ message }}</div>
+        <div v-if="type === 'loading'" class="app-dialog-loading">
+          <span class="spinner"></span>
+          <span>{{ message }}</span>
+        </div>
+        <div v-else-if="message" class="app-dialog-message">{{ message }}</div>
         <input
           v-if="type === 'prompt'"
           ref="inputRef"
@@ -87,7 +97,7 @@ function submit() {
         />
         <div v-if="hintText" class="app-dialog-hint">{{ hintText }}</div>
       </div>
-      <div class="modal-footer">
+      <div v-if="type !== 'loading'" class="modal-footer">
         <button v-if="type !== 'info'" class="btn" @click="emit('cancel')">{{ cancelText }}</button>
         <button :class="['btn', confirmDanger ? 'btn-danger' : 'btn-primary']" @click="submit">{{ confirmText }}</button>
       </div>
@@ -121,5 +131,27 @@ function submit() {
   font-family: "Consolas", "Cascadia Mono", monospace;
   font-size: 12px;
   word-break: break-all;
+}
+/* 进行中提示：转圈图标 + 文案 */
+.app-dialog-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+  padding: 4px 0;
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 2px solid #c9d6e4;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: app-dialog-spin 0.8s linear infinite;
+}
+@keyframes app-dialog-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

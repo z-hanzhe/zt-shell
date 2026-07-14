@@ -25,6 +25,7 @@ import {
 import type { FileEntry, TransferCreateResult } from "../types";
 import { formatShort, formatTime, joinPath, parentPath } from "../utils";
 import { useTransfersStore } from "../stores/transfers";
+import { useSessionsStore } from "../stores/sessions";
 
 const props = defineProps<{
   /** 当前会话标识，空表示无活动会话 */
@@ -90,8 +91,13 @@ const contextMenu = reactive({ open: false, x: 0, y: 0 });
 const editor = reactive({ open: false, path: "", content: "" });
 /** 系统文件拖入悬停提示 */
 const dropHover = ref(false);
+/** 键入快速定位状态 */
+const typeahead = reactive({ active: false, zone: "list" as TypeaheadZone, keyword: "", index: 0 });
+/** 树区快速定位当前命中的节点路径 */
+const typeaheadTreePath = ref("");
 
 const transfersStore = useTransfersStore();
+const sessionsStore = useSessionsStore();
 
 /** 鼠标拖拽清理函数 */
 let stopResize: (() => void) | undefined;
@@ -100,12 +106,15 @@ let pointerAction: PointerAction | null = null;
 let unlistenDragDrop: (() => void) | undefined;
 /** 上传完成后的延迟刷新计时器（合并批量完成） */
 let uploadRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+/** 最近一次交互的区域，决定键入快速定位作用于树还是列表 */
+let activeZone: TypeaheadZone = "list";
 
 type SortKey = "name" | "size" | "type" | "modified" | "permissions" | "owner";
 type SortDirection = "asc" | "desc";
 type TreeNode = { path: string; name: string; depth: number };
 type ColumnKey = SortKey;
 type PointerMode = "select" | "drag";
+type TypeaheadZone = "tree" | "list";
 type PointerAction = {
   mode: PointerMode;
   entry?: FileEntry;
@@ -130,7 +139,7 @@ type MenuAction =
 type MenuItem = { action: MenuAction; label: string; disabled: boolean };
 type DialogState = {
   open: boolean;
-  type: "info" | "confirm" | "prompt";
+  type: "info" | "confirm" | "prompt" | "loading";
   title: string;
   message: string;
   defaultValue: string;
@@ -191,7 +200,8 @@ const contextMenuItems = computed<MenuItem[]>(() => {
     { action: "packDownload", label: "打包下载", disabled: count === 0 },
     { action: "newFile", label: "新建文件", disabled: false },
     { action: "newDir", label: "新建文件夹", disabled: false },
-    { action: "delete", label: "删除", disabled: count === 0 },
+    // sudo 模式经 SFTP 递归删除，普通模式经 rm -rf 快速删除
+    { action: "delete", label: sudoActive.value ? "删除" : "删除(rm -rf)", disabled: count === 0 },
   ];
 });
 
@@ -369,13 +379,14 @@ function closeContextMenu() {
   contextMenu.open = false;
 }
 
-/** 全局按键：F5 刷新当前目录，Esc 清空文件列表选择 */
+/** 全局按键：F5 刷新当前目录，键入触发快速定位，Esc 清空文件列表选择 */
 function onFileKeyDown(event: KeyboardEvent) {
   if (event.key === "F5") {
     // App 层已拦截浏览器刷新，这里借 F5 刷新文件管理
     if (props.connected && !dialog.open) refresh();
     return;
   }
+  if (handleTypeaheadKey(event)) return;
   if (event.key !== "Escape" || dialog.open) return;
   if (contextMenu.open) {
     closeContextMenu();
@@ -385,6 +396,119 @@ function onFileKeyDown(event: KeyboardEvent) {
   marquee.active = false;
   fileDrag.active = false;
   fileDrag.target = "";
+}
+
+/** 键入快速定位候选：列表区为文件名，树区为可见节点路径 */
+const typeaheadMatches = computed<string[]>(() => {
+  if (!typeahead.active || !typeahead.keyword) return [];
+  const keyword = typeahead.keyword.toLowerCase();
+  if (typeahead.zone === "list") {
+    return selectableEntries.value
+      .filter((entry) => entry.name.toLowerCase().includes(keyword))
+      .map((entry) => entry.name);
+  }
+  return treeNodes.value
+    .filter((node) => node.name.toLowerCase().includes(keyword))
+    .map((node) => node.path);
+});
+
+/** 处理键入快速定位按键，返回 true 表示按键已被消费 */
+function handleTypeaheadKey(event: KeyboardEvent): boolean {
+  if (!props.connected || dialog.open || editor.open || contextMenu.open) return false;
+  const target = event.target as HTMLElement;
+  if (target.closest?.("input, textarea, select, .xterm")) return false;
+  if (typeahead.active) {
+    if (event.key === "Escape") {
+      endTypeahead();
+      event.preventDefault();
+      return true;
+    }
+    if (event.key === "Backspace") {
+      typeahead.keyword = typeahead.keyword.slice(0, -1);
+      typeahead.index = 0;
+      if (typeahead.keyword) applyTypeahead();
+      else endTypeahead();
+      event.preventDefault();
+      return true;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      const total = typeaheadMatches.value.length;
+      if (total > 0) {
+        typeahead.index =
+          event.key === "ArrowDown"
+            ? (typeahead.index + 1) % total
+            : (typeahead.index - 1 + total) % total;
+        applyTypeahead();
+      }
+      event.preventDefault();
+      return true;
+    }
+  }
+  // 可打印字符开始或追加检索关键字
+  if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    if (!typeahead.active) {
+      typeahead.active = true;
+      typeahead.zone = activeZone;
+    }
+    typeahead.keyword += event.key;
+    typeahead.index = 0;
+    applyTypeahead();
+    event.preventDefault();
+    return true;
+  }
+  return false;
+}
+
+/** 将当前命中项选中/高亮并滚动到可视区域 */
+function applyTypeahead() {
+  const matches = typeaheadMatches.value;
+  if (matches.length === 0) {
+    if (typeahead.zone === "tree") typeaheadTreePath.value = "";
+    return;
+  }
+  const value = matches[Math.min(typeahead.index, matches.length - 1)];
+  if (typeahead.zone === "list") {
+    selectSingle(value);
+    nextTick(() => {
+      entryRows()
+        .find((row) => row.dataset.name === value)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  } else {
+    typeaheadTreePath.value = value;
+    nextTick(() => {
+      treeItems()
+        .find((item) => item.dataset.path === value)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  }
+}
+
+/** 结束键入快速定位：树区停留在最后定位的目录上 */
+function endTypeahead() {
+  const stayPath = typeahead.zone === "tree" ? typeaheadTreePath.value : "";
+  cancelTypeahead();
+  if (stayPath) setCwd(stayPath);
+}
+
+/** 取消键入快速定位（点击等主动操作打断时不触发目录跳转） */
+function cancelTypeahead() {
+  typeahead.active = false;
+  typeahead.keyword = "";
+  typeahead.index = 0;
+  typeaheadTreePath.value = "";
+}
+
+/** 记录最近交互区域为目录树，并打断进行中的快速定位 */
+function onTreeZonePointerDown() {
+  activeZone = "tree";
+  if (typeahead.active) cancelTypeahead();
+}
+
+/** 记录最近交互区域为文件列表，并打断进行中的快速定位 */
+function onListZonePointerDown() {
+  activeZone = "list";
+  if (typeahead.active) cancelTypeahead();
 }
 
 /** 点击应用任意非菜单区域时关闭右键菜单 */
@@ -970,22 +1094,44 @@ function buildTransferConfirmMessage(result: TransferCreateResult): string {
   return `共 ${result.fileCount} 个文件，超过 50 个建议打包压缩后传输`;
 }
 
-/** 创建上传任务：文件总数超过阈值时提示打包压缩，确认后坚持传输 */
+/** 确认目标位置同名条目是否覆盖 */
+async function confirmOverwrite(existNames: string[]): Promise<boolean> {
+  const preview = existNames.slice(0, 5).join("、");
+  const suffix = existNames.length > 5 ? ` 等 ${existNames.length} 个条目` : "";
+  return showConfirm(
+    "覆盖确认",
+    `目标位置已存在同名条目：${preview}${suffix}，继续传输将覆盖同名内容，是否覆盖？`,
+    "覆盖",
+    true
+  );
+}
+
+/** 创建上传任务：依次确认超量与同名覆盖，全部确认后开始传输 */
 async function startUpload(paths: string[]) {
   if (paths.length === 0) return;
+  let force = false;
+  let overwrite = false;
   try {
-    const result = await transferUpload(props.sessionId, paths, cwd.value, false);
-    if (result.needConfirm) {
-      const confirmed = await showConfirm("上传确认", buildTransferConfirmMessage(result), "坚持传输", true);
-      if (!confirmed) return;
-      await transferUpload(props.sessionId, paths, cwd.value, true);
+    for (;;) {
+      const result = await transferUpload(props.sessionId, paths, cwd.value, force, overwrite);
+      if (result.needConfirm) {
+        if (!(await showConfirm("上传确认", buildTransferConfirmMessage(result), "坚持传输", true))) return;
+        force = true;
+        continue;
+      }
+      if (result.existNames.length > 0) {
+        if (!(await confirmOverwrite(result.existNames))) return;
+        overwrite = true;
+        continue;
+      }
+      break;
     }
   } catch (e) {
     showMessage("上传失败", String(e));
   }
 }
 
-/** 下载选中的文件/文件夹：选择本地保存目录后创建下载任务 */
+/** 下载选中的文件/文件夹：选择本地保存目录，依次确认超量与同名覆盖 */
 async function onDownloadSelected() {
   const targets = selectedEntries.value;
   if (targets.length === 0) return;
@@ -995,12 +1141,22 @@ async function onDownloadSelected() {
     path: joinPath(cwd.value, entry.name),
     isDir: entry.isDir,
   }));
+  let force = false;
+  let overwrite = false;
   try {
-    const result = await transferDownload(props.sessionId, items, dir, false);
-    if (result.needConfirm) {
-      const confirmed = await showConfirm("下载确认", buildTransferConfirmMessage(result), "坚持传输", true);
-      if (!confirmed) return;
-      await transferDownload(props.sessionId, items, dir, true);
+    for (;;) {
+      const result = await transferDownload(props.sessionId, items, dir, force, overwrite);
+      if (result.needConfirm) {
+        if (!(await showConfirm("下载确认", buildTransferConfirmMessage(result), "坚持传输", true))) return;
+        force = true;
+        continue;
+      }
+      if (result.existNames.length > 0) {
+        if (!(await confirmOverwrite(result.existNames))) return;
+        overwrite = true;
+        continue;
+      }
+      break;
     }
   } catch (e) {
     showMessage("下载失败", String(e));
@@ -1032,7 +1188,7 @@ async function onDeleteSelected() {
   await deleteEntries(selectedEntries.value);
 }
 
-/** 批量删除文件或目录（目录连同其中全部内容一并删除） */
+/** 批量删除文件或目录（目录连同其中全部内容一并删除），删除中显示进行中弹窗防止误操作 */
 async function deleteEntries(targets: FileEntry[]) {
   if (targets.length === 0) return;
   const dirCount = targets.filter((entry) => entry.isDir).length;
@@ -1049,6 +1205,7 @@ async function deleteEntries(targets: FileEntry[]) {
   }
   const confirmed = await showConfirm("删除确认", message, "删除", true);
   if (!confirmed) return;
+  openDialogState("loading", "删除中", "正在删除，请稍候…", "");
   try {
     for (const entry of targets) {
       const path = joinPath(cwd.value, entry.name);
@@ -1061,6 +1218,7 @@ async function deleteEntries(targets: FileEntry[]) {
     clearSelection();
     invalidateTreeDirs(cwd.value);
     await refresh();
+    showMessage("删除完成", targets.length === 1 ? `「${targets[0].name}」已删除` : `${targets.length} 个项目已删除`);
   } catch (e) {
     showMessage("删除失败", String(e));
   }
@@ -1165,13 +1323,57 @@ function onDialogCancel() {
   resolve?.(dialog.type === "prompt" ? null : false);
 }
 
-// 会话切换或连接成功后，定位到主目录
+/** 单个会话的文件管理界面状态（切换会话时缓存、切回时恢复） */
+type SessionUiState = {
+  cwd: string;
+  sudoActive: boolean;
+  treeChildren: Record<string, FileEntry[]>;
+  expandedDirs: Set<string>;
+};
+
+/** 各会话的界面状态缓存 */
+const sessionUiStates = new Map<string, SessionUiState>();
+/** 上一个活动会话标识，用于切换时保存其界面状态 */
+let lastSessionId = "";
+
+/** 保存指定会话的界面状态（会话已关闭时清除缓存） */
+function stashSessionUiState(id: string) {
+  if (!id) return;
+  if (!sessionsStore.sessions.some((s) => s.id === id)) {
+    sessionUiStates.delete(id);
+    return;
+  }
+  sessionUiStates.set(id, {
+    cwd: cwd.value,
+    sudoActive: sudoActive.value,
+    treeChildren: treeChildren.value,
+    expandedDirs: expandedDirs.value,
+  });
+}
+
+// 会话切换或连接成功后，恢复该会话的界面状态或定位到主目录
 watch(
   () => [props.sessionId, props.connected] as const,
   async ([id, conn]) => {
-    // 切换会话或断开时重置提权状态（后端为新会话默认普通权限）
-    sudoActive.value = false;
+    if (lastSessionId !== id) {
+      stashSessionUiState(lastSessionId);
+      lastSessionId = id;
+    }
+    clearSelection();
+    cancelTypeahead();
     if (id && conn) {
+      const cached = sessionUiStates.get(id);
+      if (cached) {
+        // 切回已浏览过的会话：恢复目录、sudo 开关与树展开状态（后端 sudo 状态本就按会话保留）
+        cwd.value = cached.cwd;
+        sudoActive.value = cached.sudoActive;
+        treeChildren.value = cached.treeChildren;
+        expandedDirs.value = cached.expandedDirs;
+        await refresh();
+        await syncTreeToCwd();
+        return;
+      }
+      sudoActive.value = false;
       try {
         cwd.value = await sftpHome(id);
       } catch {
@@ -1182,6 +1384,9 @@ watch(
       await refresh();
       await syncTreeToCwd();
     } else {
+      // 断开或无会话：清空展示与该会话的缓存
+      sessionUiStates.delete(id);
+      sudoActive.value = false;
       entries.value = [];
       treeChildren.value = {};
     }
@@ -1224,11 +1429,16 @@ defineExpose({ setPathFromTerminal });
 
     <div class="file-body">
       <!-- 目录树 -->
-      <div ref="dirTreeRef" class="dir-tree" :style="{ flexBasis: `${treeWidth}px`, width: `${treeWidth}px` }">
+      <div
+        ref="dirTreeRef"
+        class="dir-tree"
+        :style="{ flexBasis: `${treeWidth}px`, width: `${treeWidth}px` }"
+        @pointerdown.capture="onTreeZonePointerDown"
+      >
         <div
           v-for="node in treeNodes"
           :key="node.path"
-          :class="['dir-item', { active: cwd === node.path, root: node.path === '/', 'drop-target': fileDrag.target === node.path }]"
+          :class="['dir-item', { active: cwd === node.path, root: node.path === '/', 'drop-target': fileDrag.target === node.path, locating: typeaheadTreePath === node.path }]"
           :style="{ paddingLeft: `${node.path === '/' ? 4 : 4 + (node.depth - 1) * 16}px` }"
           :title="node.path"
           :data-path="node.path"
@@ -1254,6 +1464,7 @@ defineExpose({ setPathFromTerminal });
           ref="fileListRef"
           class="file-list"
           @pointerdown="onFileListPointerDown"
+          @pointerdown.capture="onListZonePointerDown"
           @contextmenu="onFileListContextMenu"
         >
         <div v-if="!connected" class="fm-tip">未连接会话</div>
@@ -1340,6 +1551,15 @@ defineExpose({ setPathFromTerminal });
         <div v-if="dropHover" class="drop-overlay">松开鼠标上传到当前目录</div>
       </div>
     </div>
+    <!-- 键入快速定位提示：显示当前关键字与命中序号 -->
+    <div v-if="typeahead.active" class="typeahead-badge">
+      <Icon name="search" :size="12" />
+      <span class="ta-keyword">{{ typeahead.keyword || "键入以定位" }}</span>
+      <span v-if="typeaheadMatches.length" class="ta-count">
+        {{ typeahead.index + 1 }}/{{ typeaheadMatches.length }}
+      </span>
+      <span v-else-if="typeahead.keyword" class="ta-count none">无匹配</span>
+    </div>
     <AppDialog
       :open="dialog.open"
       :type="dialog.type"
@@ -1369,6 +1589,8 @@ defineExpose({ setPathFromTerminal });
   flex-direction: column;
   height: 100%;
   background: var(--bg-window);
+  /* 供键入快速定位提示浮层定位 */
+  position: relative;
 }
 
 /* 工具栏 */
@@ -1498,6 +1720,11 @@ defineExpose({ setPathFromTerminal });
 }
 .dir-item.active {
   background: #d9e6f4;
+}
+/* 键入快速定位命中的树节点 */
+.dir-item.locating {
+  background: #fff3cd;
+  box-shadow: inset 0 0 0 1px #e0b64a;
 }
 .dir-item.drop-target {
   background: #cfe2f6;
@@ -1651,6 +1878,38 @@ defineExpose({ setPathFromTerminal });
   padding: 24px;
   text-align: center;
   color: var(--text-muted);
+}
+/* 键入快速定位提示浮层 */
+.typeahead-badge {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid #b8c6d6;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.97);
+  color: #2c5f91;
+  font-size: 12px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+.ta-keyword {
+  font-weight: 600;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ta-count {
+  color: #6d7782;
+}
+.ta-count.none {
+  color: var(--danger);
 }
 .fm-tip.error {
   color: var(--danger);

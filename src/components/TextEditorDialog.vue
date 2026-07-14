@@ -180,9 +180,8 @@ async function requestClose() {
   if (await showConfirm("关闭确认", "文件内容已修改，是否关闭文本编辑器？未保存的修改将丢失。")) emit("close");
 }
 
-/** 保存当前编辑器内容 */
-async function save() {
-  if (!(await showConfirm("保存确认", "是否保存当前文件内容？"))) return;
+/** 保存当前编辑器内容：直接保存，成功后提示并在确认后关闭编辑器 */
+function save() {
   emit("save", editor.value?.getValue() ?? props.content, () => {
     Object.assign(successDialog, { open: true, title: "保存成功", message: "文件内容已保存" });
   });

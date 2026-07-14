@@ -132,11 +132,13 @@ export interface TransferProgress {
   error: string;
 }
 
-/** 创建传输任务的返回：needConfirm 为 true 时未建任务，需确认后强制重调 */
+/** 创建传输任务的返回：needConfirm 或 existNames 非空时未建任务，需确认后重调 */
 export interface TransferCreateResult {
   needConfirm: boolean;
   /** 本次待传文件数 */
   fileCount: number;
   /** 会话内已存在的未完成任务数 */
   activeCount: number;
+  /** 目标位置已存在的同名条目，非空时需确认覆盖 */
+  existNames: string[];
 }

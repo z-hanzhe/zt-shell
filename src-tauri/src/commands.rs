@@ -6,7 +6,7 @@ use crate::ssh::manager::SessionManager;
 use crate::ssh::monitor::{self, MonitorData};
 use crate::ssh::sftp;
 use crate::ssh::transfer::{
-    RemoteItemArg, TransferCreateResult, TransferManager, TransferTaskDto,
+    self, RemoteItemArg, TransferCreateResult, TransferManager, TransferTaskDto,
 };
 use crate::ssh::types::{ConnectionConfig, FileEntry};
 
@@ -136,15 +136,34 @@ pub async fn sftp_remove_file(
     map_err(sftp::remove_file(&sftp, &path).await)
 }
 
-/// 递归删除远端目录及其全部内容
+/// 删除远端目录及其全部内容
+///
+/// 普通模式经 exec 执行 rm -rf 快速删除；sudo 提权模式下 exec 通道不具备提权能力，
+/// 回落为 SFTP 递归删除以保持与文件管理权限一致
 #[tauri::command]
 pub async fn sftp_remove_dir(
     manager: State<'_, SessionManager>,
     session_id: String,
     path: String,
 ) -> CmdResult<()> {
+    // 防御空路径与根目录，避免误删整个系统
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return Err("非法的删除路径".to_string());
+    }
+    if !map_err(manager.is_sudo(&session_id).await)? {
+        let command = format!(
+            "rm -rf -- {} && printf __ZTOK__ || printf __ZTFAIL__",
+            transfer::shell_quote(trimmed)
+        );
+        let output = map_err(manager.exec(&session_id, &command).await)?;
+        if !output.contains("__ZTOK__") {
+            return Err("删除目录失败，请检查文件权限".to_string());
+        }
+        return Ok(());
+    }
     let sftp = map_err(manager.sftp(&session_id).await)?;
-    map_err(sftp::remove_dir_all(&sftp, &path).await)
+    map_err(sftp::remove_dir_all(&sftp, trimmed).await)
 }
 
 /// 创建远端目录
@@ -213,10 +232,11 @@ pub async fn transfer_upload(
     local_paths: Vec<String>,
     remote_dir: String,
     force: bool,
+    overwrite: bool,
 ) -> CmdResult<TransferCreateResult> {
     map_err(
         transfers
-            .create_upload(&app, &session_id, local_paths, remote_dir, force)
+            .create_upload(&app, &session_id, local_paths, remote_dir, force, overwrite)
             .await,
     )
 }
@@ -230,10 +250,11 @@ pub async fn transfer_download(
     items: Vec<RemoteItemArg>,
     local_dir: String,
     force: bool,
+    overwrite: bool,
 ) -> CmdResult<TransferCreateResult> {
     map_err(
         transfers
-            .create_download(&app, &session_id, items, local_dir, force)
+            .create_download(&app, &session_id, items, local_dir, force, overwrite)
             .await,
     )
 }
