@@ -1,9 +1,12 @@
 <script setup lang="ts">
 /**
- * 右下面板：顶部选项卡栏（默认文件管理器选项卡）+ 内容区
+ * 右下面板：顶部选项卡栏（文件管理器 + 传输列表）+ 内容区，
+ * 传输选项卡在有执行中任务时显示数量角标（上限 99）
  */
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import FileManager from "./FileManager.vue";
+import TransferPanel from "./TransferPanel.vue";
+import { useTransfersStore } from "../stores/transfers";
 
 defineProps<{
   /** 当前会话标识 */
@@ -17,13 +20,21 @@ const emit = defineEmits<{
   (e: "sync-file-path"): void;
 }>();
 
+const transfersStore = useTransfersStore();
+
 /** 文件管理器组件引用，用于外部同步路径 */
 const fileManagerRef = ref<InstanceType<typeof FileManager>>();
 
-/** 选项卡定义，当前内置文件管理器，后续可扩展 */
-const tabs = [{ key: "files", label: "文件" }];
+/** 选项卡定义 */
+const tabs = [
+  { key: "files", label: "文件" },
+  { key: "transfers", label: "传输" },
+];
 /** 当前激活选项卡 */
 const activeTab = ref("files");
+
+/** 传输角标数量（上限 99） */
+const transferBadge = computed(() => Math.min(transfersStore.activeCount, 99));
 
 /** 根据终端当前目录更新文件管理器路径 */
 function setFilePath(path: string) {
@@ -44,6 +55,9 @@ defineExpose({ setFilePath });
         @click="activeTab = t.key"
       >
         {{ t.label }}
+        <span v-if="t.key === 'transfers' && transferBadge > 0" class="tab-badge">
+          {{ transferBadge }}
+        </span>
       </div>
     </div>
     <div class="tab-content">
@@ -55,6 +69,7 @@ defineExpose({ setFilePath });
         @sync-terminal-path="emit('sync-terminal-path', $event)"
         @sync-file-path="emit('sync-file-path')"
       />
+      <TransferPanel v-show="activeTab === 'transfers'" />
     </div>
   </div>
 </template>
@@ -76,6 +91,7 @@ defineExpose({ setFilePath });
   flex: 0 0 auto;
 }
 .ftab {
+  position: relative;
   padding: 4px 16px;
   font-size: 12px;
   color: #555;
@@ -88,6 +104,21 @@ defineExpose({ setFilePath });
   border-color: var(--border);
   color: #222;
   border-radius: 3px 3px 0 0;
+}
+/* 传输任务数量角标 */
+.tab-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 14px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  line-height: 13px;
+  text-align: center;
 }
 .tab-content {
   flex: 1;

@@ -3,7 +3,7 @@
  * 右下文件管理器：SFTP 目录浏览（左目录树 + 右文件列表），支持上传下载增删改
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
 import TextEditorDialog from "./TextEditorDialog.vue";
@@ -14,10 +14,12 @@ import {
   sftpRemoveDir,
   sftpCreateDir,
   sftpRename,
-  sftpDownload,
   sftpRead,
   sftpWrite,
   sftpSetSudo,
+  transferUpload,
+  transferDownload,
+  transferPackDownload,
 } from "../api";
 import type { FileEntry } from "../types";
 import { formatShort, formatTime, joinPath, parentPath } from "../utils";
@@ -107,7 +109,8 @@ type MenuAction =
   | "edit"
   | "copyPath"
   | "rename"
-  | "upload"
+  | "uploadFile"
+  | "uploadDir"
   | "download"
   | "packDownload"
   | "newFile"
@@ -169,8 +172,9 @@ const contextMenuItems = computed<MenuItem[]>(() => {
     { action: "edit", label: "编辑文本", disabled: count !== 1 || singleDir || multi },
     { action: "copyPath", label: "复制路径", disabled: count !== 1 || multi },
     { action: "rename", label: "重命名", disabled: count !== 1 || multi },
-    { action: "upload", label: "上传", disabled: false },
-    { action: "download", label: "下载", disabled: count !== 1 || singleDir || multi },
+    { action: "uploadFile", label: "上传文件", disabled: false },
+    { action: "uploadDir", label: "上传文件夹", disabled: false },
+    { action: "download", label: "下载", disabled: count === 0 },
     { action: "packDownload", label: "打包下载", disabled: count === 0 },
     { action: "newFile", label: "新建文件", disabled: false },
     { action: "newDir", label: "新建文件夹", disabled: false },
@@ -179,7 +183,7 @@ const contextMenuItems = computed<MenuItem[]>(() => {
 });
 
 const CONTEXT_MENU_WIDTH = 140;
-const CONTEXT_MENU_HEIGHT = 248;
+const CONTEXT_MENU_HEIGHT = 272;
 const CONTEXT_MENU_MARGIN = 8;
 
 /** 扁平化后的目录树节点 */
@@ -614,14 +618,17 @@ async function runMenuAction(item: MenuItem) {
     case "rename":
       if (selectedEntries.value[0]) await onRename(selectedEntries.value[0]);
       break;
-    case "upload":
-      showMessage("上传", "上传功能后续实现");
+    case "uploadFile":
+      await onUploadFiles();
+      break;
+    case "uploadDir":
+      await onUploadDirs();
       break;
     case "download":
-      if (selectedEntries.value[0]) await onDownload(selectedEntries.value[0]);
+      await onDownloadSelected();
       break;
     case "packDownload":
-      showMessage("打包下载", "打包下载功能后续实现");
+      await onPackDownload();
       break;
     case "newFile":
       await onNewFile();
@@ -875,18 +882,82 @@ onBeforeUnmount(() => {
   window.removeEventListener("pointerdown", onGlobalPointerDown);
 });
 
-/** 下载选中文件 */
-async function onDownload(entry: FileEntry) {
-  if (entry.isDir) {
-    showMessage("下载提示", "暂不支持下载目录");
-    return;
-  }
-  const localPath = await saveDialog({ defaultPath: entry.name });
-  if (!localPath) return;
+/** 上传文件：弹出系统文件选择框（支持多选），任务同步到传输面板 */
+async function onUploadFiles() {
+  const picked = await openDialog({ multiple: true, title: "选择要上传的文件" });
+  if (!picked) return;
+  await startUpload(Array.isArray(picked) ? picked : [picked]);
+}
+
+/** 上传文件夹：弹出系统文件夹选择框（支持多选） */
+async function onUploadDirs() {
+  const picked = await openDialog({ directory: true, multiple: true, title: "选择要上传的文件夹" });
+  if (!picked) return;
+  await startUpload(Array.isArray(picked) ? picked : [picked]);
+}
+
+/** 创建上传任务：文件总数超过阈值时提示打包压缩，确认后坚持传输 */
+async function startUpload(paths: string[]) {
+  if (paths.length === 0) return;
   try {
-    await sftpDownload(props.sessionId, joinPath(cwd.value, entry.name), localPath);
+    const result = await transferUpload(props.sessionId, paths, cwd.value, false);
+    if (result.needConfirm) {
+      const confirmed = await showConfirm(
+        "上传确认",
+        `共 ${result.fileCount} 个文件，超过100个文件建议打包压缩后传输`,
+        "坚持传输"
+      );
+      if (!confirmed) return;
+      await transferUpload(props.sessionId, paths, cwd.value, true);
+    }
+  } catch (e) {
+    showMessage("上传失败", String(e));
+  }
+}
+
+/** 下载选中的文件/文件夹：选择本地保存目录后创建下载任务 */
+async function onDownloadSelected() {
+  const targets = selectedEntries.value;
+  if (targets.length === 0) return;
+  const dir = await openDialog({ directory: true, title: "选择保存位置" });
+  if (!dir || Array.isArray(dir)) return;
+  const items = targets.map((entry) => ({
+    path: joinPath(cwd.value, entry.name),
+    isDir: entry.isDir,
+  }));
+  try {
+    const result = await transferDownload(props.sessionId, items, dir, false);
+    if (result.needConfirm) {
+      const confirmed = await showConfirm(
+        "下载确认",
+        `共 ${result.fileCount} 个文件，超过100个文件建议打包压缩后传输`,
+        "坚持传输"
+      );
+      if (!confirmed) return;
+      await transferDownload(props.sessionId, items, dir, true);
+    }
   } catch (e) {
     showMessage("下载失败", String(e));
+  }
+}
+
+/** 打包下载：远端 tar 打包为单个压缩包后下载（要求远端存在 tar 命令） */
+async function onPackDownload() {
+  const targets = selectedEntries.value;
+  if (targets.length === 0) return;
+  const dirName = cwd.value.split("/").filter(Boolean).pop() ?? "archive";
+  const defaultName = targets.length === 1 ? `${targets[0].name}.tar.gz` : `${dirName}.tar.gz`;
+  const localPath = await saveDialog({ defaultPath: defaultName, title: "选择保存位置" });
+  if (!localPath) return;
+  try {
+    await transferPackDownload(
+      props.sessionId,
+      cwd.value,
+      targets.map((entry) => entry.name),
+      localPath
+    );
+  } catch (e) {
+    showMessage("打包下载失败", String(e));
   }
 }
 
@@ -969,10 +1040,10 @@ function showMessage(title: string, message: string) {
   openDialogState("info", title, message, "确定");
 }
 
-/** 显示确认弹窗 */
-function showConfirm(title: string, message: string): Promise<boolean> {
+/** 显示确认弹窗，可自定义确认按钮文案 */
+function showConfirm(title: string, message: string, confirmText = "确定"): Promise<boolean> {
   return new Promise((resolve) => {
-    openDialogState("confirm", title, message, "确定", "", "", "", (value) => resolve(value === true));
+    openDialogState("confirm", title, message, confirmText, "", "", "", (value) => resolve(value === true));
   });
 }
 

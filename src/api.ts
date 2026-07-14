@@ -7,6 +7,8 @@ import type {
   ConnectionConfig,
   FileEntry,
   MonitorData,
+  TransferCreateResult,
+  TransferTask,
 } from "./types";
 
 /** 建立 SSH 连接，返回会话标识 */
@@ -116,4 +118,59 @@ export function sftpDownload(
 /** 切换 sudo 提权文件管理开关 */
 export function sftpSetSudo(sessionId: string, enabled: boolean): Promise<void> {
   return invoke("sftp_set_sudo", { sessionId, enabled });
+}
+
+/** 创建上传任务，force 为 false 且文件总数超过阈值时仅返回统计不建任务 */
+export function transferUpload(
+  sessionId: string,
+  localPaths: string[],
+  remoteDir: string,
+  force: boolean
+): Promise<TransferCreateResult> {
+  return invoke("transfer_upload", { sessionId, localPaths, remoteDir, force });
+}
+
+/** 创建下载任务，force 含义同上传 */
+export function transferDownload(
+  sessionId: string,
+  items: { path: string; isDir: boolean }[],
+  localDir: string,
+  force: boolean
+): Promise<TransferCreateResult> {
+  return invoke("transfer_download", { sessionId, items, localDir, force });
+}
+
+/** 创建打包下载任务（远端 tar 打包后下载） */
+export function transferPackDownload(
+  sessionId: string,
+  remoteDir: string,
+  names: string[],
+  localPath: string
+): Promise<void> {
+  return invoke("transfer_pack_download", { sessionId, remoteDir, names, localPath });
+}
+
+/** 列出全部传输任务 */
+export function transferList(): Promise<TransferTask[]> {
+  return invoke("transfer_list");
+}
+
+/** 暂停传输任务，不传 ids 表示全部 */
+export function transferPause(ids?: string[]): Promise<void> {
+  return invoke("transfer_pause", { ids: ids ?? null });
+}
+
+/** 继续传输任务，不传 ids 表示全部 */
+export function transferResume(ids?: string[]): Promise<void> {
+  return invoke("transfer_resume", { ids: ids ?? null });
+}
+
+/** 删除传输任务（级联子任务），不传 ids 表示全部 */
+export function transferRemove(ids?: string[]): Promise<void> {
+  return invoke("transfer_remove", { ids: ids ?? null });
+}
+
+/** 重试全部失败的传输任务 */
+export function transferRetryFailed(): Promise<void> {
+  return invoke("transfer_retry_failed");
 }

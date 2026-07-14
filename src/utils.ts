@@ -16,6 +16,23 @@ export function formatRate(bytesPerSec: number): string {
   return `${formatBytes(bytesPerSec)}/s`;
 }
 
+/** 传输面板的大小格式：固定两位小数无空格（如 10.00MB） */
+export function formatSizeFixed(bytes: number): string {
+  if (bytes <= 0) return "0.00B";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const i = Math.min(Math.max(Math.floor(Math.log(bytes) / Math.log(1024)), 0), units.length - 1);
+  const value = bytes / Math.pow(1024, i);
+  return `${value.toFixed(2)}${units[i]}`;
+}
+
+/** 将秒数格式化为 HH:mm:ss，负数视为未知显示 --:--:-- */
+export function formatDuration(totalSecs: number): string {
+  if (totalSecs < 0 || !Number.isFinite(totalSecs)) return "--:--:--";
+  const secs = Math.floor(totalSecs);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(Math.floor(secs / 3600))}:${pad(Math.floor((secs % 3600) / 60))}:${pad(secs % 60)}`;
+}
+
 /** 紧凑字节格式（FinalShell 风格，如 1.2G、681M、329K），无空格单字母单位 */
 export function formatShort(bytes: number): string {
   if (bytes <= 0) return "0";

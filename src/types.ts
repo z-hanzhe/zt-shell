@@ -80,3 +80,60 @@ export interface MonitorData {
   disks: DiskUsage[];
   processes: ProcessInfo[];
 }
+
+/** 传输任务状态 */
+export type TransferStatus =
+  | "pending"
+  | "running"
+  | "packing"
+  | "paused"
+  | "failed"
+  | "completed"
+  | "cancelled";
+
+/** 传输方向 */
+export type TransferKind = "upload" | "download";
+
+/** 传输任务（transfer://changed 全量与 transfer_list 返回） */
+export interface TransferTask {
+  id: string;
+  /** 父任务标识，顶层任务为 null */
+  parentId: string | null;
+  sessionId: string;
+  kind: TransferKind;
+  isDir: boolean;
+  name: string;
+  localPath: string;
+  remotePath: string;
+  status: TransferStatus;
+  /** 已传输字节数 */
+  transferred: number;
+  /** 总字节数 */
+  total: number;
+  /** 当前速度（字节/秒） */
+  speed: number;
+  /** 预计剩余秒数，-1 表示未知 */
+  etaSecs: number;
+  /** 累计传输耗时（毫秒） */
+  elapsedMs: number;
+  /** 失败原因 */
+  error: string;
+}
+
+/** 传输任务动态字段（transfer://progress 增量） */
+export interface TransferProgress {
+  id: string;
+  status: TransferStatus;
+  transferred: number;
+  total: number;
+  speed: number;
+  etaSecs: number;
+  elapsedMs: number;
+  error: string;
+}
+
+/** 创建传输任务的返回：needConfirm 为 true 时未建任务，需确认后强制重调 */
+export interface TransferCreateResult {
+  needConfirm: boolean;
+  fileCount: number;
+}

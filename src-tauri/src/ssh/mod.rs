@@ -4,4 +4,5 @@ pub mod manager;
 pub mod monitor;
 pub mod session;
 pub mod sftp;
+pub mod transfer;
 pub mod types;

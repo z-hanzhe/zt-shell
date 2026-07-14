@@ -2,7 +2,7 @@ Tauri命令
 
 后端命令 见src-tauri/src/commands.rs 均返回Result<T,String>错误转字符串 注册于lib.rs invoke_handler
 
-清单 ssh_connect config建立连接返回sessionId ssh_disconnect sessionId断开 terminal_open sessionId cols rows开终端 terminal_write sessionId data写入字节 terminal_resize sessionId cols rows改尺寸 monitor_collect sessionId采集监控 sftp_list sessionId path列举 sftp_home sessionId主目录 sftp_read sessionId path读文件 sftp_write sessionId path data写文件 sftp_remove_file sftp_remove_dir sftp_create_dir sftp_rename from to sftp_upload localPath remotePath sftp_download remotePath localPath sftp_set_sudo sessionId enabled切换文件管理sudo提权开关
+清单 ssh_connect config建立连接返回sessionId ssh_disconnect sessionId断开 terminal_open sessionId cols rows开终端 terminal_write sessionId data写入字节 terminal_resize sessionId cols rows改尺寸 monitor_collect sessionId采集监控 sftp_list sessionId path列举 sftp_home sessionId主目录 sftp_read sessionId path读文件 sftp_write sessionId path data写文件 sftp_remove_file sftp_remove_dir sftp_create_dir sftp_rename from to sftp_upload localPath remotePath sftp_download remotePath localPath sftp_set_sudo sessionId enabled切换文件管理sudo提权开关 transfer_upload/transfer_download/transfer_pack_download/transfer_list/transfer_pause/transfer_resume/transfer_remove/transfer_retry_failed传输任务见transfer.md
 
 前端封装与参数约定 见src/api.ts封装所有invoke invoke第二参数为对象键名camelCase Tauri自动映射后端snake_case参数 例sessionId对应session_id config为ConnectionConfig结构体serde rename_all camelCase
 

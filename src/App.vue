@@ -19,12 +19,14 @@ import SettingsDialog from "./components/SettingsDialog.vue";
 import { useConnectionsStore } from "./stores/connections";
 import { useSessionsStore } from "./stores/sessions";
 import { useSettingsStore } from "./stores/settings";
+import { useTransfersStore } from "./stores/transfers";
 import type { ConnectionConfig } from "./types";
 import type { AppSettings } from "./stores/settings";
 
 const connectionsStore = useConnectionsStore();
 const sessionsStore = useSessionsStore();
 const settingsStore = useSettingsStore();
+const transfersStore = useTransfersStore();
 
 /** 连接管理器弹窗可见性 */
 const showConnManager = ref(false);
@@ -158,9 +160,9 @@ async function syncFilePath() {
 
 onMounted(async () => {
   attachBrowserGuards();
-  // 加载本地持久化的连接与设置（浏览器预览环境下会失败，忽略即可）
+  // 加载本地持久化的连接与设置、初始化传输事件监听（浏览器预览环境下会失败，忽略即可）
   try {
-    await Promise.all([connectionsStore.init(), settingsStore.init()]);
+    await Promise.all([connectionsStore.init(), settingsStore.init(), transfersStore.init()]);
   } catch (e) {
     console.warn("本地存储不可用（可能非 Tauri 环境）", e);
   }

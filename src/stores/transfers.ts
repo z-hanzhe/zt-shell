@@ -1,0 +1,64 @@
+/**
+ * 传输 store：维护上传/下载任务列表并监听后端进度事件
+ *
+ * 后端通过两类事件推送：
+ * - transfer://changed 任务结构变化（创建/删除），载荷为全量任务列表
+ * - transfer://progress 动态字段增量（进度/速度/状态/耗时），按 id 合并
+ */
+
+import { defineStore } from "pinia";
+import { computed, ref } from "vue";
+import { listen } from "@tauri-apps/api/event";
+import type { TransferProgress, TransferTask } from "../types";
+import { transferList } from "../api";
+
+export const useTransfersStore = defineStore("transfers", () => {
+  /** 全部任务（后端创建顺序，父任务先于子任务） */
+  const tasks = ref<TransferTask[]>([]);
+  /** 是否已初始化监听 */
+  let started = false;
+
+  /** id 到任务的映射，用于增量合并 */
+  const byId = computed(() => {
+    const map = new Map<string, TransferTask>();
+    for (const t of tasks.value) map.set(t.id, t);
+    return map;
+  });
+
+  /** 正在执行的文件任务数（等待中/传输中/打包中），用于选项卡角标 */
+  const activeCount = computed(
+    () =>
+      tasks.value.filter(
+        (t) =>
+          !t.isDir &&
+          (t.status === "pending" || t.status === "running" || t.status === "packing")
+      ).length
+  );
+
+  /** 初始化事件监听并拉取当前任务列表（仅 Tauri 环境下有效） */
+  async function init() {
+    if (started) return;
+    started = true;
+    await listen<TransferTask[]>("transfer://changed", (event) => {
+      tasks.value = event.payload;
+    });
+    await listen<TransferProgress[]>("transfer://progress", (event) => {
+      // 通过响应式数组元素的代理对象修改，确保视图刷新
+      const map = byId.value;
+      for (const update of event.payload) {
+        const task = map.get(update.id);
+        if (!task) continue;
+        task.status = update.status;
+        task.transferred = update.transferred;
+        task.total = update.total;
+        task.speed = update.speed;
+        task.etaSecs = update.etaSecs;
+        task.elapsedMs = update.elapsedMs;
+        task.error = update.error;
+      }
+    });
+    tasks.value = await transferList();
+  }
+
+  return { tasks, byId, activeCount, init };
+});

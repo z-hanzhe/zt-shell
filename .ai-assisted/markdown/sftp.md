@@ -8,6 +8,6 @@ SFTP文件管理
 
 sudo提权模式 见session.rs open_sudo_sftp_channel与manager.rs set_sudo/ensure_sudo_sftp 会话可切换普通/sudo两种SFTP 普通走request_subsystem sftp sudo走专用通道exec sudo -S -p自定义提示符启动sftp-server 登录密码从stdin喂入复用连接配置密码 sudo提示与报错走stderr而russh的into_stream只读stdout丢弃stderr故不污染二进制协议 命令内跨发行版探测sftp-server路径(/usr/lib/openssh等)握手用哨兵__ZTOK__就绪__ZTPW__密码提示__ZTNO__缺失 涵盖需密码/已缓存/NOPASSWD三种 再次收到密码提示即判定密码错 前端勾选sudo即调sftp_set_sudo启用时立即建提权会话失败回滚 关闭清空提权会话缓存回落普通 仅Linux 私钥登录无密码时仅NOPASSWD可成功
 
-前端 见FileManager.vue 顶部路径栏含上级刷新新建目录 右侧列表非根目录置顶...返回上级 手动输入路径跳转 下载用tauri-plugin-dialog选择本地路径 增删改重命名 会话切换或连接成功后sftpHome定位主目录并联动左侧树
+前端 见FileManager.vue 顶部路径栏含上级刷新新建目录 右侧列表非根目录置顶...返回上级 手动输入路径跳转 增删改重命名 上传下载打包下载入口见transfer.md 会话切换或连接成功后sftpHome定位主目录并联动左侧树
 
-注意点 远端路径统一正斜杠 见utils.ts joinPath parentPath 目录暂不支持下载
+注意点 远端路径统一正斜杠 见utils.ts joinPath parentPath sftp_upload/sftp_download为整文件一次性读写保留作简单场景 批量/大文件/断点续传走传输任务见transfer.md

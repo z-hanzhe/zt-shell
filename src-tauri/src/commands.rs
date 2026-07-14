@@ -5,6 +5,9 @@ use tauri::{AppHandle, State};
 use crate::ssh::manager::SessionManager;
 use crate::ssh::monitor::{self, MonitorData};
 use crate::ssh::sftp;
+use crate::ssh::transfer::{
+    RemoteItemArg, TransferCreateResult, TransferManager, TransferTaskDto,
+};
 use crate::ssh::types::{ConnectionConfig, FileEntry};
 
 /// 统一将内部错误转为字符串返回给前端
@@ -193,4 +196,104 @@ pub async fn sftp_set_sudo(
     enabled: bool,
 ) -> CmdResult<()> {
     map_err(manager.set_sudo(&session_id, enabled).await)
+}
+
+/// 创建上传任务：force 为 false 且文件总数超过阈值时不建任务，返回统计供前端确认
+#[tauri::command]
+pub async fn transfer_upload(
+    app: AppHandle,
+    transfers: State<'_, TransferManager>,
+    session_id: String,
+    local_paths: Vec<String>,
+    remote_dir: String,
+    force: bool,
+) -> CmdResult<TransferCreateResult> {
+    map_err(
+        transfers
+            .create_upload(&app, &session_id, local_paths, remote_dir, force)
+            .await,
+    )
+}
+
+/// 创建下载任务：force 含义同上传
+#[tauri::command]
+pub async fn transfer_download(
+    app: AppHandle,
+    transfers: State<'_, TransferManager>,
+    session_id: String,
+    items: Vec<RemoteItemArg>,
+    local_dir: String,
+    force: bool,
+) -> CmdResult<TransferCreateResult> {
+    map_err(
+        transfers
+            .create_download(&app, &session_id, items, local_dir, force)
+            .await,
+    )
+}
+
+/// 创建打包下载任务：远端 tar 打包后下载，仅 Linux 且要求远端存在 tar 命令
+#[tauri::command]
+pub async fn transfer_pack_download(
+    app: AppHandle,
+    transfers: State<'_, TransferManager>,
+    session_id: String,
+    remote_dir: String,
+    names: Vec<String>,
+    local_path: String,
+) -> CmdResult<()> {
+    map_err(
+        transfers
+            .create_pack_download(&app, &session_id, remote_dir, names, local_path)
+            .await,
+    )
+}
+
+/// 列出全部传输任务
+#[tauri::command]
+pub async fn transfer_list(transfers: State<'_, TransferManager>) -> CmdResult<Vec<TransferTaskDto>> {
+    Ok(transfers.list())
+}
+
+/// 暂停传输任务，ids 为空表示全部
+#[tauri::command]
+pub async fn transfer_pause(
+    app: AppHandle,
+    transfers: State<'_, TransferManager>,
+    ids: Option<Vec<String>>,
+) -> CmdResult<()> {
+    transfers.pause(&app, ids);
+    Ok(())
+}
+
+/// 继续传输任务，ids 为空表示全部
+#[tauri::command]
+pub async fn transfer_resume(
+    app: AppHandle,
+    transfers: State<'_, TransferManager>,
+    ids: Option<Vec<String>>,
+) -> CmdResult<()> {
+    transfers.resume(&app, ids);
+    Ok(())
+}
+
+/// 删除传输任务（级联子任务），ids 为空表示全部
+#[tauri::command]
+pub async fn transfer_remove(
+    app: AppHandle,
+    transfers: State<'_, TransferManager>,
+    ids: Option<Vec<String>>,
+) -> CmdResult<()> {
+    transfers.remove(&app, ids);
+    Ok(())
+}
+
+/// 重试全部失败的传输任务
+#[tauri::command]
+pub async fn transfer_retry_failed(
+    app: AppHandle,
+    transfers: State<'_, TransferManager>,
+) -> CmdResult<()> {
+    transfers.retry_failed(&app);
+    Ok(())
 }
