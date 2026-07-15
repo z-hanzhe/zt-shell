@@ -213,6 +213,26 @@ pub async fn sftp_download(
     map_err(sftp::download(&sftp, &remote_path, &local_path).await)
 }
 
+/// 检测当前权限模式下对远端文件是否有写入权限
+///
+/// sudo 提权模式以 root 身份读写视为可写；普通模式经 exec 以登录用户执行 test -w 判断
+#[tauri::command]
+pub async fn sftp_check_writable(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+    path: String,
+) -> CmdResult<bool> {
+    if map_err(manager.is_sudo(&session_id).await)? {
+        return Ok(true);
+    }
+    let command = format!(
+        "test -w {} && printf __ZTOK__ || printf __ZTNO__",
+        transfer::shell_quote(&path)
+    );
+    let output = map_err(manager.exec(&session_id, &command).await)?;
+    Ok(output.contains("__ZTOK__"))
+}
+
 /// 切换会话的 sudo 提权文件管理开关
 #[tauri::command]
 pub async fn sftp_set_sudo(

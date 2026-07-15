@@ -120,6 +120,11 @@ export function sftpSetSudo(sessionId: string, enabled: boolean): Promise<void> 
   return invoke("sftp_set_sudo", { sessionId, enabled });
 }
 
+/** 检测当前权限模式下对远端文件是否有写入权限 */
+export function sftpCheckWritable(sessionId: string, path: string): Promise<boolean> {
+  return invoke("sftp_check_writable", { sessionId, path });
+}
+
 /** 创建上传任务，force 确认超量、overwrite 确认覆盖，未确认时仅返回统计 */
 export function transferUpload(
   sessionId: string,

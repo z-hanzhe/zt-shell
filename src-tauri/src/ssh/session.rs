@@ -92,8 +92,12 @@ impl SshSession {
 
     /// 开启一个交互式终端通道，返回用于向远端发送指令的通道
     ///
-    /// 通道任务在独立异步任务内运行，读取远端输出并通过事件推送到前端，
-    /// 事件名为 `terminal://data//{session_id}`，通道关闭时推送 `terminal://close//{session_id}`
+    /// 通道拆分为读写两个独立异步任务：读任务持续消费远端输出并推送事件
+    /// `terminal://data//{session_id}`，通道关闭时推送 `terminal://close//{session_id}`；
+    /// 写任务处理输入/改尺寸/关闭指令。
+    /// 读写必须分离：russh 通道内部为有界缓冲（默认 100 条消息），若写入等待期间
+    /// 不消费输出，vim/top 等全屏应用的爆发输出会填满缓冲并阻塞整个连接的传输层，
+    /// 造成会话假死（曾致进入 VIM 后无法操作也无法退出）
     pub async fn open_terminal(
         &self,
         app: AppHandle,
@@ -101,7 +105,7 @@ impl SshSession {
         cols: u32,
         rows: u32,
     ) -> Result<mpsc::UnboundedSender<TerminalCommand>> {
-        let mut channel = self
+        let channel = self
             .handle
             .channel_open_session()
             .await
@@ -120,44 +124,42 @@ impl SshSession {
         let (tx, mut rx) = mpsc::unbounded_channel::<TerminalCommand>();
         let data_event = format!("terminal://data//{}", session_id);
         let close_event = format!("terminal://close//{}", session_id);
+        let (mut read_half, write_half) = channel.split();
 
-        // 单任务同时处理远端输出与本地控制指令，避免通道所有权冲突
+        // 读任务：持续消费远端输出，绝不被写入阻塞
         tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    msg = channel.wait() => {
-                        match msg {
-                            Some(ChannelMsg::Data { data }) => {
-                                let _ = app.emit(&data_event, data.to_vec());
-                            }
-                            Some(ChannelMsg::ExtendedData { data, .. }) => {
-                                let _ = app.emit(&data_event, data.to_vec());
-                            }
-                            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
-                                break;
-                            }
-                            _ => {}
-                        }
+            while let Some(msg) = read_half.wait().await {
+                match msg {
+                    ChannelMsg::Data { data } => {
+                        let _ = app.emit(&data_event, data.to_vec());
                     }
-                    cmd = rx.recv() => {
-                        match cmd {
-                            Some(TerminalCommand::Write(bytes)) => {
-                                if channel.data(&bytes[..]).await.is_err() {
-                                    break;
-                                }
-                            }
-                            Some(TerminalCommand::Resize(c, r)) => {
-                                let _ = channel.window_change(c, r, 0, 0).await;
-                            }
-                            Some(TerminalCommand::Close) | None => {
-                                let _ = channel.close().await;
-                                break;
-                            }
-                        }
+                    ChannelMsg::ExtendedData { data, .. } => {
+                        let _ = app.emit(&data_event, data.to_vec());
                     }
+                    ChannelMsg::Eof | ChannelMsg::Close => break,
+                    _ => {}
                 }
             }
             let _ = app.emit(&close_event, ());
+        });
+
+        // 写任务：处理用户输入与控制指令
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    TerminalCommand::Write(bytes) => {
+                        if write_half.data(&bytes[..]).await.is_err() {
+                            break;
+                        }
+                    }
+                    TerminalCommand::Resize(c, r) => {
+                        let _ = write_half.window_change(c, r, 0, 0).await;
+                    }
+                    TerminalCommand::Close => break,
+                }
+            }
+            // 指令通道关闭或收到关闭指令时关闭 SSH 通道，读任务随之收到 Close 退出
+            let _ = write_half.close().await;
         });
 
         Ok(tx)

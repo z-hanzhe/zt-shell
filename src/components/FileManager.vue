@@ -18,6 +18,7 @@ import {
   sftpRead,
   sftpWrite,
   sftpSetSudo,
+  sftpCheckWritable,
   transferUpload,
   transferDownload,
   transferPackDownload,
@@ -88,7 +89,7 @@ const fileDrag = reactive({ active: false, count: 0, x: 0, y: 0, target: "" });
 /** 右键菜单状态 */
 const contextMenu = reactive({ open: false, x: 0, y: 0 });
 /** 文本编辑器状态 */
-const editor = reactive({ open: false, path: "", content: "" });
+const editor = reactive({ open: false, path: "", content: "", readonly: false });
 /** 系统文件拖入悬停提示 */
 const dropHover = ref(false);
 /** 键入快速定位状态 */
@@ -382,7 +383,9 @@ function closeContextMenu() {
 /** 全局按键：F5 刷新当前目录，键入触发快速定位，Esc 清空文件列表选择 */
 function onFileKeyDown(event: KeyboardEvent) {
   if (event.key === "F5") {
-    // App 层已拦截浏览器刷新，这里借 F5 刷新文件管理
+    // App 层已拦截浏览器刷新，这里借 F5 刷新文件管理；终端聚焦时 F5 归终端使用
+    const target = event.target as HTMLElement;
+    if (target.closest?.(".xterm")) return;
     if (props.connected && !dialog.open) refresh();
     return;
   }
@@ -820,6 +823,14 @@ async function onEditText() {
       const confirmed = await showConfirm("编辑确认", "文件可能不是文本文件，是否继续打开编辑？");
       if (!confirmed) return;
     }
+    // 无写入权限时以只读模式打开；检测失败按可写处理避免误锁
+    let writable = true;
+    try {
+      writable = await sftpCheckWritable(props.sessionId, path);
+    } catch {
+      writable = true;
+    }
+    editor.readonly = !writable;
     editor.path = path;
     editor.content = new TextDecoder().decode(new Uint8Array(bytes));
     editor.open = true;
@@ -828,14 +839,16 @@ async function onEditText() {
   }
 }
 
-/** 保存文本编辑内容 */
-async function onEditorSave(value: string, done: () => void) {
+/** 保存文本编辑内容：结果经回调反馈到编辑器内部弹窗 */
+async function onEditorSave(value: string, done: (error?: string) => void) {
   try {
     await sftpWrite(props.sessionId, editor.path, Array.from(new TextEncoder().encode(value)));
+    // 同步内容基线，避免保存后继续编辑时误报未保存变更
+    editor.content = value;
     await refresh();
     done();
   } catch (e) {
-    showMessage("保存失败", String(e));
+    done(String(e));
   }
 }
 
@@ -1577,6 +1590,7 @@ defineExpose({ setPathFromTerminal });
       :open="editor.open"
       :path="editor.path"
       :content="editor.content"
+      :readonly="editor.readonly"
       @save="onEditorSave"
       @close="editor.open = false"
     />

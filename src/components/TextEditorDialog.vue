@@ -33,10 +33,12 @@ const props = defineProps<{
   path: string;
   /** 文件文本内容 */
   content: string;
+  /** 是否只读（无写入权限时禁止编辑） */
+  readonly?: boolean;
 }>();
 
 const emit = defineEmits<{
-  (e: "save", value: string, done: () => void): void;
+  (e: "save", value: string, done: (error?: string) => void): void;
   (e: "close"): void;
 }>();
 
@@ -45,7 +47,10 @@ const editorContainer = ref<HTMLDivElement | null>(null);
 const editor = shallowRef<monaco.editor.IStandaloneCodeEditor>();
 const selectedLanguage = ref("plaintext");
 const confirmDialog = reactive({ open: false, title: "", message: "", resolve: undefined as ((value: boolean) => void) | undefined });
-const successDialog = reactive({ open: false, title: "", message: "" });
+/** 保存中提示（无按钮不可关闭） */
+const saving = ref(false);
+/** 保存结果弹窗：成功时主按钮退出编辑器，叉号仅关闭弹窗 */
+const resultDialog = reactive({ open: false, title: "", message: "", exit: false });
 
 const detectedLanguage = computed(() => detectLanguage(props.path));
 const languageOptions = [
@@ -137,12 +142,14 @@ function setupEditor() {
       tabSize: 2,
       scrollBeyondLastLine: false,
       wordWrap: "off",
+      readOnly: props.readonly ?? false,
     });
     return;
   }
   const model = editor.value.getModel();
   if (model) monaco.editor.setModelLanguage(model, selectedLanguage.value);
   editor.value.setValue(props.content);
+  editor.value.updateOptions({ readOnly: props.readonly ?? false });
   editor.value.layout();
 }
 
@@ -180,17 +187,29 @@ async function requestClose() {
   if (await showConfirm("关闭确认", "文件内容已修改，是否关闭文本编辑器？未保存的修改将丢失。")) emit("close");
 }
 
-/** 保存当前编辑器内容：直接保存，成功后提示并在确认后关闭编辑器 */
+/** 保存当前编辑器内容：显示保存中提示，结果由回调反馈 */
 function save() {
-  emit("save", editor.value?.getValue() ?? props.content, () => {
-    Object.assign(successDialog, { open: true, title: "保存成功", message: "文件内容已保存" });
+  if (props.readonly) return;
+  saving.value = true;
+  emit("save", editor.value?.getValue() ?? props.content, (error?: string) => {
+    saving.value = false;
+    if (error) {
+      Object.assign(resultDialog, { open: true, title: "保存失败", message: error, exit: false });
+    } else {
+      Object.assign(resultDialog, { open: true, title: "保存成功", message: "文件内容已保存", exit: true });
+    }
   });
 }
 
-/** 确认保存成功提示并关闭编辑器 */
-function confirmSaveSuccess() {
-  successDialog.open = false;
-  emit("close");
+/** 结果弹窗主按钮：保存成功时退出编辑器，失败时仅关闭弹窗 */
+function confirmResult() {
+  resultDialog.open = false;
+  if (resultDialog.exit) emit("close");
+}
+
+/** 结果弹窗右上角叉号：仅关闭弹窗，不退出编辑器 */
+function dismissResult() {
+  resultDialog.open = false;
 }
 
 onBeforeUnmount(() => {
@@ -202,7 +221,10 @@ onBeforeUnmount(() => {
   <div v-if="open" class="modal-mask editor-mask">
     <div class="modal editor-modal" role="dialog" aria-modal="true">
       <div class="modal-header">
-        <span>编辑文本：{{ path }}</span>
+        <span>
+          <span v-if="readonly" class="editor-readonly-tag">[只读]</span>
+          编辑文本：{{ path }}
+        </span>
         <button class="editor-close" title="关闭" @click="requestClose">×</button>
       </div>
       <div ref="editorContainer" class="editor-body"></div>
@@ -217,7 +239,7 @@ onBeforeUnmount(() => {
           <span>自动：{{ detectedLanguage }}</span>
         </label>
         <button class="btn" @click="requestClose">取消</button>
-        <button class="btn btn-primary" @click="save">保存</button>
+        <button class="btn btn-primary" :disabled="readonly" :title="readonly ? '只读文件，无写入权限' : ''" @click="save">保存</button>
       </div>
     </div>
     <div v-if="confirmDialog.open" class="modal-mask editor-confirm-mask">
@@ -230,12 +252,26 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
-    <div v-if="successDialog.open" class="modal-mask editor-confirm-mask">
+    <div v-if="saving" class="modal-mask editor-confirm-mask">
       <div class="modal editor-confirm" role="dialog" aria-modal="true">
-        <div class="modal-header">{{ successDialog.title }}</div>
-        <div class="modal-body editor-confirm-body">{{ successDialog.message }}</div>
+        <div class="modal-header">保存中</div>
+        <div class="modal-body editor-confirm-body editor-saving">
+          <span class="editor-spinner"></span>
+          <span>正在保存，请稍候…</span>
+        </div>
+      </div>
+    </div>
+    <div v-if="resultDialog.open" class="modal-mask editor-confirm-mask">
+      <div class="modal editor-confirm" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <span>{{ resultDialog.title }}</span>
+          <button class="editor-close" title="关闭" @click="dismissResult">×</button>
+        </div>
+        <div class="modal-body editor-confirm-body">{{ resultDialog.message }}</div>
         <div class="modal-footer">
-          <button class="btn btn-primary" @click="confirmSaveSuccess">确定</button>
+          <button class="btn btn-primary" @click="confirmResult">
+            {{ resultDialog.exit ? "退出编辑器" : "确定" }}
+          </button>
         </div>
       </div>
     </div>
@@ -292,5 +328,31 @@ onBeforeUnmount(() => {
 .editor-confirm-body {
   line-height: 1.6;
   color: var(--text-secondary);
+}
+/* 只读标识：红色醒目提醒 */
+.editor-readonly-tag {
+  color: var(--danger);
+  font-weight: 700;
+  margin-right: 4px;
+}
+/* 保存中提示 */
+.editor-saving {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.editor-spinner {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 2px solid #c9d6e4;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: editor-spin 0.8s linear infinite;
+}
+@keyframes editor-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

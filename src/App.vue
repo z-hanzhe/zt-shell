@@ -104,11 +104,17 @@ function attachDragListeners() {
 function preventBrowserShortcut(e: KeyboardEvent) {
   const key = e.key.toLowerCase();
   const ctrlOrMeta = e.ctrlKey || e.metaKey;
+  const target = e.target as HTMLElement;
   // Monaco 编辑器内部放行查找/替换/跳转行快捷键，交由编辑器处理
   if (
-    (e.target as HTMLElement)?.closest?.(".monaco-editor") &&
+    target?.closest?.(".monaco-editor") &&
     (e.key === "F3" || (ctrlOrMeta && ["f", "h", "g"].includes(key)))
   ) {
+    return;
+  }
+  // 终端内部放行：Ctrl+Shift+C/V/F/A 由终端快捷键处理，其余 Ctrl 组合与 F3/F5/F7
+  // 转义后发往远端（vim 翻页、shell 历史搜索等），xterm 会阻止浏览器默认行为
+  if (target?.closest?.(".terminal-wrap") && (ctrlOrMeta || blockedBrowserKeys.has(e.key))) {
     return;
   }
   if (
