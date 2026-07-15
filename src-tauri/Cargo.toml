@@ -41,3 +41,5 @@ anyhow = "1"
 dashmap = "6"
 # 生成会话唯一标识
 uuid = { version = "1", features = ["v4"] }
+# 原生剪贴板读写（终端复制粘贴），避免 WebView 剪贴板 API 的原生权限询问弹窗
+tauri-plugin-clipboard-manager = "2.3.2"

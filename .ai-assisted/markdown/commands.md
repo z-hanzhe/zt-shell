@@ -6,6 +6,6 @@ Tauri命令
 
 前端封装与参数约定 见src/api.ts封装所有invoke invoke第二参数为对象键名camelCase Tauri自动映射后端snake_case参数 例sessionId对应session_id config为ConnectionConfig结构体serde rename_all camelCase
 
-托管状态 SessionManager通过Builder::manage注入 命令用State<SessionManager>获取
+托管状态 SessionManager与TransferManager通过Builder::manage注入 命令用State获取
 
-插件 tauri_plugin_store持久化 tauri_plugin_dialog本地文件对话框 tauri_plugin_opener 权限见capabilities/default.json需含store:default dialog:default 自绘标题栏需窗口权限core:window的allow-minimize allow-toggle-maximize allow-unmaximize allow-close allow-start-dragging allow-is-maximized allow-internal-toggle-maximize 其中internal-toggle-maximize供data-tauri-drag-region双击最大化使用
+插件 tauri_plugin_store持久化 tauri_plugin_dialog本地文件对话框 tauri_plugin_opener打开文件/资源管理器定位 tauri_plugin_clipboard_manager原生剪贴板(终端复制粘贴) 权限见capabilities/default.json需含store:default dialog:default opener:default clipboard-manager:allow-read-text clipboard-manager:allow-write-text 自绘标题栏需窗口权限core:window的allow-minimize allow-toggle-maximize allow-unmaximize allow-close allow-start-dragging allow-is-maximized allow-internal-toggle-maximize 其中internal-toggle-maximize供data-tauri-drag-region双击最大化使用

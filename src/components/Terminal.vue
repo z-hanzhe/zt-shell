@@ -9,6 +9,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import Icon from "./Icon.vue";
 import { terminalOpen, terminalWrite, terminalResize } from "../api";
 import { useSettingsStore } from "../stores/settings";
@@ -42,7 +43,7 @@ const search = reactive({ open: false, keyword: "", current: 0, total: 0 });
 /** 查找输入框引用 */
 const searchInput = ref<HTMLInputElement>();
 
-/** 查找高亮配色（命中黄色、当前项橙色） */
+/** 查找高亮配色（命中蓝框、当前项橙底） */
 const searchDecorations = {
   matchBackground: "#3b4a6b",
   matchBorder: "#7aa2f7",
@@ -107,6 +108,114 @@ function capturePwdMarkers(bytes: number[]) {
   if (!pwdBuffer.includes("\x1b]")) pwdBuffer = "";
 }
 
+/** 将字符串转为字节数组（仅用于 ASCII 控制序列） */
+function seqBytes(value: string): number[] {
+  return Array.from(value, (ch) => ch.charCodeAt(0));
+}
+
+type OutputRule = {
+  bytes: number[];
+  action: "softClear" | "dropScrollbackErase" | "altOn" | "altOff";
+};
+
+/**
+ * 输出流改写规则：
+ * - ESC[2J（擦除全屏）在主屏改为软清屏（内容滚入回滚区），备用屏原样放行
+ * - ESC[3J（擦除回滚区）在主屏丢弃以保留历史，备用屏原样放行
+ * - 备用屏开关序列用于精确跟踪 vim/less 等全屏应用状态
+ */
+const OUTPUT_RULES: OutputRule[] = [
+  { bytes: seqBytes("\x1b[2J"), action: "softClear" },
+  { bytes: seqBytes("\x1b[3J"), action: "dropScrollbackErase" },
+  { bytes: seqBytes("\x1b[?1049h"), action: "altOn" },
+  { bytes: seqBytes("\x1b[?1047h"), action: "altOn" },
+  { bytes: seqBytes("\x1b[?47h"), action: "altOn" },
+  { bytes: seqBytes("\x1b[?1049l"), action: "altOff" },
+  { bytes: seqBytes("\x1b[?1047l"), action: "altOff" },
+  { bytes: seqBytes("\x1b[?47l"), action: "altOff" },
+];
+
+/** 输出流改写状态：跨块未完整序列的尾巴与备用屏标记 */
+const outputFilter = { tail: [] as number[], alt: false };
+
+/**
+ * clear 软清屏：在输出字节流层改写清屏序列（先于 xterm 解析，顺序与后续
+ * 提示符输出严格一致，避免经 write 队列插队导致提示符被滚进历史）。
+ * 主屏的 ESC[2J 替换为"光标移到底行 + 整屏换行滚入回滚区 + 光标回左上"，
+ * 历史仍可向上翻查；备用屏（vim/less 等）一切序列原样放行不做干预
+ */
+function transformOutput(t: Terminal, payload: number[]): Uint8Array {
+  const data = outputFilter.tail.length ? [...outputFilter.tail, ...payload] : payload;
+  outputFilter.tail = [];
+  const out: number[] = [];
+  let i = 0;
+  while (i < data.length) {
+    if (data[i] !== 0x1b) {
+      out.push(data[i]);
+      i++;
+      continue;
+    }
+    // 尝试匹配改写规则
+    let matched: OutputRule | null = null;
+    let partial = false;
+    for (const rule of OUTPUT_RULES) {
+      const available = Math.min(rule.bytes.length, data.length - i);
+      let ok = true;
+      for (let j = 0; j < available; j++) {
+        if (data[i + j] !== rule.bytes[j]) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+      if (available === rule.bytes.length) {
+        matched = rule;
+        break;
+      }
+      partial = true;
+    }
+    if (matched) {
+      applyOutputRule(t, matched, out);
+      i += matched.bytes.length;
+      continue;
+    }
+    if (partial) {
+      // 块尾序列不完整，留到下一块拼接后再判断
+      outputFilter.tail = data.slice(i);
+      break;
+    }
+    out.push(data[i]);
+    i++;
+  }
+  return new Uint8Array(out);
+}
+
+/** 应用单条输出改写规则 */
+function applyOutputRule(t: Terminal, rule: OutputRule, out: number[]) {
+  switch (rule.action) {
+    case "altOn":
+      outputFilter.alt = true;
+      out.push(...rule.bytes);
+      break;
+    case "altOff":
+      outputFilter.alt = false;
+      out.push(...rule.bytes);
+      break;
+    case "dropScrollbackErase":
+      // 备用屏无回滚区语义差异，原样放行；主屏丢弃以保留历史
+      if (outputFilter.alt) out.push(...rule.bytes);
+      break;
+    case "softClear":
+      if (outputFilter.alt) {
+        out.push(...rule.bytes);
+        break;
+      }
+      // 光标移到底行，整屏换行把现有内容滚入回滚区，再把光标移回左上等待新提示符
+      out.push(...seqBytes(`\x1b[${t.rows};1H${"\n".repeat(t.rows)}\x1b[H`));
+      break;
+  }
+}
+
 /** 初始化终端并绑定事件 */
 async function setup() {
   if (!container.value || opened) return;
@@ -120,13 +229,13 @@ async function setup() {
     cursorBlink: settings.settings.cursorBlink,
     theme,
     scrollback: 5000,
+    // SearchAddon 的 decorations 高亮依赖 registerDecoration（proposed API）
+    allowProposedApi: true,
   });
   fitAddon = new FitAddon();
   searchAddon = new SearchAddon();
   t.loadAddon(fitAddon);
   t.loadAddon(searchAddon);
-  // 拦截 clear 的清屏序列，改为软清屏（内容顶到滚动区外，保留历史）
-  installSoftClear(t);
   t.open(container.value);
   fitAddon.fit();
   term.value = t;
@@ -176,7 +285,7 @@ async function setup() {
   const closeEvent = `terminal://close//${props.sessionId}`;
   unlistenData = await listen<number[]>(dataEvent, (e) => {
     capturePwdMarkers(e.payload);
-    t.write(new Uint8Array(e.payload));
+    t.write(transformOutput(t, e.payload));
   });
   unlistenClose = await listen(closeEvent, () => {
     t.write("\r\n\x1b[33m[连接已关闭]\x1b[0m\r\n");
@@ -193,49 +302,6 @@ async function setup() {
   // 尺寸自适应
   resizeObserver = new ResizeObserver(() => doFit());
   resizeObserver.observe(container.value);
-}
-
-/**
- * 安装软清屏：拦截 clear 发出的擦除全屏序列（CSI 2J），
- * 改为把当前视口内容滚入回滚区（保留历史，可向上翻查），
- * 光标行移动到视口顶部；真正清空由右键"清空屏幕缓存区"执行 term.clear()。
- * CSI 3J（清回滚区）忽略，避免 clear 连带清掉历史。
- */
-function installSoftClear(t: Terminal) {
-  // 拦截 ED（Erase in Display）：参数 2=擦除全屏，3=擦除回滚区
-  t.parser.registerCsiHandler({ final: "J" }, (params) => {
-    const raw = params[0];
-    const mode = typeof raw === "number" ? raw : 0;
-    if (mode === 2) {
-      softClear(t);
-      return true; // 已处理，阻止默认擦除
-    }
-    if (mode === 3) {
-      return true; // 忽略清回滚区，保留历史
-    }
-    return false; // 其余（0/1 局部擦除）交由 xterm 默认处理
-  });
-}
-
-/**
- * 软清屏：clear 触发时（光标已被 ESC[H 移到视口左上角）把视口现有内容
- * 滚入回滚区，新提示符出现在视口第一行，历史仍可向上翻查
- */
-function softClear(t: Terminal) {
-  const buffer = t.buffer.active;
-  // 找视口内最后一个非空行
-  let lastRow = -1;
-  for (let i = t.rows - 1; i >= 0; i--) {
-    const line = buffer.getLine(buffer.baseY + i);
-    if (line && line.translateToString(true).length > 0) {
-      lastRow = i;
-      break;
-    }
-  }
-  // 视口本就为空则无需滚动
-  if (lastRow < 0) return;
-  // 光标移到底行后写入换行逐行滚入回滚区，再把光标移回视口顶部
-  t.write(`\x1b[${t.rows};1H${"\n".repeat(lastRow + 1)}\x1b[H`);
 }
 
 /** 适配容器尺寸并同步到后端 */
@@ -272,24 +338,24 @@ function activate() {
   });
 }
 
-/** 复制当前选中内容到剪贴板 */
+/** 复制当前选中内容到剪贴板（走原生剪贴板，避免 WebView 权限弹窗） */
 async function copySelection() {
   const text = term.value?.getSelection();
   if (!text) return;
   try {
-    await navigator.clipboard.writeText(text);
+    await writeText(text);
   } catch {
     // 剪贴板不可用时忽略
   }
 }
 
-/** 从剪贴板粘贴到终端 */
+/** 从剪贴板粘贴到终端（走原生剪贴板，避免 WebView 权限弹窗） */
 async function pasteClipboard() {
   try {
-    const text = await navigator.clipboard.readText();
+    const text = await readText();
     if (text) await writeToTerminal(text);
   } catch {
-    // 剪贴板不可用时忽略
+    // 剪贴板为空或不可用时忽略
   }
 }
 
@@ -351,8 +417,8 @@ function onSearchInput() {
 /** 打开右键菜单（边缘收敛不超出视口） */
 function onContextMenu(event: MouseEvent) {
   event.preventDefault();
-  const MENU_W = 208;
-  const MENU_H = 200;
+  const MENU_W = 180;
+  const MENU_H = menuItems.length * 24 + 8;
   contextMenu.open = true;
   contextMenu.x = Math.min(event.clientX, window.innerWidth - MENU_W - 8);
   contextMenu.y = Math.min(event.clientY, window.innerHeight - MENU_H - 8);
@@ -363,16 +429,16 @@ function closeContextMenu() {
   contextMenu.open = false;
 }
 
-/** 右键菜单项 */
+/** 右键菜单项（快捷键作为文字直接展示） */
 const menuItems = [
-  { action: "copy", label: "复制", shortcut: "Ctrl+Shift+C" },
-  { action: "paste", label: "粘贴", shortcut: "Ctrl+Shift+V" },
-  { action: "find", label: "查找", shortcut: "Ctrl+Shift+F" },
-  { action: "selectAll", label: "全选", shortcut: "Ctrl+Shift+A" },
-  { action: "clear", label: "清空屏幕缓存区", shortcut: "" },
+  { action: "copy", label: "复制 Ctrl + Shift + C" },
+  { action: "paste", label: "粘贴 Ctrl + Shift + V" },
+  { action: "find", label: "查找 Ctrl + Shift + F" },
+  { action: "selectAll", label: "全选 Ctrl + Shift + A" },
+  { action: "clear", label: "清空屏幕缓存区" },
 ] as const;
 
-/** 执行右键菜单动作 */
+/** 执行右键菜单动作，操作完成后焦点归还终端便于继续输入 */
 function runMenuAction(action: (typeof menuItems)[number]["action"]) {
   closeContextMenu();
   switch (action) {
@@ -384,7 +450,7 @@ function runMenuAction(action: (typeof menuItems)[number]["action"]) {
       break;
     case "find":
       openSearch();
-      break;
+      return;
     case "selectAll":
       selectAll();
       break;
@@ -392,6 +458,7 @@ function runMenuAction(action: (typeof menuItems)[number]["action"]) {
       clearBuffer();
       break;
   }
+  term.value?.focus();
 }
 
 /** 点击任意非菜单区域关闭右键菜单 */
@@ -483,7 +550,7 @@ defineExpose({ fit: doFit, activate, cdTo, requestCwd });
       </button>
     </div>
 
-    <!-- 右键菜单 -->
+    <!-- 右键菜单（与全局浅色菜单风格一致） -->
     <div
       v-if="contextMenu.open"
       class="term-context-menu"
@@ -491,8 +558,7 @@ defineExpose({ fit: doFit, activate, cdTo, requestCwd });
       @click.stop
     >
       <button v-for="item in menuItems" :key="item.action" @click="runMenuAction(item.action)">
-        <span>{{ item.label }}</span>
-        <span v-if="item.shortcut" class="tm-shortcut">{{ item.shortcut }}</span>
+        {{ item.label }}
       </button>
     </div>
   </div>
@@ -564,37 +630,32 @@ defineExpose({ fit: doFit, activate, cdTo, requestCwd });
   color: #c0caf5;
 }
 
-/* 右键菜单：深色贴合终端 */
+/* 右键菜单：与文件管理等全局菜单同款浅色样式 */
 .term-context-menu {
   position: fixed;
   z-index: 30;
-  min-width: 200px;
+  min-width: 172px;
   padding: 4px;
-  border: 1px solid #2a2f45;
-  border-radius: 6px;
-  background: #1f2335;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  border: 1px solid #b8c6d6;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
 }
 .term-context-menu button {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: block;
   width: 100%;
-  height: 26px;
+  height: 24px;
   padding: 0 10px;
   border: none;
-  border-radius: 4px;
+  border-radius: 3px;
   background: transparent;
-  color: #c0caf5;
+  color: #333;
   font-size: 12px;
+  text-align: left;
   cursor: pointer;
 }
 .term-context-menu button:hover {
-  background: #2a2f45;
-}
-.tm-shortcut {
-  color: #6a729a;
-  font-size: 11px;
-  margin-left: 24px;
+  background: var(--row-hover);
+  color: var(--accent);
 }
 </style>
