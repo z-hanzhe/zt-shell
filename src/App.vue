@@ -190,7 +190,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="app-root">
     <!-- 顶部自绘标题栏 -->
-    <TitleBar />
+    <TitleBar @open-settings="showSettings = true" />
 
     <!-- 主体：左固定宽 + 右自适应 -->
     <div class="app-body">

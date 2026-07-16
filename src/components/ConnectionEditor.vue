@@ -59,6 +59,7 @@ function submit() {
     <div class="modal" style="width: 460px">
       <div class="modal-header">
         <span>{{ model ? "编辑连接" : "新建连接" }}</span>
+        <button class="modal-close" title="关闭" @click="emit('cancel')">×</button>
       </div>
       <div class="modal-body">
         <div class="form-grid">

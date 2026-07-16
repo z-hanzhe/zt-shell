@@ -43,3 +43,5 @@ dashmap = "6"
 uuid = { version = "1", features = ["v4"] }
 # 原生剪贴板读写（终端复制粘贴），避免 WebView 剪贴板 API 的原生权限询问弹窗
 tauri-plugin-clipboard-manager = "2.3.2"
+# 单实例运行：禁止程序多开，再次启动时聚焦并显示已存在窗口
+tauri-plugin-single-instance = "2"

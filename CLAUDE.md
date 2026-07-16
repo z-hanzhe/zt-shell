@@ -12,7 +12,7 @@
 
 项目技术栈 前端Vue3 TypeScript Vite pinia xterm 后端Rust Tauri2 russh russh-sftp tokio
 
-已引入第三方库及理由 russh纯Rust SSH客户端跨平台免OpenSSL 用ring后端替代aws-lc-rs避免Windows需NASM default-features=false features=ring flate2 rsa russh-sftp配套SFTP tokio异步运行时 dashmap并发安全会话存储 uuid标识 anyhow错误处理 @xterm/xterm终端渲染VSCode同款 @xterm/addon-fit终端尺寸自适应 @xterm/addon-search终端查找高亮官方插件 tauri-plugin-clipboard-manager原生剪贴板读写避免WebView权限询问弹窗 手写flex固定尺寸布局 pinia状态管理 @tauri-apps/plugin-store配置持久化 @tauri-apps/plugin-dialog本地文件对话框 @fontsource/cascadia-mono内置终端等宽字体自托管避免跨平台字库缺失 monaco-editor远程文本编辑器VSCode内核支持多语言高亮与Vite ESM worker
+已引入第三方库及理由 russh纯Rust SSH客户端跨平台免OpenSSL 用ring后端替代aws-lc-rs避免Windows需NASM default-features=false features=ring flate2 rsa russh-sftp配套SFTP tokio异步运行时 dashmap并发安全会话存储 uuid标识 anyhow错误处理 @xterm/xterm终端渲染VSCode同款 @xterm/addon-fit终端尺寸自适应 @xterm/addon-search终端查找高亮官方插件 tauri-plugin-clipboard-manager原生剪贴板读写避免WebView权限询问弹窗 tauri-plugin-single-instance官方单例插件禁止多开再次启动时唤起聚焦已运行窗口跨Win/Mac/Linux 手写flex固定尺寸布局 pinia状态管理 @tauri-apps/plugin-store配置持久化 @tauri-apps/plugin-dialog本地文件对话框 @fontsource/cascadia-mono内置终端等宽字体自托管避免跨平台字库缺失 monaco-editor远程文本编辑器VSCode内核支持多语言高亮与Vite ESM worker
 
 功能文档 见.ai-assisted/markdown/index.md 任务前先读索引 涉及模块加载对应文档 架构arch SSH内核ssh-core 文件管理sftp 传输任务transfer 监控monitor 前端frontend 命令commands
 

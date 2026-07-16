@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 右上 SSH 交互区：顶部选项卡栏（文件夹图标打开连接管理器、设置按钮）+ 终端区域
+ * 右上 SSH 交互区：顶部选项卡栏（文件夹图标打开连接管理器）+ 终端区域
  */
 import { nextTick, ref, watch } from "vue";
 import Icon from "./Icon.vue";
@@ -9,7 +9,6 @@ import { useSessionsStore } from "../stores/sessions";
 
 const emit = defineEmits<{
   (e: "open-conn-manager"): void;
-  (e: "open-settings"): void;
 }>();
 
 const store = useSessionsStore();
@@ -65,11 +64,6 @@ defineExpose({ cdActiveTerminal, requestActiveTerminalCwd });
         </div>
       </div>
 
-      <div class="tb-right">
-        <button class="tb-icon" title="设置" @click="emit('open-settings')">
-          <Icon name="settings" :size="15" />
-        </button>
-      </div>
     </div>
 
     <!-- 终端区域 -->
@@ -204,19 +198,6 @@ defineExpose({ cdActiveTerminal, requestActiveTerminalCwd });
   background: var(--danger);
   color: #fff;
 }
-.tb-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  padding-right: 4px;
-}
-.tb-right .tb-icon {
-  color: #666;
-}
-.tb-right .tb-icon:hover {
-  color: var(--accent);
-}
-
 /* 终端区域 */
 .term-area {
   flex: 1;

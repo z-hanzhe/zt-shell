@@ -3,7 +3,6 @@
  * 设置弹窗：终端与界面相关的基础设置
  */
 import { reactive, watch } from "vue";
-import Icon from "./Icon.vue";
 import type { AppSettings } from "../stores/settings";
 
 const props = defineProps<{
@@ -36,9 +35,7 @@ function submit() {
     <div class="modal" style="width: 420px">
       <div class="modal-header">
         <span>设置</span>
-        <button class="btn btn-icon" @click="emit('close')">
-          <Icon name="close" :size="15" />
-        </button>
+        <button class="modal-close" title="关闭" @click="emit('close')">×</button>
       </div>
       <div class="modal-body">
         <div class="set-grid">

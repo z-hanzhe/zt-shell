@@ -74,9 +74,7 @@ function onConnect(config: ConnectionConfig) {
     <div class="modal conn-mgr">
       <div class="modal-header">
         <span>连接管理器</span>
-        <button class="btn btn-icon" @click="emit('close')">
-          <Icon name="close" :size="15" />
-        </button>
+        <button class="modal-close" title="关闭" @click="emit('close')">×</button>
       </div>
 
       <!-- 工具栏 -->

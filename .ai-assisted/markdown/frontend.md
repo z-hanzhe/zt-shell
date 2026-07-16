@@ -2,7 +2,7 @@
 
 入口与布局 main.ts创建app注册pinia引入styles.css与内置字体 App.vue自绘标题栏+主体+底部状态栏 主体手写flex+自定义拖拽分隔条 左监控固定像素宽右下文件区固定像素高 窗口缩放仅右上终端区自适应 分隔条通过mousemove改reactive的leftWidth/bottomHeight
 
-组件 src/components Icon.vue内置SVG图标避免图标库依赖 AppDialog.vue通用提示/确认/输入弹窗(确认按钮文案可定制 confirmDanger红色警示样式 loading类型转圈提示无按钮不可关) MonitorPanel.vue左监控 TerminalPanel.vue右上终端区含选项卡栏文件夹图标开连接管理器与设置按钮 Terminal.vue封装xterm单终端 BottomPanel.vue右下含文件/传输两选项卡 传输选项卡右上角标显示执行中任务数上限99 FileManager.vue文件管理器 TransferPanel.vue传输面板见transfer.md ConnectionManager.vue连接管理器弹窗参考conn.png ConnectionEditor.vue连接编辑弹窗 SettingsDialog.vue设置弹窗 TitleBar.vue自绘标题栏
+组件 src/components Icon.vue内置SVG图标避免图标库依赖 AppDialog.vue通用提示/确认/输入弹窗(确认按钮文案可定制 confirmDanger红色警示样式 loading类型转圈提示无按钮不可关) MonitorPanel.vue左监控 TerminalPanel.vue右上终端区含选项卡栏文件夹图标开连接管理器(设置按钮已移至标题栏) Terminal.vue封装xterm单终端 BottomPanel.vue右下含文件/传输两选项卡 传输选项卡右上角标显示执行中任务数上限99 FileManager.vue文件管理器 TransferPanel.vue传输面板见transfer.md ConnectionManager.vue连接管理器弹窗参考conn.png ConnectionEditor.vue连接编辑弹窗 SettingsDialog.vue设置弹窗 TitleBar.vue自绘标题栏
 
 状态 src/stores connections.ts已保存连接持久化connections.json sessions.ts活动会话选项卡 open发起连接close断开activate激活 open通过setStatus按id查响应式数组元素改状态 勿直接改原始对象否则视图不刷新 连接成功调monitor.start关闭调monitor.stop settings.ts应用设置持久化settings.json 均用tauri-plugin-store的load options需含defaults字段与autoSave monitor.ts按会话维度持续采集监控 states按sessionId存data/error/netHistory/netIndex/timer start幂等起定时器stop清状态 与激活选项卡无关 切换选项卡仍见该会话最近数据不清空不重采 transfers.ts传输任务列表见transfer.md App.vue onMounted初始化
 
@@ -10,7 +10,11 @@
 
 样式 styles.css全局CSS变量 通用btn input modal类 组件内scoped样式 保留少量兼容别名bg-root等映射到浅色
 
-标题栏 TitleBar.vue tauri.conf关闭decorations 应用图标public/app-icon.png源自icons/32x32.png 最小化/最大化还原/关闭调getCurrentWindow API onResized同步最大化状态 拖拽与双击最大化用原生data-tauri-drag-region 勿手动mousedown+startDragging否则吞掉双击 logo与标题设pointer-events:none使拖拽落到标题栏 按钮不带drag-region保持可点击
+标题栏 TitleBar.vue tauri.conf关闭decorations 应用图标public/app-icon.png源自icons/32x32.png 标题显示软件名+版本号(getVersion读tauri.conf的version) 设置按钮置于窗口三大金刚键左侧(emit open-settings由App处理) 最小化/最大化还原/关闭调getCurrentWindow API onResized同步最大化状态 拖拽与双击最大化用原生data-tauri-drag-region 勿手动mousedown+startDragging否则吞掉双击 logo与标题设pointer-events:none使拖拽落到标题栏 按钮不带drag-region保持可点击
+
+弹窗统一 全部弹窗风格一致 右上角统一叉号(×)关闭按钮用styles.css的.modal-close(loading等设计上不可关的弹窗不加) 弹窗正文.modal-body文字user-select:text便于复制 AppDialog/SettingsDialog/ConnectionManager/ConnectionEditor/TextEditorDialog均遵循此规范
+
+单实例 禁止多开 tauri-plugin-single-instance(必须最先注册) 再次启动时回调unminimize+show+set_focus唤起已运行的main窗口 仅Win/Mac/Linux支持
 
 终端 Terminal.vue xterm实例存shallowRef避免响应式代理 allowProposedApi必须true(SearchAddon decorations依赖proposed API) FitAddon自适应 SearchAddon查找 ResizeObserver监听尺寸 配色Tokyo Night完整16色ANSI 背景不透明 doFit隐藏时跳过 activate时fit+refresh+scrollToBottom 右键菜单复制粘贴查找全选清缓存 菜单后归还焦点 剪贴板走原生插件 快捷键由attachCustomKeyEventHandler处理 clear仅拦主屏ESC[3J保留历史 备用屏及其他序列交xterm且不改写输出字节 terminalOpen传ipc::Channel<ArrayBuffer>接收后端Raw字节并直写t.write 终端输入经Promise队列保序 resize独立同步避免拖拽积压 Vite生产build.target保持es2021规避xterm6.0.0压缩缺陷(xterm.js#5800) App层放行终端Ctrl组合与F3/F5/F7 FileManager的F5在事件源自.xterm时跳过
 

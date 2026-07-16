@@ -80,6 +80,7 @@ function requestCancel() {
     <div class="modal app-dialog" role="dialog" aria-modal="true">
       <div class="modal-header">
         <span>{{ title }}</span>
+        <button v-if="type !== 'loading'" class="modal-close" title="关闭" @click="requestCancel">×</button>
       </div>
       <div class="modal-body app-dialog-body">
         <div v-if="type === 'loading'" class="app-dialog-loading">

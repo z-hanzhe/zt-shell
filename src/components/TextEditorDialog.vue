@@ -225,7 +225,7 @@ onBeforeUnmount(() => {
           <span v-if="readonly" class="editor-readonly-tag">[只读]</span>
           编辑文本：{{ path }}
         </span>
-        <button class="editor-close" title="关闭" @click="requestClose">×</button>
+        <button class="modal-close" title="关闭" @click="requestClose">×</button>
       </div>
       <div ref="editorContainer" class="editor-body"></div>
       <div class="modal-footer">
@@ -265,7 +265,7 @@ onBeforeUnmount(() => {
       <div class="modal editor-confirm" role="dialog" aria-modal="true">
         <div class="modal-header">
           <span>{{ resultDialog.title }}</span>
-          <button class="editor-close" title="关闭" @click="dismissResult">×</button>
+          <button class="modal-close" title="关闭" @click="dismissResult">×</button>
         </div>
         <div class="modal-body editor-confirm-body">{{ resultDialog.message }}</div>
         <div class="modal-footer">
@@ -303,21 +303,6 @@ onBeforeUnmount(() => {
   background: #fff;
   color: var(--text);
   font-size: 12px;
-}
-.editor-close {
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 3px;
-  background: transparent;
-  color: #667;
-  font-size: 20px;
-  line-height: 20px;
-  cursor: pointer;
-}
-.editor-close:hover {
-  background: var(--row-hover);
-  color: var(--danger);
 }
 .editor-confirm-mask {
   z-index: 1001;

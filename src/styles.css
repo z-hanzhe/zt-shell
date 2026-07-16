@@ -199,3 +199,29 @@ body {
   border-top: 1px solid var(--border);
   background: var(--bg-panel);
 }
+/* 弹窗统一右上角关闭按钮（叉号），各弹窗风格一致 */
+.modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin: 0 -6px 0 8px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.modal-close:hover {
+  background: #e05555;
+  color: #fff;
+}
+/* 弹窗正文文字允许选择，便于复制提示内容 */
+.modal-body,
+.modal-body * {
+  user-select: text;
+}
