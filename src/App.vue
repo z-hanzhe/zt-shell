@@ -8,6 +8,8 @@
  * - 窗口缩放时仅右上终端区自适应，左宽与底高保持不变（满足需求）
  */
 import { computed, onMounted, onBeforeUnmount, reactive, ref } from "vue";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import TitleBar from "./components/TitleBar.vue";
 import MonitorPanel from "./components/MonitorPanel.vue";
@@ -15,6 +17,7 @@ import TerminalPanel from "./components/TerminalPanel.vue";
 import BottomPanel from "./components/BottomPanel.vue";
 import ConnectionManager from "./components/ConnectionManager.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
+import AppDialog from "./components/AppDialog.vue";
 
 import { useConnectionsStore } from "./stores/connections";
 import { useSessionsStore } from "./stores/sessions";
@@ -32,6 +35,8 @@ const transfersStore = useTransfersStore();
 const showConnManager = ref(false);
 /** 设置弹窗可见性 */
 const showSettings = ref(false);
+/** 关闭软件前的确认弹窗可见性（存在连接中的会话时） */
+const showCloseConfirm = ref(false);
 /** 终端面板引用，用于文件区与终端互相同步路径 */
 const terminalPanelRef = ref<InstanceType<typeof TerminalPanel>>();
 /** 底部面板引用，用于根据终端路径更新文件管理器 */
@@ -171,6 +176,24 @@ async function syncFilePath() {
   }
 }
 
+/** 窗口关闭事件解绑函数 */
+let unlistenCloseRequested: UnlistenFn | null = null;
+
+/** 确认关闭软件：销毁窗口退出 */
+async function onConfirmClose() {
+  showCloseConfirm.value = false;
+  try {
+    await getCurrentWindow().destroy();
+  } catch (e) {
+    console.warn("关闭窗口失败", e);
+  }
+}
+
+/** 取消关闭软件 */
+function onCancelClose() {
+  showCloseConfirm.value = false;
+}
+
 onMounted(async () => {
   attachBrowserGuards();
   // 加载本地持久化的连接与设置、初始化传输事件监听（浏览器预览环境下会失败，忽略即可）
@@ -179,11 +202,23 @@ onMounted(async () => {
   } catch (e) {
     console.warn("本地存储不可用（可能非 Tauri 环境）", e);
   }
+  // 拦截窗口关闭：存在连接中的会话时先二次确认（非 Tauri 环境忽略）
+  try {
+    unlistenCloseRequested = await getCurrentWindow().onCloseRequested((event) => {
+      if (terminalPanelRef.value?.hasLiveSessions()) {
+        event.preventDefault();
+        showCloseConfirm.value = true;
+      }
+    });
+  } catch (e) {
+    console.warn("窗口关闭事件监听失败（可能非 Tauri 环境）", e);
+  }
 });
 
 onBeforeUnmount(() => {
   endDrag();
   detachBrowserGuards();
+  unlistenCloseRequested?.();
 });
 </script>
 
@@ -212,7 +247,6 @@ onBeforeUnmount(() => {
           <TerminalPanel
             ref="terminalPanelRef"
             @open-conn-manager="showConnManager = true"
-            @open-settings="showSettings = true"
           />
         </div>
 
@@ -260,6 +294,18 @@ onBeforeUnmount(() => {
       :settings="settingsStore.settings"
       @save="onSaveSettings"
       @close="showSettings = false"
+    />
+
+    <!-- 关闭软件前确认（存在连接中的会话时） -->
+    <AppDialog
+      :open="showCloseConfirm"
+      type="confirm"
+      title="退出程序"
+      message="仍有会话处于连接中，确定要退出吗？"
+      confirm-text="退出"
+      :confirm-danger="true"
+      @confirm="onConfirmClose"
+      @cancel="onCancelClose"
     />
   </div>
 </template>

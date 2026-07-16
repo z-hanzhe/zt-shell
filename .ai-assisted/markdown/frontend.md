@@ -2,9 +2,9 @@
 
 入口与布局 main.ts创建app注册pinia引入styles.css与内置字体 App.vue自绘标题栏+主体+底部状态栏 主体手写flex+自定义拖拽分隔条 左监控固定像素宽右下文件区固定像素高 窗口缩放仅右上终端区自适应 分隔条通过mousemove改reactive的leftWidth/bottomHeight
 
-组件 src/components Icon.vue内置SVG图标避免图标库依赖 AppDialog.vue通用提示/确认/输入弹窗(确认按钮文案可定制 confirmDanger红色警示样式 loading类型转圈提示无按钮不可关) MonitorPanel.vue左监控 TerminalPanel.vue右上终端区含选项卡栏文件夹图标开连接管理器(设置按钮已移至标题栏) Terminal.vue封装xterm单终端 BottomPanel.vue右下含文件/传输两选项卡 传输选项卡右上角标显示执行中任务数上限99 FileManager.vue文件管理器 TransferPanel.vue传输面板见transfer.md ConnectionManager.vue连接管理器弹窗参考conn.png ConnectionEditor.vue连接编辑弹窗 SettingsDialog.vue设置弹窗 TitleBar.vue自绘标题栏
+组件 src/components Icon.vue内置SVG图标避免图标库依赖 AppDialog.vue通用提示/确认/输入弹窗(确认按钮文案可定制 confirmDanger红色警示样式 loading类型转圈提示无按钮不可关) MonitorPanel.vue左监控 TerminalPanel.vue右上终端区含选项卡栏(拖拽排序/横向滚动溢出/右键菜单/断线绿点更新/未读叹号)文件夹图标开连接管理器(设置按钮已移至标题栏) Terminal.vue封装xterm单终端 BottomPanel.vue右下含文件/传输两选项卡 传输选项卡右上角标显示执行中任务数上限99 FileManager.vue文件管理器 TransferPanel.vue传输面板见transfer.md ConnectionManager.vue连接管理器弹窗参考conn.png ConnectionEditor.vue连接编辑弹窗 SettingsDialog.vue设置弹窗 TitleBar.vue自绘标题栏
 
-状态 src/stores connections.ts已保存连接持久化connections.json sessions.ts活动会话选项卡 open发起连接close断开activate激活 open通过setStatus按id查响应式数组元素改状态 勿直接改原始对象否则视图不刷新 连接成功调monitor.start关闭调monitor.stop settings.ts应用设置持久化settings.json 均用tauri-plugin-store的load options需含defaults字段与autoSave monitor.ts按会话维度持续采集监控 states按sessionId存data/error/netHistory/netIndex/timer start幂等起定时器stop清状态 与激活选项卡无关 切换选项卡仍见该会话最近数据不清空不重采 transfers.ts传输任务列表见transfer.md App.vue onMounted初始化
+状态 src/stores connections.ts已保存连接持久化connections.json sessions.ts活动会话选项卡 状态connecting/connected/error(首连失败)/disconnected(连后掉线或exit) open发起连接close断开activate激活(清activity) move拖拽排序 reconnect复用同sessionId重连(connected/disconnected原地重开通道保留历史返true 否则全新连接) markDisconnected终端关闭事件驱动(reconnecting集合抑制重连期误标) markActivity未选中会话有输出置activity open通过setStatus按id查响应式数组元素改状态 勿直接改原始对象否则视图不刷新 连接成功调monitor.start关闭调monitor.stop settings.ts应用设置持久化settings.json 均用tauri-plugin-store的load options需含defaults字段与autoSave monitor.ts按会话维度持续采集监控 states按sessionId存data/error/netHistory/netIndex/timer start幂等起定时器stop清状态 与激活选项卡无关 切换选项卡仍见该会话最近数据不清空不重采 transfers.ts传输任务列表见transfer.md App.vue onMounted初始化
 
 工具 src/utils.ts formatBytes formatRate formatUptime formatTime genId joinPath parentPath src/api.ts封装所有invoke调用 src/types.ts前后端对应类型
 
@@ -13,6 +13,8 @@
 标题栏 TitleBar.vue tauri.conf关闭decorations 应用图标public/app-icon.png源自icons/32x32.png 标题显示软件名+版本号(getVersion读tauri.conf的version) 设置按钮置于窗口三大金刚键左侧(emit open-settings由App处理) 最小化/最大化还原/关闭调getCurrentWindow API onResized同步最大化状态 拖拽与双击最大化用原生data-tauri-drag-region 勿手动mousedown+startDragging否则吞掉双击 logo与标题设pointer-events:none使拖拽落到标题栏 按钮不带drag-region保持可点击
 
 弹窗统一 全部弹窗风格一致 右上角统一叉号(×)关闭按钮用styles.css的.modal-close(loading等设计上不可关的弹窗不加) 弹窗正文.modal-body文字user-select:text便于复制 AppDialog/SettingsDialog/ConnectionManager/ConnectionEditor/TextEditorDialog均遵循此规范
+
+选项卡 TerminalPanel.vue选项卡栏 HTML5 draggable拖拽排序(dragover实时调store.move) 溢出横向滚动(隐藏滚动条不做收起) 右键菜单[关闭/关闭其他/关闭全部/重连](.tab-context-menu 点击外部关闭) 关闭连接中/已连接会话与关闭其他/全部含活动会话时AppDialog红色二次确认 打开或切换会话后自动聚焦终端(Terminal setup末尾与activate时t.focus) 左侧圆点状态connecting黄/connected绿/error与disconnected红 未选中会话有新输出时圆点变橙色叹号(仿xshell activity标记 激活或收到时清除) 重连复用同一sessionId原地重开通道保留xterm历史(Terminal.reopen 重连期间store.reconnecting集合+Terminal suppressClose双重抑制旧通道terminal://close误标记掉线) 掉线/远端exit经terminal://close事件由store.markDisconnected置disconnected并停监控 关闭软件时App监听getCurrentWindow().onCloseRequested 存在连接中会话则preventDefault并弹确认 确认后window.destroy(需core:window:allow-destroy权限)
 
 单实例 禁止多开 tauri-plugin-single-instance(必须最先注册) 再次启动时回调unminimize+show+set_focus唤起已运行的main窗口 仅Win/Mac/Linux支持
 

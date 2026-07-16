@@ -20,7 +20,19 @@ const props = defineProps<{
   sessionId: string;
   /** 会话是否已连接（连接成功后再开启终端） */
   connected: boolean;
+  /** 该终端是否为当前激活选项卡（用于未读输出提示与自动聚焦） */
+  active?: boolean;
 }>();
+
+const emit = defineEmits<{
+  /** 连接被关闭（远端 exit、网络断开等），供上层更新选项卡状态 */
+  (e: "closed"): void;
+  /** 未激活时收到新输出，供上层显示未读提示 */
+  (e: "activity"): void;
+}>();
+
+// 未激活时收到输出只提示一次，激活后重置，避免每个数据块都触发事件
+let activityNotified = false;
 
 const settings = useSettingsStore();
 
@@ -33,6 +45,8 @@ let searchAddon: SearchAddon;
 let unlistenClose: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let opened = false;
+// 原地重连期间抑制旧通道关闭事件，避免误将刚重连的会话标记为掉线
+let suppressClose = false;
 let pwdBuffer = "";
 let terminalWriteQueue: Promise<void> = Promise.resolve();
 const textEncoder = new TextEncoder();
@@ -118,6 +132,23 @@ function capturePwdMarkers(bytes: Uint8Array) {
   if (!pwdBuffer.includes("\x1b]")) pwdBuffer = "";
 }
 
+/**
+ * 创建终端输出的有序二进制 Channel：原始字节直接交给 xterm，
+ * 并在捕获目录标记的同时，为未激活选项卡首个输出触发一次未读提示
+ */
+function createDataChannel(t: Terminal): Channel<ArrayBuffer> {
+  return new Channel<ArrayBuffer>((payload) => {
+    const bytes = new Uint8Array(payload);
+    capturePwdMarkers(bytes);
+    t.write(bytes);
+    // 非激活选项卡收到输出时提示一次未读，效仿 xshell 叹号提示
+    if (!props.active && !activityNotified) {
+      activityNotified = true;
+      emit("activity");
+    }
+  });
+}
+
 /** 初始化终端并绑定事件 */
 async function setup() {
   if (!container.value || opened) return;
@@ -190,14 +221,11 @@ async function setup() {
 
   const closeEvent = `terminal://close//${props.sessionId}`;
   unlistenClose = await listen(closeEvent, () => {
+    // 重连过程中旧通道会发出关闭事件，此时不提示也不上报，避免误标记掉线
+    if (suppressClose) return;
     t.write("\r\n\x1b[33m[连接已关闭]\x1b[0m\r\n");
-  });
-
-  // 终端输出使用有序二进制 Channel，原始字节直接交给 xterm
-  const dataChannel = new Channel<ArrayBuffer>((payload) => {
-    const bytes = new Uint8Array(payload);
-    capturePwdMarkers(bytes);
-    t.write(bytes);
+    // 通知上层将选项卡状态置为断开，更新绿点
+    emit("closed");
   });
 
   // 用户输入回传后端
@@ -205,11 +233,14 @@ async function setup() {
     writeToTerminal(data).catch(() => {});
   });
 
-  await terminalOpen(props.sessionId, t.cols, t.rows, dataChannel);
+  await terminalOpen(props.sessionId, t.cols, t.rows, createDataChannel(t));
 
   // 尺寸自适应
   resizeObserver = new ResizeObserver(() => doFit());
   resizeObserver.observe(container.value);
+
+  // 终端就绪后若为激活选项卡则自动聚焦，打开会话即可直接输入
+  if (props.active) requestAnimationFrame(() => t.focus());
 }
 
 /** 适配容器尺寸并同步到后端 */
@@ -234,6 +265,8 @@ function doFit() {
  * 修复隐藏（display:none）后再显示时滚动条错位、需手动滚到顶部才恢复的问题
  */
 function activate() {
+  // 激活后重置未读提示标记，允许下次切走时再次提示
+  activityNotified = false;
   if (!term.value) return;
   // 等布局生效后再刷新，确保容器已有真实尺寸
   requestAnimationFrame(() => {
@@ -243,7 +276,37 @@ function activate() {
     // 强制重绘全部可见行并滚动到底部，同步视口滚动状态
     t.refresh(0, t.rows - 1);
     t.scrollToBottom();
+    // 自动聚焦终端，打开/切换会话后可直接输入
+    t.focus();
   });
+}
+
+/**
+ * 在保留现有 xterm 缓冲（历史输出）的前提下重开后端终端通道，
+ * 用于网络波动等场景下的原地重连
+ */
+async function reopen() {
+  const t = term.value;
+  if (!t) {
+    // 终端尚未初始化（罕见），退回常规启动流程
+    startTerminal();
+    return;
+  }
+  activityNotified = false;
+  // 抑制旧通道断开引发的关闭提示与掉线上报
+  suppressClose = true;
+  t.write("\r\n\x1b[33m[正在重连…]\x1b[0m\r\n");
+  try {
+    await terminalOpen(props.sessionId, t.cols, t.rows, createDataChannel(t));
+    doFit();
+    t.focus();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    t.write(`\r\n\x1b[31m[重连失败：${message}]\x1b[0m\r\n`);
+  } finally {
+    // 新通道已建立，恢复后续真实断开的响应
+    suppressClose = false;
+  }
 }
 
 /** 复制当前选中内容到剪贴板（走原生剪贴板，避免 WebView 权限弹窗） */
@@ -434,7 +497,7 @@ onBeforeUnmount(() => {
 });
 
 // 暴露刷新方法供父组件在切换选项卡后调用
-defineExpose({ fit: doFit, activate, cdTo, requestCwd });
+defineExpose({ fit: doFit, activate, reopen, cdTo, requestCwd });
 </script>
 
 <template>

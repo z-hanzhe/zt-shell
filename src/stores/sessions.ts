@@ -12,8 +12,11 @@ import { sshConnect, sshDisconnect } from "../api";
 import { genId } from "../utils";
 import { useMonitorStore } from "./monitor";
 
-/** 会话连接状态 */
-export type SessionStatus = "connecting" | "connected" | "error";
+/**
+ * 会话连接状态：
+ * connecting 连接中 / connected 已连接 / error 首次连接失败 / disconnected 连接后掉线或退出
+ */
+export type SessionStatus = "connecting" | "connected" | "error" | "disconnected";
 
 /** 一个活动会话 */
 export interface Session {
@@ -27,6 +30,8 @@ export interface Session {
   status: SessionStatus;
   /** 错误信息（status 为 error 时） */
   error?: string;
+  /** 未选中时有新输出的提示标记（仿 xshell 叹号提示） */
+  activity?: boolean;
 }
 
 export const useSessionsStore = defineStore("sessions", () => {
@@ -34,6 +39,8 @@ export const useSessionsStore = defineStore("sessions", () => {
   const sessions = ref<Session[]>([]);
   /** 当前激活的会话 id */
   const activeId = ref<string>("");
+  // 正在执行受控重连的会话，用于抑制重连过程中后端断开触发的掉线标记
+  const reconnecting = new Set<string>();
 
   /** 当前激活的会话对象 */
   const activeSession = computed(() =>
@@ -57,6 +64,7 @@ export const useSessionsStore = defineStore("sessions", () => {
       name: config.name || config.host,
       config,
       status: "connecting",
+      activity: false,
     };
     sessions.value.push(session);
     activeId.value = id;
@@ -91,10 +99,86 @@ export const useSessionsStore = defineStore("sessions", () => {
     }
   }
 
-  /** 激活指定会话 */
+  /** 激活指定会话，并清除其未读输出提示 */
   function activate(id: string) {
+    const s = sessions.value.find((x) => x.id === id);
+    if (s) s.activity = false;
     activeId.value = id;
   }
 
-  return { sessions, activeId, activeSession, open, close, activate };
+  /**
+   * 调整选项卡顺序：将 fromId 移动到 targetId 所在位置（拖拽排序用）
+   */
+  function move(fromId: string, targetId: string) {
+    const from = sessions.value.findIndex((s) => s.id === fromId);
+    const to = sessions.value.findIndex((s) => s.id === targetId);
+    if (from < 0 || to < 0 || from === to) return;
+    const [item] = sessions.value.splice(from, 1);
+    sessions.value.splice(to, 0, item);
+  }
+
+  /**
+   * 重连指定会话：复用同一 sessionId 重建后端连接
+   * 返回 true 表示终端组件已挂载、需由调用方在现有终端上重开通道以保留历史；
+   * 返回 false 表示走全新连接（终端将随状态变为 connected 后自动挂载）
+   */
+  async function reconnect(id: string): Promise<boolean> {
+    const s = sessions.value.find((x) => x.id === id);
+    if (!s) return false;
+    // connected/disconnected 时终端组件仍挂载，可原地重开通道保留历史
+    const hadTerminal = s.status === "connected" || s.status === "disconnected";
+    reconnecting.add(id);
+    useMonitorStore().stop(id);
+    // 全新连接（首次失败或连接中）先置连接中以显示进度并触发终端挂载
+    if (!hadTerminal) setStatus(id, "connecting");
+    try {
+      await sshDisconnect(id);
+    } catch {
+      // 旧连接可能已断开，忽略
+    }
+    try {
+      await sshConnect({ ...s.config, id });
+      setStatus(id, "connected");
+      s.activity = false;
+      useMonitorStore().start(id);
+      return hadTerminal;
+    } catch (e) {
+      setStatus(id, "error", String(e));
+      return false;
+    } finally {
+      reconnecting.delete(id);
+    }
+  }
+
+  /**
+   * 标记会话掉线：由终端连接关闭事件驱动（远端 exit、网络断开等）
+   * 仅对处于已连接状态且非受控重连中的会话生效
+   */
+  function markDisconnected(id: string) {
+    if (reconnecting.has(id)) return;
+    const s = sessions.value.find((x) => x.id === id);
+    if (!s || s.status !== "connected") return;
+    setStatus(id, "disconnected");
+    useMonitorStore().stop(id);
+  }
+
+  /** 标记未选中会话有新输出（激活中的会话不标记） */
+  function markActivity(id: string) {
+    if (id === activeId.value) return;
+    const s = sessions.value.find((x) => x.id === id);
+    if (s && s.status === "connected") s.activity = true;
+  }
+
+  return {
+    sessions,
+    activeId,
+    activeSession,
+    open,
+    close,
+    activate,
+    move,
+    reconnect,
+    markDisconnected,
+    markActivity,
+  };
 });
