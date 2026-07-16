@@ -33,6 +33,8 @@ const props = defineProps<{
   sessionId: string;
   /** 会话是否已连接 */
   connected: boolean;
+  /** 是否为当前激活选项卡，决定键盘导航是否响应 */
+  active: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -209,6 +211,8 @@ const contextMenuItems = computed<MenuItem[]>(() => {
 const CONTEXT_MENU_WIDTH = 140;
 const CONTEXT_MENU_HEIGHT = 272;
 const CONTEXT_MENU_MARGIN = 8;
+/** PageUp/PageDown 一次移动的条目数 */
+const PAGE_STEP = 10;
 
 /** 扁平化后的目录树节点 */
 const treeNodes = computed(() => {
@@ -390,6 +394,7 @@ function onFileKeyDown(event: KeyboardEvent) {
     return;
   }
   if (handleTypeaheadKey(event)) return;
+  if (handleNavKey(event)) return;
   if (event.key !== "Escape" || dialog.open) return;
   if (contextMenu.open) {
     closeContextMenu();
@@ -399,6 +404,43 @@ function onFileKeyDown(event: KeyboardEvent) {
   marquee.active = false;
   fileDrag.active = false;
   fileDrag.target = "";
+}
+
+/**
+ * 处理上下箭头与 PageUp/PageDown 导航：移动选中项到上一条/下一条，
+ * 无选中时默认选中首项，到首尾停止不循环，返回 true 表示按键已消费
+ */
+function handleNavKey(event: KeyboardEvent): boolean {
+  if (!props.active || !props.connected || dialog.open || editor.open || contextMenu.open) return false;
+  const target = event.target as HTMLElement;
+  if (target.closest?.("input, textarea, select, .xterm")) return false;
+  const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : event.key === "PageDown" ? PAGE_STEP : event.key === "PageUp" ? -PAGE_STEP : 0;
+  if (step === 0) return false;
+  const names = selectableEntries.value.map((entry) => entry.name);
+  if (names.length === 0) {
+    event.preventDefault();
+    return true;
+  }
+  // 以锚点为基准移动；锚点丢失时回退到当前选中项在可见顺序中的最后一个
+  let current = names.indexOf(selectionAnchor.value);
+  if (current < 0) {
+    for (let i = names.length - 1; i >= 0; i--) {
+      if (selectedNames.value.has(names[i])) {
+        current = i;
+        break;
+      }
+    }
+  }
+  // 无选中状态时上下键默认选中首项，否则到首尾停止不循环
+  const next = current < 0 ? 0 : Math.max(0, Math.min(names.length - 1, current + step));
+  selectSingle(names[next]);
+  nextTick(() => {
+    entryRows()
+      .find((row) => row.dataset.name === names[next])
+      ?.scrollIntoView({ block: "nearest" });
+  });
+  event.preventDefault();
+  return true;
 }
 
 /** 键入快速定位候选：列表区为文件名，树区为可见节点路径 */

@@ -342,6 +342,16 @@ impl TransferManager {
         }
     }
 
+    /// 清理指定会话的远端目录存在缓存
+    ///
+    /// 缓存仅用于同一次上传内多文件共享祖先目录、避免重复请求；跨次上传之间远端目录
+    /// 可能已被删除，若沿用旧缓存会跳过重建导致写入子文件时报 No such file，
+    /// 故每次上传开始前先清空该会话的缓存。
+    fn invalidate_dir_cache(&self, session_id: &str) {
+        let prefix = format!("{}\n", session_id);
+        self.dir_cache.retain(|key| !key.starts_with(&prefix));
+    }
+
     /// 统计指定会话内未完成的文件任务数（不含聚合目录节点，不分上传下载）
     fn active_file_count(&self, session_id: &str) -> u64 {
         self.tasks
@@ -414,6 +424,9 @@ impl TransferManager {
         if let Some(result) = self.check_file_count(session_id, file_count, force)? {
             return Ok(result);
         }
+
+        // 清空本会话残留的远端目录缓存，避免复用已被删除目录的旧记录
+        self.invalidate_dir_cache(session_id);
 
         // 目标位置同名检测：未确认覆盖时收集已存在的顶层条目名返回前端确认
         if !overwrite {

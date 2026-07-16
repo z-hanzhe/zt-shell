@@ -74,10 +74,15 @@ defineExpose({ setFilePath });
         v-show="activeTab === 'files'"
         :session-id="sessionId"
         :connected="connected"
+        :active="activeTab === 'files'"
         @sync-terminal-path="emit('sync-terminal-path', $event)"
         @sync-file-path="emit('sync-file-path')"
       />
-      <TransferPanel v-show="activeTab === 'transfers'" :session-id="sessionId" />
+      <TransferPanel
+        v-show="activeTab === 'transfers'"
+        :session-id="sessionId"
+        :active="activeTab === 'transfers'"
+      />
     </div>
   </div>
 </template>

@@ -3,7 +3,7 @@
  * 传输面板：当前会话的上传/下载任务列表，文件夹任务支持展开收起，
  * 支持 Ctrl/Shift 多选与框选，右键菜单提供暂停/继续/删除/重试等操作
  */
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
@@ -20,6 +20,8 @@ import { formatDuration, formatRate, formatSizeFixed } from "../utils";
 const props = defineProps<{
   /** 当前会话标识，仅展示该会话的任务 */
   sessionId: string;
+  /** 面板是否处于激活可见状态，决定是否响应方向键导航 */
+  active: boolean;
 }>();
 
 const transfersStore = useTransfersStore();
@@ -451,9 +453,24 @@ function onDialogCancel() {
   resolve?.(false);
 }
 
+/** 收集任务及其全部子孙任务（与后端删除级联子树的口径一致） */
+function collectSubtree(roots: TransferTask[]): TransferTask[] {
+  const seen = new Set<string>();
+  const out: TransferTask[] = [];
+  const walk = (task: TransferTask) => {
+    if (seen.has(task.id)) return;
+    seen.add(task.id);
+    out.push(task);
+    for (const child of childrenMap.value.get(task.id) ?? []) walk(child);
+  };
+  for (const root of roots) walk(root);
+  return out;
+}
+
 /** 删除前确认：目标中含未完成任务时红色警示确认 */
 async function confirmRemove(targets: TransferTask[], all: boolean): Promise<boolean> {
-  const unfinished = targets.filter((t) => t.status !== "completed").length;
+  // 目录节点删除会级联子树，统计需展开到全部子孙的执行单元
+  const unfinished = collectSubtree(targets).filter((t) => !t.isDir && t.status !== "completed").length;
   if (unfinished === 0) return true;
   const message = all
     ? `当前会话还有 ${unfinished} 个未完成的任务，删除后无法恢复，是否仍然删除全部任务？`
@@ -531,15 +548,61 @@ async function runMenuAction(item: MenuItem) {
   }
 }
 
-/** 按 Esc 关闭菜单或清空选择 */
+/** 每次 PageUp/PageDown 跨越的行数 */
+const PAGE_STEP = 10;
+
+/** 将指定行滚动到可视区域 */
+function scrollRowIntoView(id: string) {
+  nextTick(() => {
+    taskRows()
+      .find((row) => row.dataset.id === id)
+      ?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+/** 方向键/翻页键移动选择：无选中时选首项，到首尾停止不循环 */
+function moveSelection(delta: number) {
+  const ids = rows.value.map((row) => row.task.id);
+  if (ids.length === 0) return;
+  const current = selectionAnchor.value || [...selectedIds.value][0] || "";
+  const index = ids.indexOf(current);
+  const next = index < 0 ? 0 : Math.min(Math.max(index + delta, 0), ids.length - 1);
+  selectSingle(ids[next]);
+  scrollRowIntoView(ids[next]);
+}
+
+/** 面板按键：Esc 关闭菜单或清空选择，方向键与翻页键移动选择 */
 function onKeyDown(event: KeyboardEvent) {
-  if (event.key !== "Escape" || dialog.open) return;
-  if (contextMenu.open) {
-    closeContextMenu();
+  if (!props.active || dialog.open) return;
+  if (event.key === "Escape") {
+    if (contextMenu.open) {
+      closeContextMenu();
+      return;
+    }
+    clearSelection();
+    marquee.active = false;
     return;
   }
-  clearSelection();
-  marquee.active = false;
+  // 方向键与翻页键仅在非输入区响应，避免干扰弹窗等场景
+  const target = event.target as HTMLElement;
+  if (target.closest?.("input, textarea, select, .xterm")) return;
+  switch (event.key) {
+    case "ArrowDown":
+      moveSelection(1);
+      break;
+    case "ArrowUp":
+      moveSelection(-1);
+      break;
+    case "PageDown":
+      moveSelection(PAGE_STEP);
+      break;
+    case "PageUp":
+      moveSelection(-PAGE_STEP);
+      break;
+    default:
+      return;
+  }
+  event.preventDefault();
 }
 
 // 切换会话时清理选择与菜单，避免跨会话残留
