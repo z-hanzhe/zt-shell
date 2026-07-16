@@ -107,12 +107,13 @@ export const useSessionsStore = defineStore("sessions", () => {
   }
 
   /**
-   * 调整选项卡顺序：将 fromId 移动到 targetId 所在位置（拖拽排序用）
+   * 将指定会话移动到目标下标位置（指针拖拽排序用）
    */
-  function move(fromId: string, targetId: string) {
-    const from = sessions.value.findIndex((s) => s.id === fromId);
-    const to = sessions.value.findIndex((s) => s.id === targetId);
-    if (from < 0 || to < 0 || from === to) return;
+  function moveToIndex(id: string, index: number) {
+    const from = sessions.value.findIndex((s) => s.id === id);
+    if (from < 0) return;
+    const to = Math.min(Math.max(index, 0), sessions.value.length - 1);
+    if (from === to) return;
     const [item] = sessions.value.splice(from, 1);
     sessions.value.splice(to, 0, item);
   }
@@ -176,7 +177,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     open,
     close,
     activate,
-    move,
+    moveToIndex,
     reconnect,
     markDisconnected,
     markActivity,

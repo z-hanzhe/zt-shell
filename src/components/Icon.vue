@@ -39,6 +39,7 @@ const paths: Record<string, string> = {
   arrowUp: "M12 19V5M5 12l7-7 7 7",
   search: "M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3",
   chevronRight: "M9 18l6-6-6-6",
+  chevronLeft: "M15 18l-6-6 6-6",
   winMin: "M5 12h14",
   winMax: "M5 5h14v14H5z",
   winRestore: "M8 8V6a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-2M5 9h10v10H5V9z",
