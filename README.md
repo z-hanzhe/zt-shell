@@ -2,7 +2,7 @@
 
 基于 Tauri 2 + Vue 3 + Rust 构建的跨平台桌面端 SSH 客户端 ZTShell，布局借鉴 FinalShell 及其他同款优秀工具
 
-![homepage.jpg](./.ai-assisted/img/homepage.jpg)
+![homepage.jpg](./.ai-assisted/img/homepage.png)
 
 ## 功能
 
@@ -31,6 +31,15 @@ npm run tauri dev
 
 # 构建发布包
 npm run tauri build
+
+# 建议使用 1024×1024 PNG 支持透明背景设置应用图标（自绘标题栏需要复制一份到 ./public/app-icon.png）
+npm run tauri -- icon ./logo.png
+Copy-Item .\src-tauri\icons\128x128.png .\public\app-icon.png -Force
+
+# 修改版本号
+# Tauri 应用及安装包版本：src-tauri/tauri.conf.json:4
+# Rust 应用版本：src-tauri/Cargo.toml:3
+# 前端项目版本：package.json:4
 ```
 
 ## 说明
