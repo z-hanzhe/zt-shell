@@ -8,6 +8,11 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [vue()],
 
+  build: {
+    // xterm 6.0.0 在低于 ES2021 的二次压缩中会破坏 requestMode 作用域（xterm.js#5800）
+    target: "es2021",
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

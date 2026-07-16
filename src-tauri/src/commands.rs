@@ -1,5 +1,6 @@
 //! Tauri 命令层：将前端调用映射到 SSH 内核能力
 
+use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, State};
 
 use crate::ssh::manager::SessionManager;
@@ -47,8 +48,13 @@ pub async fn terminal_open(
     session_id: String,
     cols: u32,
     rows: u32,
+    on_data: Channel<Response>,
 ) -> CmdResult<()> {
-    map_err(manager.open_terminal(app, &session_id, cols, rows).await)
+    map_err(
+        manager
+            .open_terminal(app, &session_id, cols, rows, on_data)
+            .await,
+    )
 }
 
 /// 向终端写入用户输入（字节序列）

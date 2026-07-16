@@ -8,6 +8,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
+import { Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import Icon from "./Icon.vue";
@@ -29,11 +30,13 @@ const container = ref<HTMLDivElement>();
 const term = shallowRef<Terminal>();
 let fitAddon: FitAddon;
 let searchAddon: SearchAddon;
-let unlistenData: UnlistenFn | null = null;
 let unlistenClose: UnlistenFn | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let opened = false;
 let pwdBuffer = "";
+let terminalWriteQueue: Promise<void> = Promise.resolve();
+const textEncoder = new TextEncoder();
+const outputDecoder = new TextDecoder();
 const pendingPwdRequests = new Map<string, (path: string) => void>();
 
 /** 右键菜单状态 */
@@ -89,15 +92,22 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-/** 写入终端字节 */
+/** 将终端输入串行发送，保持 xterm 产生的数据顺序 */
+function enqueueTerminalWrite(command: () => Promise<void>): Promise<void> {
+  const result = terminalWriteQueue.then(command);
+  terminalWriteQueue = result.catch(() => {});
+  return result;
+}
+
+/** 按序写入终端字节 */
 function writeToTerminal(data: string): Promise<void> {
-  const bytes = Array.from(new TextEncoder().encode(data));
-  return terminalWrite(props.sessionId, bytes);
+  const bytes = Array.from(textEncoder.encode(data));
+  return enqueueTerminalWrite(() => terminalWrite(props.sessionId, bytes));
 }
 
 /** 从输出中捕获专用 OSC 当前目录标记 */
-function capturePwdMarkers(bytes: number[]) {
-  const text = new TextDecoder().decode(new Uint8Array(bytes));
+function capturePwdMarkers(bytes: Uint8Array) {
+  const text = outputDecoder.decode(bytes, { stream: true });
   pwdBuffer = (pwdBuffer + text).slice(-4096);
   const marker = /\x1b\]6973;ZTSHELL_PWD=([^:]+):([^\x07]*)\x07/g;
   let match: RegExpExecArray | null;
@@ -106,114 +116,6 @@ function capturePwdMarkers(bytes: number[]) {
     pendingPwdRequests.delete(match[1]);
   }
   if (!pwdBuffer.includes("\x1b]")) pwdBuffer = "";
-}
-
-/** 将字符串转为字节数组（仅用于 ASCII 控制序列） */
-function seqBytes(value: string): number[] {
-  return Array.from(value, (ch) => ch.charCodeAt(0));
-}
-
-type OutputRule = {
-  bytes: number[];
-  action: "softClear" | "dropScrollbackErase" | "altOn" | "altOff";
-};
-
-/**
- * 输出流改写规则：
- * - ESC[2J（擦除全屏）在主屏改为软清屏（内容滚入回滚区），备用屏原样放行
- * - ESC[3J（擦除回滚区）在主屏丢弃以保留历史，备用屏原样放行
- * - 备用屏开关序列用于精确跟踪 vim/less 等全屏应用状态
- */
-const OUTPUT_RULES: OutputRule[] = [
-  { bytes: seqBytes("\x1b[2J"), action: "softClear" },
-  { bytes: seqBytes("\x1b[3J"), action: "dropScrollbackErase" },
-  { bytes: seqBytes("\x1b[?1049h"), action: "altOn" },
-  { bytes: seqBytes("\x1b[?1047h"), action: "altOn" },
-  { bytes: seqBytes("\x1b[?47h"), action: "altOn" },
-  { bytes: seqBytes("\x1b[?1049l"), action: "altOff" },
-  { bytes: seqBytes("\x1b[?1047l"), action: "altOff" },
-  { bytes: seqBytes("\x1b[?47l"), action: "altOff" },
-];
-
-/** 输出流改写状态：跨块未完整序列的尾巴与备用屏标记 */
-const outputFilter = { tail: [] as number[], alt: false };
-
-/**
- * clear 软清屏：在输出字节流层改写清屏序列（先于 xterm 解析，顺序与后续
- * 提示符输出严格一致，避免经 write 队列插队导致提示符被滚进历史）。
- * 主屏的 ESC[2J 替换为"光标移到底行 + 整屏换行滚入回滚区 + 光标回左上"，
- * 历史仍可向上翻查；备用屏（vim/less 等）一切序列原样放行不做干预
- */
-function transformOutput(t: Terminal, payload: number[]): Uint8Array {
-  const data = outputFilter.tail.length ? [...outputFilter.tail, ...payload] : payload;
-  outputFilter.tail = [];
-  const out: number[] = [];
-  let i = 0;
-  while (i < data.length) {
-    if (data[i] !== 0x1b) {
-      out.push(data[i]);
-      i++;
-      continue;
-    }
-    // 尝试匹配改写规则
-    let matched: OutputRule | null = null;
-    let partial = false;
-    for (const rule of OUTPUT_RULES) {
-      const available = Math.min(rule.bytes.length, data.length - i);
-      let ok = true;
-      for (let j = 0; j < available; j++) {
-        if (data[i + j] !== rule.bytes[j]) {
-          ok = false;
-          break;
-        }
-      }
-      if (!ok) continue;
-      if (available === rule.bytes.length) {
-        matched = rule;
-        break;
-      }
-      partial = true;
-    }
-    if (matched) {
-      applyOutputRule(t, matched, out);
-      i += matched.bytes.length;
-      continue;
-    }
-    if (partial) {
-      // 块尾序列不完整，留到下一块拼接后再判断
-      outputFilter.tail = data.slice(i);
-      break;
-    }
-    out.push(data[i]);
-    i++;
-  }
-  return new Uint8Array(out);
-}
-
-/** 应用单条输出改写规则 */
-function applyOutputRule(t: Terminal, rule: OutputRule, out: number[]) {
-  switch (rule.action) {
-    case "altOn":
-      outputFilter.alt = true;
-      out.push(...rule.bytes);
-      break;
-    case "altOff":
-      outputFilter.alt = false;
-      out.push(...rule.bytes);
-      break;
-    case "dropScrollbackErase":
-      // 备用屏无回滚区语义差异，原样放行；主屏丢弃以保留历史
-      if (outputFilter.alt) out.push(...rule.bytes);
-      break;
-    case "softClear":
-      if (outputFilter.alt) {
-        out.push(...rule.bytes);
-        break;
-      }
-      // 光标移到底行，整屏换行把现有内容滚入回滚区，再把光标移回左上等待新提示符
-      out.push(...seqBytes(`\x1b[${t.rows};1H${"\n".repeat(t.rows)}\x1b[H`));
-      break;
-  }
 }
 
 /** 初始化终端并绑定事件 */
@@ -239,6 +141,12 @@ async function setup() {
   t.open(container.value);
   fitAddon.fit();
   term.value = t;
+
+  // 仅在主屏拦截 ESC[3J 以保留回滚历史，备用屏与其他清屏序列走 xterm 原生处理
+  t.parser.registerCsiHandler({ final: "J" }, (params) => {
+    if (params[0] === 3 && t.buffer.active.type === "normal") return true;
+    return false;
+  });
 
   // 查找结果变化时更新计数
   searchAddon.onDidChangeResults((e) => {
@@ -280,15 +188,16 @@ async function setup() {
     return true;
   });
 
-  // 监听后端推送的远端输出
-  const dataEvent = `terminal://data//${props.sessionId}`;
   const closeEvent = `terminal://close//${props.sessionId}`;
-  unlistenData = await listen<number[]>(dataEvent, (e) => {
-    capturePwdMarkers(e.payload);
-    t.write(transformOutput(t, e.payload));
-  });
   unlistenClose = await listen(closeEvent, () => {
     t.write("\r\n\x1b[33m[连接已关闭]\x1b[0m\r\n");
+  });
+
+  // 终端输出使用有序二进制 Channel，原始字节直接交给 xterm
+  const dataChannel = new Channel<ArrayBuffer>((payload) => {
+    const bytes = new Uint8Array(payload);
+    capturePwdMarkers(bytes);
+    t.write(bytes);
   });
 
   // 用户输入回传后端
@@ -296,8 +205,7 @@ async function setup() {
     writeToTerminal(data).catch(() => {});
   });
 
-  // 开启后端终端通道
-  await terminalOpen(props.sessionId, t.cols, t.rows);
+  await terminalOpen(props.sessionId, t.cols, t.rows, dataChannel);
 
   // 尺寸自适应
   resizeObserver = new ResizeObserver(() => doFit());
@@ -313,9 +221,9 @@ function doFit() {
   }
   try {
     fitAddon.fit();
-    terminalResize(props.sessionId, term.value.cols, term.value.rows).catch(
-      () => {}
-    );
+    const cols = term.value.cols;
+    const rows = term.value.rows;
+    terminalResize(props.sessionId, cols, rows).catch(() => {});
   } catch {
     // 容器不可见时忽略
   }
@@ -496,23 +404,29 @@ function requestCwd(): Promise<string> {
   });
 }
 
+/** 启动终端并在当前终端内显示初始化错误 */
+function startTerminal() {
+  setup().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    term.value?.write(`\r\n\x1b[31m[终端启动失败：${message}]\x1b[0m\r\n`);
+  });
+}
+
 // 连接成功后再初始化终端
 watch(
   () => props.connected,
   (v) => {
-    if (v) setup();
-  },
-  { immediate: true }
+    if (v) startTerminal();
+  }
 );
 
 onMounted(() => {
   window.addEventListener("pointerdown", onGlobalPointerDown);
-  if (props.connected) setup();
+  if (props.connected) startTerminal();
 });
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
-  unlistenData?.();
   unlistenClose?.();
   window.removeEventListener("pointerdown", onGlobalPointerDown);
   term.value?.dispose();

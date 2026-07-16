@@ -2,7 +2,7 @@
  * 后端 Tauri 命令的前端封装，集中管理 invoke 调用
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   ConnectionConfig,
   FileEntry,
@@ -21,13 +21,16 @@ export function sshDisconnect(sessionId: string): Promise<void> {
   return invoke("ssh_disconnect", { sessionId });
 }
 
-/** 开启终端 */
+/**
+ * 开启终端。终端输出通过 ipc::Channel 按序接收 Raw 二进制数据
+ */
 export function terminalOpen(
   sessionId: string,
   cols: number,
-  rows: number
+  rows: number,
+  onData: Channel<ArrayBuffer>
 ): Promise<void> {
-  return invoke("terminal_open", { sessionId, cols, rows });
+  return invoke("terminal_open", { sessionId, cols, rows, onData });
 }
 
 /** 向终端写入数据 */

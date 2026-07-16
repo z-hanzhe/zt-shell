@@ -16,7 +16,7 @@
 
 功能文档 见.ai-assisted/markdown/index.md 任务前先读索引 涉及模块加载对应文档 架构arch SSH内核ssh-core 文件管理sftp 传输任务transfer 监控monitor 前端frontend 命令commands
 
-关键约定 前端sessionId与后端sessionId共用同一标识由前端genId生成 Tauri命令前端invoke传camelCase键后端snake_case参数 ConnectionConfig等结构体serde用rename_all camelCase 终端事件terminal://data//{sessionId}与terminal://close//{sessionId} tauri-plugin-store的load的options需含defaults字段
+关键约定 前端sessionId与后端sessionId共用同一标识由前端genId生成 Tauri命令前端invoke传camelCase键后端snake_case参数 ConnectionConfig等结构体serde用rename_all camelCase 终端输出走ipc::Channel<ArrayBuffer>关闭事件terminal://close//{sessionId} tauri-plugin-store的load的options需含defaults字段
 
 监控限制 仅支持Linux远端 依赖标准/proc与coreutils df ps
 
@@ -33,3 +33,5 @@ Vue响应式坑 pinia的ref数组中push普通对象后 勿直接改原始对象
 自绘标题栏 tauri.conf设decorations:false禁用系统标题栏 拖拽与双击最大化用原生data-tauri-drag-region属性 勿手动mousedown+startDragging会吞掉双击导致双击无法切换最大化 需core:window的minimize/toggle-maximize/unmaximize/close/start-dragging/is-maximized/internal-toggle-maximize权限
 
 终端配色 Tokyo Night 背景#1a1b26前景#c0caf5 完整16色ANSI调色板使ls --color等转义色正确高亮 见Terminal.vue的theme 背景用不透明纯色勿allowTransparency否则WebView2渲染成纯黑 字体栈Consolas优先再回落内置Cascadia Mono
+
+终端构建 Vite生产build.target保持es2021 规避@xterm/xterm6.0.0二次压缩缺陷(xterm.js#5800) 禁止无验证降级

@@ -5,8 +5,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use russh_sftp::client::SftpSession;
+use tauri::ipc::{Channel, Response};
 use tauri::AppHandle;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
 use super::session::{SshSession, TerminalCommand};
 use super::types::ConnectionConfig;
@@ -18,7 +19,7 @@ struct SessionEntry {
     /// 登录密码（用于 sudo 提权时复用，密码认证时才有）
     login_password: Option<String>,
     /// 终端通道控制发送端（打开终端后写入）
-    terminal_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<TerminalCommand>>>,
+    terminal_tx: Mutex<Option<UnboundedSender<TerminalCommand>>>,
     /// 普通 SFTP 会话（首次使用文件管理时惰性建立）
     sftp: Mutex<Option<Arc<SftpSession>>>,
     /// 是否启用 sudo 提权文件管理
@@ -75,11 +76,12 @@ impl SessionManager {
         session_id: &str,
         cols: u32,
         rows: u32,
+        on_data: Channel<Response>,
     ) -> Result<()> {
         let entry = self.entry(session_id)?;
         let tx = entry
             .session
-            .open_terminal(app, session_id.to_string(), cols, rows)
+            .open_terminal(app, session_id.to_string(), cols, rows, on_data)
             .await?;
         *entry.terminal_tx.lock().await = Some(tx);
         Ok(())
@@ -89,10 +91,9 @@ impl SessionManager {
     pub async fn write_terminal(&self, session_id: &str, data: Vec<u8>) -> Result<()> {
         let entry = self.entry(session_id)?;
         let guard = entry.terminal_tx.lock().await;
-        if let Some(tx) = guard.as_ref() {
-            tx.send(TerminalCommand::Write(data))
-                .map_err(|_| anyhow!("终端已关闭"))?;
-        }
+        let tx = guard.as_ref().ok_or_else(|| anyhow!("终端尚未打开"))?;
+        tx.send(TerminalCommand::Write(data))
+            .map_err(|_| anyhow!("终端已关闭"))?;
         Ok(())
     }
 
@@ -100,10 +101,9 @@ impl SessionManager {
     pub async fn resize_terminal(&self, session_id: &str, cols: u32, rows: u32) -> Result<()> {
         let entry = self.entry(session_id)?;
         let guard = entry.terminal_tx.lock().await;
-        if let Some(tx) = guard.as_ref() {
-            tx.send(TerminalCommand::Resize(cols, rows))
-                .map_err(|_| anyhow!("终端已关闭"))?;
-        }
+        let tx = guard.as_ref().ok_or_else(|| anyhow!("终端尚未打开"))?;
+        tx.send(TerminalCommand::Resize(cols, rows))
+            .map_err(|_| anyhow!("终端已关闭"))?;
         Ok(())
     }
 

@@ -6,6 +6,7 @@ use anyhow::{anyhow, Result};
 use russh::client::{self, Handle};
 use russh::keys::PrivateKeyWithHashAlg;
 use russh::ChannelMsg;
+use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
 
@@ -92,18 +93,15 @@ impl SshSession {
 
     /// 开启一个交互式终端通道，返回用于向远端发送指令的通道
     ///
-    /// 通道拆分为读写两个独立异步任务：读任务持续消费远端输出并推送事件
-    /// `terminal://data//{session_id}`，通道关闭时推送 `terminal://close//{session_id}`；
-    /// 写任务处理输入/改尺寸/关闭指令。
-    /// 读写必须分离：russh 通道内部为有界缓冲（默认 100 条消息），若写入等待期间
-    /// 不消费输出，vim/top 等全屏应用的爆发输出会填满缓冲并阻塞整个连接的传输层，
-    /// 造成会话假死（曾致进入 VIM 后无法操作也无法退出）
+    /// 读写拆分为独立任务，输出通过有序二进制 IPC Channel 推送到前端；
+    /// 写任务顺序处理输入、窗口尺寸变更和关闭指令，避免任一方向阻塞另一方向。
     pub async fn open_terminal(
         &self,
         app: AppHandle,
         session_id: String,
         cols: u32,
         rows: u32,
+        on_data: Channel<Response>,
     ) -> Result<mpsc::UnboundedSender<TerminalCommand>> {
         let channel = self
             .handle
@@ -122,19 +120,17 @@ impl SshSession {
             .map_err(|e| anyhow!("启动 shell 失败：{}", e))?;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TerminalCommand>();
-        let data_event = format!("terminal://data//{}", session_id);
         let close_event = format!("terminal://close//{}", session_id);
         let (mut read_half, write_half) = channel.split();
 
-        // 读任务：持续消费远端输出，绝不被写入阻塞
+        // 持续消费远端输出；前端已释放 Channel 时停止无效推送
         tokio::spawn(async move {
             while let Some(msg) = read_half.wait().await {
                 match msg {
-                    ChannelMsg::Data { data } => {
-                        let _ = app.emit(&data_event, data.to_vec());
-                    }
-                    ChannelMsg::ExtendedData { data, .. } => {
-                        let _ = app.emit(&data_event, data.to_vec());
+                    ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                        if on_data.send(Response::new(data.to_vec())).is_err() {
+                            break;
+                        }
                     }
                     ChannelMsg::Eof | ChannelMsg::Close => break,
                     _ => {}
@@ -147,13 +143,13 @@ impl SshSession {
         tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
-                    TerminalCommand::Write(bytes) => {
-                        if write_half.data(&bytes[..]).await.is_err() {
+                    TerminalCommand::Write(data) => {
+                        if write_half.data(&data[..]).await.is_err() {
                             break;
                         }
                     }
-                    TerminalCommand::Resize(c, r) => {
-                        let _ = write_half.window_change(c, r, 0, 0).await;
+                    TerminalCommand::Resize(cols, rows) => {
+                        let _ = write_half.window_change(cols, rows, 0, 0).await;
                     }
                     TerminalCommand::Close => break,
                 }
