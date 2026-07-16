@@ -1,27 +1,23 @@
 前端结构
 
-入口与布局 main.ts创建app注册pinia引入styles.css与内置字体 App.vue自绘标题栏+主体+底部状态栏 主体手写flex+自定义拖拽分隔条 左监控固定像素宽右下文件区固定像素高 窗口缩放仅右上终端区自适应 分隔条通过mousemove改reactive的leftWidth/bottomHeight
+入口 App.vue自绘标题栏+主体+底部状态栏 主体flex三栏布局 分隔条可拖拽
 
-组件 src/components Icon.vue内置SVG图标避免图标库依赖 AppDialog.vue通用提示/确认/输入弹窗(确认按钮文案可定制 confirmDanger红色警示样式 loading类型转圈提示无按钮不可关) MonitorPanel.vue左监控 TerminalPanel.vue右上终端区含选项卡栏(拖拽排序/横向滚动溢出/右键菜单/断线绿点更新/未读叹号)文件夹图标开连接管理器(设置按钮已移至标题栏) Terminal.vue封装xterm单终端 BottomPanel.vue右下含文件/传输两选项卡 传输选项卡右上角标显示执行中任务数上限99 FileManager.vue文件管理器 TransferPanel.vue传输面板见transfer.md ConnectionManager.vue连接管理器弹窗参考conn.png ConnectionEditor.vue连接编辑弹窗 SettingsDialog.vue设置弹窗 TitleBar.vue自绘标题栏
+组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue SettingsDialog.vue TextEditorDialog.vue(monaco-editor) TitleBar.vue
 
-状态 src/stores connections.ts已保存连接持久化connections.json sessions.ts活动会话选项卡 状态connecting/connected/error(首连失败)/disconnected(连后掉线或exit) open发起连接close断开activate激活(清activity) move拖拽排序 reconnect复用同sessionId重连(connected/disconnected原地重开通道保留历史返true 否则全新连接) markDisconnected终端关闭事件驱动(reconnecting集合抑制重连期误标) markActivity未选中会话有输出置activity open通过setStatus按id查响应式数组元素改状态 勿直接改原始对象否则视图不刷新 连接成功调monitor.start关闭调monitor.stop settings.ts应用设置持久化settings.json 均用tauri-plugin-store的load options需含defaults字段与autoSave monitor.ts按会话维度持续采集监控 states按sessionId存data/error/netHistory/netIndex/timer start幂等起定时器stop清状态 与激活选项卡无关 切换选项卡仍见该会话最近数据不清空不重采 transfers.ts传输任务列表见transfer.md App.vue onMounted初始化
+状态 connections.ts持久化连接 sessions.ts活动会话(open/close/activate/move/reconnect/markDisconnected/markActivity) settings.ts持久化设置 monitor.ts按会话采集(收发无关选项卡) transfers.ts传输任务 App.vue onMounted初始化
 
-工具 src/utils.ts formatBytes formatRate formatUptime formatTime genId joinPath parentPath src/api.ts封装所有invoke调用 src/types.ts前后端对应类型
+工具 utils.ts(formatBytes/genId/joinPath/parentPath) api.ts封装所有invoke types.ts前后端类型
 
-样式 styles.css全局CSS变量 通用btn input modal类 组件内scoped样式 保留少量兼容别名bg-root等映射到浅色
+样式 styles.css全局CSS变量+scoped内联
 
-标题栏 TitleBar.vue tauri.conf关闭decorations 应用图标public/app-icon.png源自icons/32x32.png 标题显示软件名+版本号(getVersion读tauri.conf的version) 设置按钮置于窗口三大金刚键左侧(emit open-settings由App处理) 最小化/最大化还原/关闭调getCurrentWindow API onResized同步最大化状态 拖拽与双击最大化用原生data-tauri-drag-region 勿手动mousedown+startDragging否则吞掉双击 logo与标题设pointer-events:none使拖拽落到标题栏 按钮不带drag-region保持可点击
+标题栏 decorations:false data-tauri-drag-region拖拽双击最大化 设置按钮置于金刚键左侧
 
-弹窗统一 全部弹窗风格一致 右上角统一叉号(×)关闭按钮用styles.css的.modal-close(loading等设计上不可关的弹窗不加) 弹窗正文.modal-body文字user-select:text便于复制 AppDialog/SettingsDialog/ConnectionManager/ConnectionEditor/TextEditorDialog均遵循此规范
+选项卡 指针自绘拖拽排序(WebView2 HTML5拖放不稳定) 溢出横向滚动按钮 左侧状态指示(点/叹号) 右键关闭/重连 重连复用同一sessionId原地重开通道保留xterm历史(reconnecting集合+Terminal suppressClose双重抑制旧通道terminal://close误标掉线) 掉线/远端exit经terminal://close由store.markDisconnected置disconnected并停监控 窗口关闭时含连接中的会话弹确认后destroy
 
-选项卡 TerminalPanel.vue选项卡栏 指针拖拽排序(pointerdown自绘非HTML5拖放 WebView2放置不稳定 超4px阈值才拖 拖拽全程冻结起始布局快照centers/dragStep不改动sessions数组 被按住项dragOffset跟随光标置顶去过渡跟手 中心点用getBoundingClientRect客户端坐标与clientX同系(勿用offsetLeft否则相对offsetParent错位)目标下标dragTo=除被按住项外中心点在光标左侧的选项卡数(即最终下标与moveToIndex实参各方向皆准) 其余项经tabShift按from/to区间整体平移一步长transition让位动画 松手pointerup仅提交一次moveToIndex(提交帧置suppressTabAnim加.no-anim禁过渡 使transform归零与重排同帧落定 nextTick+rAF后恢复 避免让位项回弹闪动) pointerup时才store.moveToIndex提交一次排序 避免边拖边换位导致的判定漂移与来回闪 跨平台一致) 溢出横向滚动(隐藏原生滚动条 左右两侧tb-scroll按钮scrollBy平滑滚动clientWidth*0.5 canScrollLeft/Right按scrollLeft与scrollWidth判定 ResizeObserver+scroll+sessions变化时更新) 状态指示位.tab-indicator固定10px容器 内部.ind-dot(8px圆点)与.ind-badge(叹号)切换不改宽度避免抖动 右键菜单[关闭/关闭其他/关闭全部/重连](.tab-context-menu 点击外部关闭) 关闭连接中/已连接会话与关闭其他/全部含活动会话时AppDialog红色二次确认 打开或切换会话后自动聚焦终端(Terminal setup末尾与activate时t.focus) 左侧圆点状态connecting黄/connected绿/error与disconnected红 未选中会话有新输出时圆点变橙色叹号(仿xshell activity标记 激活或收到时清除) 重连复用同一sessionId原地重开通道保留xterm历史(Terminal.reopen 重连期间store.reconnecting集合+Terminal suppressClose双重抑制旧通道terminal://close误标记掉线) 掉线/远端exit经terminal://close事件由store.markDisconnected置disconnected并停监控 关闭软件时App监听getCurrentWindow().onCloseRequested 存在连接中会话则preventDefault并弹确认 确认后window.destroy(需core:window:allow-destroy权限)
+终端 shallowRef防代理 allowProposedApi true(FitAddon/SearchAddon) Tokyo Night配色 背景不透明 右键菜单走原生剪贴板 快捷键attachCustomKeyEventHandler(clear仅拦主屏ESC[3J保留历史) 输入Promise队列保序 resize独立同步 隐写时doFit跳过 App层放行终端Ctrl组合与F3/F5/F7 FileManager的F5在事件源自.xterm时跳过
 
-单实例 禁止多开 tauri-plugin-single-instance(必须最先注册) 再次启动时回调unminimize+show+set_focus唤起已运行的main窗口 仅Win/Mac/Linux支持
+字体 @fontsource/cascadia-mono自托管 终端栈Consolas>Cascadia Mono UI中文系统栈
 
-终端 Terminal.vue xterm实例存shallowRef避免响应式代理 allowProposedApi必须true(SearchAddon decorations依赖proposed API) FitAddon自适应 SearchAddon查找 ResizeObserver监听尺寸 配色Tokyo Night完整16色ANSI 背景不透明 doFit隐藏时跳过 activate时fit+refresh+scrollToBottom 右键菜单复制粘贴查找全选清缓存 菜单后归还焦点 剪贴板走原生插件 快捷键由attachCustomKeyEventHandler处理 clear仅拦主屏ESC[3J保留历史 备用屏及其他序列交xterm且不改写输出字节 terminalOpen传ipc::Channel<ArrayBuffer>接收后端Raw字节并直写t.write 终端输入经Promise队列保序 resize独立同步避免拖拽积压 Vite生产build.target保持es2021规避xterm6.0.0压缩缺陷(xterm.js#5800) App层放行终端Ctrl组合与F3/F5/F7 FileManager的F5在事件源自.xterm时跳过
+文件管理 左侧树+右侧列表 表头排序 多选/框选/拖拽移动 右键上传下载打包下载删除重命名 键入快速定位 地址栏↑cd当前终端 ↓printf OSC标记读PWD后切文件路径 TextEditorDialog集成monaco-editor ESM worker 只读自动检测(sudo恒可写 普通exec test -w) 1MB/二进制确认 变更退出二次确认
 
-字体内置 main.ts引入@fontsource/cascadia-mono的400与700 自托管随应用打包 终端字体栈Consolas优先再Cascadia Mono再Courier New Windows用系统Consolas与finalshell-ref一致 Mac/Linux无Consolas回落内置Cascadia Mono保证跨平台一致 vite按unicode-range分包运行时仅加载所需子集 UI中文仍用系统栈 内置完整CJK体积过大不采用
-
-文件管理 FileManager.vue左侧为根目录/起始文件树 根默认展开且不显示展开图标 单击树节点右侧显示目录 双击或箭头展开收起 右侧目录变化后树选中项自动滚入可视区域 左右分割线可拖拽 地址栏右侧↑将地址栏路径cd到当前终端 ↓通过终端printf专用OSC标记读取PWD后切换文件管理路径 新建目录弹窗提示完整目标路径 右侧表头点击排序默认文件名升序 升序文件夹在上降序文件夹在下 非根目录...始终置顶 文件列表支持单选 Ctrl/Cmd多选 Shift范围多选 行与空白区域鼠标框选 Ctrl/Cmd框选反选 Esc优先关闭右键菜单再清空选择 已选中项可拖拽移动到右侧列表文件夹/...上级目录或左侧目录树 松开后弹窗确认单个文件名或多个文件数量 未选中项拖动只触发框选 右键选中项保持选择菜单作用于选中集 右键未选中项先清空选择等同空白右键 点击应用任意非菜单区域关闭 含刷新编辑文本复制路径重命名上传文件上传文件夹下载打包下载新建文件/文件夹删除 上传下载打包下载均创建传输任务见transfer.md 边缘自动收敛不超出视口 键入快速定位 树/列表按最近点击区域生效 可打印字符追加关键字包含匹配(列表选中文件名/树高亮locating节点)并滚入可视区 上下箭头循环切换命中项 底部居中胶囊浮层显示关键字与序号 Backspace逐字删除删空或Esc结束(树区结束时进入最后定位目录) 点击面板打断不跳转 焦点在input/textarea/xterm时不触发 TextEditorDialog集成monaco-editor使用Vite ESM worker提供VSCode风格编辑与多语言高亮 支持自动识别与手动切换语言高亮 关闭/取消仅内容变更时二次确认 保存无确认直接写入 保存中显示无按钮不可关弹窗 结果经done(error?)回调 成功弹窗主按钮"退出编辑器"叉号仅关弹窗不退出 失败弹窗主按钮"确定"仅关弹窗 无写入权限时打开只读(sftpCheckWritable检测 sudo模式恒可写 普通模式exec test -w) 只读态monaco readOnly+标题红色[只读]前缀+保存禁用 App层对.monaco-editor内的Ctrl+F/H/G与F3放行使查找替换可用 大于1MB需确认 内容疑似二进制需确认
-
-监控面板 MonitorPanel.vue按FinalShell布局 纯视图从monitor store读当前会话数据 IP行含复制按钮navigator.clipboard复制host 系统信息按钮蓝色渐变未连接置灰 运行负载 CPU内存交换meter进度条内嵌百分比与右侧用量 各小表表头列间加分割线 进程表内存CPU列窄命令列宽 内存列显示真实占用formatShort(memBytes)如1.4G CPU列显示%cpu数值 每行内存CPU单元格带从右向左占用背景条宽度取百分比 cell-bar设min-width:2px保证极低占用也可见成一条线兼作列分隔 表头点击按cpu/mem降序排序且高亮当前列 磁盘表可用大小列固定96px宽 该列同样加从右向左的usePercent占用背景条 网络图纵轴四档刻度顶峰值底0 中间1/3与2/3处画虚线横线 柱固定7px列宽上下两根各3px整数宽避免亚像素致粗细不一 右对齐从右向左推入 骨架始终渲染未连接时值显示-/0%表格空占位避免面板空荡 采集出错在底部提示 左侧面板最小宽度240px 网络上下行nowrap不换行+网卡下拉自适应宽度上限110px超长省略hover显全名 store采集所有网卡历史存netHistories按网卡名切换无需重积攒 默认自动选网卡只在物理网卡中选无物理才退虚拟 取历史累计流量最高者 观察AUTO_LOCK_AFTER个样本且有流量后netAutoLocked锁定不再跳动 当前网卡消失重新自动选 手动选后netPinned固定 图每点画上传橙下载绿双柱 柱宽固定5px右对齐新数据从右向左推入 左侧纵轴三档刻度按峰值/(2/3)/(1/3) 无图例靠上方↑↓标识 磁盘表 骨架始终渲染未连接时值显示-/0%表格空占位避免面板空荡 采集出错在底部提示
+监控面板 纯视图读monitor store 系统信息/CPU/内存/网卡图/磁盘/进程 未连骨架占位 采集出错底部提示 网卡历史按名切换 默认自动选网卡(物理优先 取历史累计流量最高者 有流量后自动锁定不再跳动 消失重新选 手动选后固定) 图双柱上传橙下载绿

@@ -1,11 +1,9 @@
 Tauri命令
 
-后端命令 见src-tauri/src/commands.rs 均返回Result<T,String>错误转字符串 注册于lib.rs invoke_handler
+后端 见commands.rs 均返回Result<T,String> 注册于lib.rs invoke_handler 参数前端camelCase后端snake_case自动映射
 
-清单 ssh_connect config建立连接返回sessionId ssh_disconnect sessionId断开并清理该会话传输任务 terminal_open sessionId cols rows onData开终端(onData为ipc Channel 后端用Response发送Raw字节) terminal_write sessionId data写入字节 terminal_resize sessionId cols rows改尺寸 monitor_collect sessionId采集监控 sftp_list sessionId path列举 sftp_home sessionId主目录 sftp_read sessionId path读文件 sftp_write sessionId path data写文件 sftp_remove_file sftp_remove_dir(递归删除目录及内容) sftp_create_dir sftp_rename from to sftp_upload localPath remotePath sftp_download remotePath localPath sftp_set_sudo sessionId enabled切换文件管理sudo提权开关 sftp_check_writable sessionId path检测写入权限(sudo模式恒true 普通模式exec test -w) transfer_upload/transfer_download/transfer_pack_download/transfer_list/transfer_pause/transfer_resume/transfer_remove/transfer_retry_failed传输任务见transfer.md
+命令分类 ssh_connect/disconnect terminal_open/write/resize monitor_collect sftp_* transfer_* 详细签名见api.ts(前端)与commands.rs(后端)
 
-前端封装与参数约定 见src/api.ts封装所有invoke invoke第二参数为对象键名camelCase Tauri自动映射后端snake_case参数 例sessionId对应session_id config为ConnectionConfig结构体serde rename_all camelCase
+托管状态 SessionManager TransferManager通过Builder::manage注入 命令用State获取
 
-托管状态 SessionManager与TransferManager通过Builder::manage注入 命令用State获取
-
-插件 tauri_plugin_store持久化 tauri_plugin_dialog本地文件对话框 tauri_plugin_opener打开文件/资源管理器定位 tauri_plugin_clipboard_manager原生剪贴板(终端复制粘贴) tauri_plugin_single_instance禁用多开(必须最先注册 再次启动回调unminimize+show+set_focus唤起已运行main窗口) 权限见capabilities/default.json需含store:default dialog:default opener:default clipboard-manager:allow-read-text clipboard-manager:allow-write-text 自绘标题栏需窗口权限core:window的allow-minimize allow-toggle-maximize allow-unmaximize allow-close allow-start-dragging allow-is-maximized allow-internal-toggle-maximize allow-destroy 其中internal-toggle-maximize供data-tauri-drag-region双击最大化使用 allow-destroy供关闭软件确认后销毁窗口(App层onCloseRequested拦截 有连接中会话时preventDefault弹窗确认) 标题栏版本号用@tauri-apps/api/app的getVersion core:default已含core:app:default的allow-version无需额外授权
+插件 tauri-plugin-store/dialog/opener/clipboard-manager/single-instance(必须最先注册 再次启动回调unminimize+show+set_focus唤起已运行main窗口 仅Win/Mac/Linux) 权限见capabilities/default.json 自绘标题栏需core:window窗口权限(minimize/toggle-maximize/unmaximize/close/start-dragging/is-maximized/internal-toggle-maximize/destroy) 版本号getVersion已含core:default

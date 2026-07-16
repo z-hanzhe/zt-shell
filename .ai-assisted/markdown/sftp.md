@@ -1,13 +1,9 @@
 SFTP文件管理
 
-实现 见src-tauri/src/ssh/sftp.rs 基于russh-sftp的SftpSession 惰性建立 首次使用文件管理时open_sftp_channel请求sftp子系统再SftpSession::new
+实现 基于russh-sftp的SftpSession 惰性建立 首次使用时open_sftp_channel请求sftp子系统
 
-操作 list_dir列举目录返回FileEntry列表 目录在前文件在后按名排序 read_file读取 write_file创建或截断后覆盖写 remove_file删文件 remove_dir删空目录 remove_dir_all递归删除目录及全部内容(SFTP遍历先收集后逆序删 用于sudo提权模式) sftp_remove_dir命令普通模式经exec rm -rf快速删除(哨兵__ZTOK__/__ZTFAIL__判成败 拒绝空路径与根目录防误删) sudo提权模式exec通道不提权故回落SFTP递归删 符号链接按文件unlink不深入 create_dir建目录 rename重命名移动 canonicalize解析绝对路径用于定位主目录 upload本地文件读入再写远端 download远端读入再写本地 format_sftp_error将SFTP错误格式化为简洁文案(Status错误当消息与状态码同名时去重 避免Failure: Failure) 所有SFTP错误文案与transfer.rs统一走它
+操作 list_dir/read_file/write_file/remove_file/remove_dir/remove_dir_all/create_dir/rename/canonicalize(解析绝对路径用于定位主目录) upload/download 删目录普通模式exec rm -rf(哨兵__ZTOK__/__ZTFAIL__ 防空路径与根) sudo模式exec不提权回落SFTP递归删 符号链unlink不深入 错误统一走format_sftp_error(Status错误消息与状态码同名时去重 避免Failure:Failure) 所有SFTP错误文案与transfer.rs统一走它
 
-权限解析 format_permissions将FileType与mode转为drwxr-xr-x风格字符串
+sudo提权 会话可切换普通/sudo两种 sudo走exec sudo -S启动sftp-server 密码stdin喂入 提示报错走stderr不污染stdout 握手哨兵__ZTOK__就绪__ZTPW__密码提示__ZTNO__缺失 覆盖需密码/已缓存/NOPASSWD 再次收到密码提示即密码错 is_sudo供删除选择rm -rf或SFTP递归 仅Linux 私钥无密码时仅NOPASSWD可成功 sftp_set_sudo启用时立即建提权会话失败回滚 关闭清空提权会话缓存回落普通
 
-sudo提权模式 见session.rs open_sudo_sftp_channel与manager.rs set_sudo/ensure_sudo_sftp/is_sudo 会话可切换普通/sudo两种SFTP 普通走request_subsystem sftp sudo走专用通道exec sudo -S -p自定义提示符启动sftp-server 登录密码从stdin喂入复用连接配置密码 sudo提示与报错走stderr而russh的into_stream只读stdout丢弃stderr故不污染二进制协议 命令内跨发行版探测sftp-server路径(/usr/lib/openssh等)握手用哨兵__ZTOK__就绪__ZTPW__密码提示__ZTNO__缺失 涵盖需密码/已缓存/NOPASSWD三种 再次收到密码提示即判定密码错 前端勾选sudo即调sftp_set_sudo启用时立即建提权会话失败回滚 关闭清空提权会话缓存回落普通 is_sudo供删除目录选择rm -rf或SFTP递归 仅Linux 私钥登录无密码时仅NOPASSWD可成功
-
-前端 见FileManager.vue 顶部路径栏含上级刷新新建目录 右侧列表非根目录置顶...返回上级 手动输入路径跳转 增删改重命名 删除文件与目录统一走sftp_remove_dir(普通模式菜单名"删除(rm -rf)")删除中显示loading弹窗(无按钮不可关)完成后提示弹窗 上传下载打包下载入口见transfer.md 会话切换缓存并恢复该会话cwd/sudo开关/树展开状态(sessionUiStates按sessionId 关闭或断开清缓存) 首次进入sftpHome定位主目录并联动左侧树 键入快速定位见frontend.md
-
-注意点 远端路径统一正斜杠 见utils.ts joinPath parentPath sftp_upload/sftp_download为整文件一次性读写保留作简单场景 批量/大文件/断点续传走传输任务见transfer.md
+注意 远端路径统一正斜杠 sftp_upload/download为整文件一次性读写(简单场景) 批量/大文件/断点续传走传输任务
