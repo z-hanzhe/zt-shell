@@ -5,9 +5,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
-import TextEditorDialog from "./TextEditorDialog.vue";
 import {
   sftpList,
   sftpHome,
@@ -15,10 +15,8 @@ import {
   sftpRemoveDir,
   sftpCreateDir,
   sftpRename,
-  sftpRead,
   sftpWrite,
   sftpSetSudo,
-  sftpCheckWritable,
   transferUpload,
   transferDownload,
   transferPackDownload,
@@ -28,6 +26,10 @@ import { formatShort, formatTime, joinPath, parentPath } from "../utils";
 import { hasOpenModal } from "../composables/useEscClose";
 import { useTransfersStore } from "../stores/transfers";
 import { useSessionsStore } from "../stores/sessions";
+import {
+  focusExistingTextEditorWindow,
+  openTextEditorWindow,
+} from "../editorWindows";
 
 const props = defineProps<{
   /** 当前会话标识，空表示无活动会话 */
@@ -91,8 +93,6 @@ const marquee = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 });
 const fileDrag = reactive({ active: false, count: 0, x: 0, y: 0, target: "" });
 /** 右键菜单状态 */
 const contextMenu = reactive({ open: false, x: 0, y: 0 });
-/** 文本编辑器状态 */
-const editor = reactive({ open: false, path: "", content: "", readonly: false });
 /** 系统文件拖入悬停提示 */
 const dropHover = ref(false);
 /** 键入快速定位状态 */
@@ -108,6 +108,8 @@ let stopResize: (() => void) | undefined;
 let pointerAction: PointerAction | null = null;
 /** 系统文件拖拽事件反注册函数 */
 let unlistenDragDrop: (() => void) | undefined;
+/** 文本编辑窗口保存事件反注册函数 */
+let unlistenEditorSaved: UnlistenFn | undefined;
 /** 上传完成后的延迟刷新计时器（合并批量完成） */
 let uploadRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 /** 最近一次交互的区域，决定键入快速定位作用于树还是列表 */
@@ -119,6 +121,7 @@ type TreeNode = { path: string; name: string; depth: number };
 type ColumnKey = SortKey;
 type PointerMode = "select" | "drag";
 type TypeaheadZone = "tree" | "list";
+type EditorSavedPayload = { sessionId: string; path: string };
 type PointerAction = {
   mode: PointerMode;
   entry?: FileEntry;
@@ -262,7 +265,10 @@ function appendTreeChildren(nodes: TreeNode[], path: string, depth: number) {
 async function loadTreeDir(path: string) {
   if (!props.sessionId || !props.connected) return;
   if (treeChildren.value[path]) return;
-  const list = await sftpList(props.sessionId, path);
+  const version = sessionViewVersion;
+  const sessionId = props.sessionId;
+  const list = await sftpList(sessionId, path);
+  if (version !== sessionViewVersion || sessionId !== props.sessionId || !props.connected) return;
   treeChildren.value = {
     ...treeChildren.value,
     [path]: list.filter((e) => e.isDir).sort((a, b) => compareName(a.name, b.name)),
@@ -413,7 +419,7 @@ function onFileKeyDown(event: KeyboardEvent) {
  * 无选中时默认选中首项，到首尾停止不循环，返回 true 表示按键已消费
  */
 function handleNavKey(event: KeyboardEvent): boolean {
-  if (!props.active || !props.connected || dialog.open || editor.open || contextMenu.open) return false;
+  if (!props.active || !props.connected || dialog.open || contextMenu.open) return false;
   const target = event.target as HTMLElement;
   if (target.closest?.("input, textarea, select, .xterm")) return false;
   const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : event.key === "PageDown" ? PAGE_STEP : event.key === "PageUp" ? -PAGE_STEP : 0;
@@ -461,7 +467,7 @@ const typeaheadMatches = computed<string[]>(() => {
 
 /** 处理键入快速定位按键，返回 true 表示按键已被消费 */
 function handleTypeaheadKey(event: KeyboardEvent): boolean {
-  if (!props.connected || dialog.open || editor.open || contextMenu.open) return false;
+  if (!props.connected || dialog.open || contextMenu.open) return false;
   const target = event.target as HTMLElement;
   if (target.closest?.("input, textarea, select, .xterm")) return false;
   if (typeahead.active) {
@@ -843,56 +849,30 @@ async function copySelectedPath() {
   }
 }
 
-/** 根据内容粗略判断二进制文件 */
-function isLikelyBinary(bytes: number[]): boolean {
-  if (bytes.length === 0) return false;
-  const sample = bytes.slice(0, Math.min(bytes.length, 4096));
-  if (sample.includes(0)) return true;
-  const controlCount = sample.filter((byte) => byte < 32 && ![9, 10, 13].includes(byte)).length;
-  return controlCount / sample.length > 0.08;
-}
-
 /** 打开文本编辑器 */
 async function onEditText() {
   const entry = selectedEntries.value[0];
   if (!entry || entry.isDir) return;
   const path = joinPath(cwd.value, entry.name);
+  try {
+    if (await focusExistingTextEditorWindow(props.sessionId, path)) return;
+  } catch (e) {
+    showMessage("打开失败", String(e));
+    return;
+  }
   if (entry.size > 1024 * 1024) {
     const confirmed = await showConfirm("编辑确认", "文件大于 1MB，是否继续打开编辑？");
     if (!confirmed) return;
   }
   try {
-    const bytes = await sftpRead(props.sessionId, path);
-    if (isLikelyBinary(bytes)) {
-      const confirmed = await showConfirm("编辑确认", "文件可能不是文本文件，是否继续打开编辑？");
-      if (!confirmed) return;
-    }
-    // 无写入权限时以只读模式打开；检测失败按可写处理避免误锁
-    let writable = true;
-    try {
-      writable = await sftpCheckWritable(props.sessionId, path);
-    } catch {
-      writable = true;
-    }
-    editor.readonly = !writable;
-    editor.path = path;
-    editor.content = new TextDecoder().decode(new Uint8Array(bytes));
-    editor.open = true;
+    const session = sessionsStore.sessions.find((item) => item.id === props.sessionId);
+    await openTextEditorWindow({
+      sessionId: props.sessionId,
+      sessionName: session?.name || session?.config.host || props.sessionId,
+      path,
+    });
   } catch (e) {
     showMessage("打开失败", String(e));
-  }
-}
-
-/** 保存文本编辑内容：结果经回调反馈到编辑器内部弹窗 */
-async function onEditorSave(value: string, done: (error?: string) => void) {
-  try {
-    await sftpWrite(props.sessionId, editor.path, Array.from(new TextEncoder().encode(value)));
-    // 同步内容基线，避免保存后继续编辑时误报未保存变更
-    editor.content = value;
-    await refresh();
-    done();
-  } catch (e) {
-    done(String(e));
   }
 }
 
@@ -969,19 +949,27 @@ async function refresh() {
     entries.value = [];
     return;
   }
+  const version = sessionViewVersion;
+  const sessionId = props.sessionId;
+  const path = cwd.value;
   loading.value = true;
   error.value = "";
   try {
-    entries.value = await sftpList(props.sessionId, cwd.value);
+    const nextEntries = await sftpList(sessionId, path);
+    if (version !== sessionViewVersion || sessionId !== props.sessionId || path !== cwd.value) return;
+    entries.value = nextEntries;
     treeChildren.value = {
       ...treeChildren.value,
-      [cwd.value]: entries.value.filter((e) => e.isDir).sort((a, b) => compareName(a.name, b.name)),
+      [path]: nextEntries.filter((e) => e.isDir).sort((a, b) => compareName(a.name, b.name)),
     };
   } catch (e) {
+    if (version !== sessionViewVersion || sessionId !== props.sessionId || path !== cwd.value) return;
     error.value = String(e);
     entries.value = [];
   } finally {
-    loading.value = false;
+    if (version === sessionViewVersion && sessionId === props.sessionId && path === cwd.value) {
+      loading.value = false;
+    }
   }
 }
 
@@ -1095,11 +1083,28 @@ onMounted(async () => {
   } catch (e) {
     console.warn("注册文件拖拽失败（可能非 Tauri 环境）", e);
   }
+  try {
+    unlistenEditorSaved = await listen<EditorSavedPayload>("editor://saved", (event) => {
+      if (event.payload.sessionId !== props.sessionId) {
+        staleSessionIds.add(event.payload.sessionId);
+        return;
+      }
+      if (
+        props.connected &&
+        parentPath(event.payload.path) === cwd.value
+      ) {
+        refresh();
+      }
+    });
+  } catch (e) {
+    console.warn("注册文本编辑保存事件失败（可能非 Tauri 环境）", e);
+  }
 });
 
 onBeforeUnmount(() => {
   stopResize?.();
   unlistenDragDrop?.();
+  unlistenEditorSaved?.();
   clearTimeout(uploadRefreshTimer);
   window.removeEventListener("pointermove", onFilePointerMove);
   window.removeEventListener("keydown", onFileKeyDown, true);
@@ -1121,10 +1126,20 @@ function isInFileList(position: { x: number; y: number }): boolean {
 watch(
   () => transfersStore.uploadDoneTick,
   () => {
-    if (!props.connected || transfersStore.uploadDoneSession !== props.sessionId) return;
+    const sessionId = transfersStore.uploadDoneSession;
+    if (sessionId !== props.sessionId) {
+      if (sessionId) staleSessionIds.add(sessionId);
+      return;
+    }
+    if (!props.connected) return;
+    const version = sessionViewVersion;
     clearTimeout(uploadRefreshTimer);
     uploadRefreshTimer = setTimeout(() => {
-      refresh();
+      if (version === sessionViewVersion && sessionId === props.sessionId) {
+        refresh();
+      } else {
+        staleSessionIds.add(sessionId);
+      }
     }, 600);
   }
 );
@@ -1384,14 +1399,20 @@ function onDialogCancel() {
 type SessionUiState = {
   cwd: string;
   sudoActive: boolean;
+  entries: FileEntry[];
+  error: string;
   treeChildren: Record<string, FileEntry[]>;
   expandedDirs: Set<string>;
 };
 
 /** 各会话的界面状态缓存 */
 const sessionUiStates = new Map<string, SessionUiState>();
+/** 已知发生文件变更、切回时需要刷新列表的会话 */
+const staleSessionIds = new Set<string>();
 /** 上一个活动会话标识，用于切换时保存其界面状态 */
 let lastSessionId = "";
+/** 当前文件管理视图版本，用于丢弃选项卡切换前返回的异步结果 */
+let sessionViewVersion = 0;
 
 /** 保存指定会话的界面状态（会话已关闭时清除缓存） */
 function stashSessionUiState(id: string) {
@@ -1400,9 +1421,16 @@ function stashSessionUiState(id: string) {
     sessionUiStates.delete(id);
     return;
   }
+  // 切换发生在异步加载完成前时不缓存半成品，下次进入重新初始化
+  if (loading.value) {
+    sessionUiStates.delete(id);
+    return;
+  }
   sessionUiStates.set(id, {
     cwd: cwd.value,
     sudoActive: sudoActive.value,
+    entries: entries.value,
+    error: error.value,
     treeChildren: treeChildren.value,
     expandedDirs: expandedDirs.value,
   });
@@ -1412,6 +1440,7 @@ function stashSessionUiState(id: string) {
 watch(
   () => [props.sessionId, props.connected] as const,
   async ([id, conn]) => {
+    const version = ++sessionViewVersion;
     if (lastSessionId !== id) {
       stashSessionUiState(lastSessionId);
       lastSessionId = id;
@@ -1424,31 +1453,59 @@ watch(
         // 切回已浏览过的会话：恢复目录、sudo 开关与树展开状态（后端 sudo 状态本就按会话保留）
         cwd.value = cached.cwd;
         sudoActive.value = cached.sudoActive;
+        entries.value = cached.entries;
+        error.value = cached.error;
         treeChildren.value = cached.treeChildren;
         expandedDirs.value = cached.expandedDirs;
-        await refresh();
-        await syncTreeToCwd();
+        loading.value = false;
+        if (staleSessionIds.delete(id)) await refresh();
         return;
       }
+      loading.value = true;
+      error.value = "";
       sudoActive.value = false;
+      staleSessionIds.delete(id);
+      let home = "/";
       try {
-        cwd.value = await sftpHome(id);
+        home = await sftpHome(id);
       } catch {
-        cwd.value = "/";
+        // 主目录解析失败时沿用根目录，再由列表加载展示具体错误
       }
+      if (version !== sessionViewVersion) return;
+      cwd.value = home;
       treeChildren.value = {};
       expandedDirs.value = new Set(["/"]);
       await refresh();
+      if (version !== sessionViewVersion) return;
       await syncTreeToCwd();
     } else {
       // 断开或无会话：清空展示与该会话的缓存
       sessionUiStates.delete(id);
+      staleSessionIds.delete(id);
       sudoActive.value = false;
       entries.value = [];
       treeChildren.value = {};
     }
   },
   { immediate: true }
+);
+
+// 终端断开或选项卡关闭时清理对应前端缓存，重连后首次进入重新加载
+watch(
+  () => sessionsStore.sessions.map((session) => `${session.id}:${session.status}`),
+  () => {
+    const connectedIds = new Set(
+      sessionsStore.sessions
+        .filter((session) => session.status === "connected")
+        .map((session) => session.id)
+    );
+    for (const id of sessionUiStates.keys()) {
+      if (!connectedIds.has(id)) sessionUiStates.delete(id);
+    }
+    for (const id of staleSessionIds) {
+      if (!connectedIds.has(id)) staleSessionIds.delete(id);
+    }
+  }
 );
 
 defineExpose({ setPathFromTerminal });
@@ -1629,14 +1686,6 @@ defineExpose({ setPathFromTerminal });
       :confirm-danger="dialog.confirmDanger"
       @confirm="onDialogConfirm"
       @cancel="onDialogCancel"
-    />
-    <TextEditorDialog
-      :open="editor.open"
-      :path="editor.path"
-      :content="editor.content"
-      :readonly="editor.readonly"
-      @save="onEditorSave"
-      @close="editor.open = false"
     />
   </div>
 </template>

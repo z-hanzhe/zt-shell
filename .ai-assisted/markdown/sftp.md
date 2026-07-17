@@ -1,9 +1,9 @@
 SFTP文件管理
 
-实现 基于russh-sftp的SftpSession 惰性建立 首次使用时open_sftp_channel请求sftp子系统
+实现 基于russh-sftp的SftpSession 按后端SessionEntry惰性建立并缓存 首次使用时open_sftp_channel请求sftp子系统 普通终端选项卡切换不重建
 
 操作 list_dir/read_file/write_file/remove_file/remove_dir/remove_dir_all/create_dir/rename/canonicalize(解析绝对路径用于定位主目录) upload/download 删目录普通模式exec rm -rf(哨兵__ZTOK__/__ZTFAIL__ 防空路径与根) sudo模式exec不提权回落SFTP递归删 符号链unlink不深入 错误统一走format_sftp_error(Status错误消息与状态码同名时去重 避免Failure:Failure) 所有SFTP错误文案与transfer.rs统一走它
 
 sudo提权 会话可切换普通/sudo两种 sudo走exec sudo -S启动sftp-server 密码stdin喂入 提示报错走stderr不污染stdout 握手哨兵__ZTOK__就绪__ZTPW__密码提示__ZTNO__缺失 覆盖需密码/已缓存/NOPASSWD 再次收到密码提示即密码错 is_sudo供删除选择rm -rf或SFTP递归 仅Linux 私钥无密码时仅NOPASSWD可成功 sftp_set_sudo启用时立即建提权会话失败回滚 关闭清空提权会话缓存回落普通
 
-注意 远端路径统一正斜杠 sftp_upload/download为整文件一次性读写(简单场景) 批量/大文件/断点续传走传输任务
+注意 远端路径统一正斜杠 sftp_upload/download为整文件一次性读写(简单场景) 批量/大文件/断点续传走传输任务 终端channel结束会移除所属SessionEntry并释放普通/提权SFTP缓存

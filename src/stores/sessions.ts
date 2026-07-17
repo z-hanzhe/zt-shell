@@ -11,6 +11,7 @@ import type { ConnectionConfig } from "../types";
 import { sshConnect, sshDisconnect } from "../api";
 import { genId } from "../utils";
 import { useMonitorStore } from "./monitor";
+import { closeTextEditorWindowsForSession } from "../editorWindows";
 
 /**
  * 会话连接状态：
@@ -84,6 +85,8 @@ export const useSessionsStore = defineStore("sessions", () => {
   async function close(id: string) {
     const idx = sessions.value.findIndex((s) => s.id === id);
     if (idx < 0) return;
+    // 编辑窗口从属于选项卡，会话移除前先强制关闭其全部编辑窗口
+    await closeTextEditorWindowsForSession(id);
     // 停止该会话监控
     useMonitorStore().stop(id);
     const [removed] = sessions.value.splice(idx, 1);

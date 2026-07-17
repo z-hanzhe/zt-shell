@@ -35,3 +35,9 @@ Vue响应式坑 pinia ref数组push普通对象后勿直接改原始对象引用
 终端配色 Tokyo Night 背景#1a1b26前景#c0caf5 完整16色ANSI 不透明背景(勿allowTransparency否则WebView2渲染纯黑) 字体Consolas>Cascadia Mono
 
 终端构建 Vite build.target es2021 规避@xterm/xterm压缩缺陷(xterm.js#5800)
+
+文本编辑 使用复用TitleBar的自绘标题栏独立Tauri WebviewWindow 会话+远端路径唯一定位 重复打开聚焦已有窗口 ESC不关闭窗口 关闭会话选项卡须销毁所属编辑窗口 重连复用sessionId使窗口继续读写
+
+会话生命周期 终端channel是会话核心 结束后后端须按条目身份清理同代SSH/SFTP与传输资源 防止旧channel关闭误删重连后的同sessionId新会话
+
+文件管理会话状态 目录列表/路径/树/sudo按sessionId缓存 普通选项卡切换不刷新SFTP 外部变更标脏后切回刷新 终端断开或选项卡关闭清缓存 异步结果须校验视图版本防跨会话污染

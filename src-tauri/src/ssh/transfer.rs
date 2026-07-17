@@ -887,6 +887,7 @@ impl TransferManager {
 
     /// 移除指定会话的全部传输任务（会话断开时调用，避免遗留不可见的僵尸任务）
     pub fn remove_session(&self, app: &AppHandle, session_id: &str) {
+        self.invalidate_dir_cache(session_id);
         let ids: Vec<String> = self
             .order
             .lock()

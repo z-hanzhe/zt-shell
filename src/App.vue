@@ -25,6 +25,7 @@ import { useSettingsStore } from "./stores/settings";
 import { useTransfersStore } from "./stores/transfers";
 import type { ConnectionConfig } from "./types";
 import type { AppSettings } from "./stores/settings";
+import { closeAllTextEditorWindows } from "./editorWindows";
 
 const connectionsStore = useConnectionsStore();
 const sessionsStore = useSessionsStore();
@@ -178,12 +179,25 @@ async function syncFilePath() {
 
 /** 窗口关闭事件解绑函数 */
 let unlistenCloseRequested: UnlistenFn | null = null;
+/** 是否正在执行受控窗口销毁，避免重复拦截关闭事件 */
+let destroyingWindow = false;
+
+/** 关闭全部编辑窗口后销毁主窗口 */
+async function destroyAppWindows() {
+  destroyingWindow = true;
+  try {
+    await closeAllTextEditorWindows();
+  } catch (e) {
+    console.warn("关闭文本编辑窗口失败", e);
+  }
+  await getCurrentWindow().destroy();
+}
 
 /** 确认关闭软件：销毁窗口退出 */
 async function onConfirmClose() {
   showCloseConfirm.value = false;
   try {
-    await getCurrentWindow().destroy();
+    await destroyAppWindows();
   } catch (e) {
     console.warn("关闭窗口失败", e);
   }
@@ -204,10 +218,17 @@ onMounted(async () => {
   }
   // 拦截窗口关闭：存在连接中的会话时先二次确认（非 Tauri 环境忽略）
   try {
-    unlistenCloseRequested = await getCurrentWindow().onCloseRequested((event) => {
+    unlistenCloseRequested = await getCurrentWindow().onCloseRequested(async (event) => {
+      if (destroyingWindow) return;
+      event.preventDefault();
       if (terminalPanelRef.value?.hasLiveSessions()) {
-        event.preventDefault();
         showCloseConfirm.value = true;
+        return;
+      }
+      try {
+        await destroyAppWindows();
+      } catch (e) {
+        console.warn("关闭窗口失败", e);
       }
     });
   } catch (e) {

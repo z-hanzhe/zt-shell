@@ -6,10 +6,11 @@ use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use russh_sftp::client::SftpSession;
 use tauri::ipc::{Channel, Response};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
 
 use super::session::{SshSession, TerminalCommand};
+use super::transfer::TransferManager;
 use super::types::ConnectionConfig;
 
 /// 单个会话持有的运行时资源
@@ -35,6 +36,15 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    /// 关闭已移除会话的终端控制通道，其余 SSH/SFTP 资源随条目引用释放
+    fn close_entry(entry: Arc<SessionEntry>) {
+        if let Ok(mut guard) = entry.terminal_tx.try_lock() {
+            if let Some(tx) = guard.take() {
+                let _ = tx.send(TerminalCommand::Close);
+            }
+        }
+    }
+
     /// 建立新会话并纳入管理，返回会话标识
     pub async fn connect(&self, config: &ConnectionConfig) -> Result<String> {
         let session = SshSession::connect(config).await?;
@@ -53,11 +63,22 @@ impl SessionManager {
     /// 断开并移除会话，释放其终端与 SFTP 资源
     pub fn disconnect(&self, session_id: &str) {
         if let Some((_, entry)) = self.sessions.remove(session_id) {
-            if let Ok(mut guard) = entry.terminal_tx.try_lock() {
-                if let Some(tx) = guard.take() {
-                    let _ = tx.send(TerminalCommand::Close);
-                }
-            }
+            Self::close_entry(entry);
+        }
+    }
+
+    /**
+     * 仅当 sessionId 仍指向指定会话条目时断开，避免旧终端关闭事件误删重连后的新会话
+     */
+    fn disconnect_if_current(&self, session_id: &str, expected: &Arc<SessionEntry>) -> bool {
+        let removed = self
+            .sessions
+            .remove_if(session_id, |_, entry| Arc::ptr_eq(entry, expected));
+        if let Some((_, entry)) = removed {
+            Self::close_entry(entry);
+            true
+        } else {
+            false
         }
     }
 
@@ -79,9 +100,26 @@ impl SessionManager {
         on_data: Channel<Response>,
     ) -> Result<()> {
         let entry = self.entry(session_id)?;
+        let close_app = app.clone();
+        let close_session_id = session_id.to_string();
+        let close_entry = entry.clone();
         let tx = entry
             .session
-            .open_terminal(app, session_id.to_string(), cols, rows, on_data)
+            .open_terminal(
+                app,
+                session_id.to_string(),
+                cols,
+                rows,
+                on_data,
+                move || {
+                    let manager = close_app.state::<SessionManager>();
+                    if manager.disconnect_if_current(&close_session_id, &close_entry) {
+                        close_app
+                            .state::<TransferManager>()
+                            .remove_session(&close_app, &close_session_id);
+                    }
+                },
+            )
             .await?;
         *entry.terminal_tx.lock().await = Some(tx);
         Ok(())

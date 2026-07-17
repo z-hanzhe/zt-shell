@@ -12,6 +12,16 @@ import { getVersion } from "@tauri-apps/api/app";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import Icon from "./Icon.vue";
 
+const props = withDefaults(
+  defineProps<{
+    /** 自定义窗口标题，留空时显示应用名称和版本 */
+    title?: string;
+    /** 是否显示设置按钮 */
+    showSettings?: boolean;
+  }>(),
+  { title: "", showSettings: true }
+);
+
 const emit = defineEmits<{
   (e: "open-settings"): void;
 }>();
@@ -45,8 +55,8 @@ onMounted(async () => {
   try {
     appWindow = getCurrentWindow();
     maximized.value = await appWindow.isMaximized();
-    // 读取应用版本号（来自 tauri.conf.json 的 version 字段）
-    version.value = await getVersion();
+    // 主窗口读取应用版本号，自定义标题窗口无需显示版本
+    if (!props.title) version.value = await getVersion();
     // 监听窗口尺寸变化，同步最大化状态（拖拽或双击标题栏触发时）
     unlisten = await appWindow.onResized(async () => {
       maximized.value = (await appWindow?.isMaximized()) ?? false;
@@ -66,10 +76,10 @@ onBeforeUnmount(() => {
   <!-- data-tauri-drag-region：整条标题栏可拖拽窗口，双击切换最大化/还原 -->
   <div class="titlebar" data-tauri-drag-region>
     <img class="logo" src="/app-icon.png" alt="logo" draggable="false" />
-    <div class="app-title">ZTShell{{ version ? ` ${version}` : "" }}</div>
+    <div class="app-title">{{ props.title || `ZTShell${version ? ` ${version}` : ""}` }}</div>
 
     <!-- 设置按钮：置于窗口三大金刚键左侧 -->
-    <div class="title-actions">
+    <div v-if="props.showSettings" class="title-actions">
       <button class="win-btn" title="设置" @click="emit('open-settings')">
         <Icon name="settings" :size="15" />
       </button>
@@ -113,6 +123,10 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: #444;
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   pointer-events: none;
 }
 /* 设置按钮容器：与窗口控制按钮同高，保持可点击不参与拖拽 */

@@ -95,14 +95,18 @@ impl SshSession {
     ///
     /// 读写拆分为独立任务，输出通过有序二进制 IPC Channel 推送到前端；
     /// 写任务顺序处理输入、窗口尺寸变更和关闭指令，避免任一方向阻塞另一方向。
-    pub async fn open_terminal(
+    pub async fn open_terminal<F>(
         &self,
         app: AppHandle,
         session_id: String,
         cols: u32,
         rows: u32,
         on_data: Channel<Response>,
-    ) -> Result<mpsc::UnboundedSender<TerminalCommand>> {
+        on_close: F,
+    ) -> Result<mpsc::UnboundedSender<TerminalCommand>>
+    where
+        F: FnOnce() + Send + 'static,
+    {
         let channel = self
             .handle
             .channel_open_session()
@@ -136,6 +140,8 @@ impl SshSession {
                     _ => {}
                 }
             }
+            // 终端是会话核心，终端通道结束后先释放同代 SSH/SFTP 资源，再通知前端更新状态
+            on_close();
             let _ = app.emit(&close_event, ());
         });
 
