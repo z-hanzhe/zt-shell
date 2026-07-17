@@ -2,11 +2,11 @@
 
 入口 App.vue自绘标题栏+主体+底部状态栏 主体flex三栏布局 分隔条可拖拽
 
-组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue SettingsDialog.vue TextEditorDialog.vue(monaco-editor) TitleBar.vue
+组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关 禁止点空白关闭 仅按钮或ESC关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue SettingsDialog.vue TextEditorDialog.vue(monaco-editor) TitleBar.vue
 
 状态 connections.ts持久化连接 sessions.ts活动会话(open/close/activate/move/reconnect/markDisconnected/markActivity) settings.ts持久化设置 monitor.ts按会话采集(收发无关选项卡) transfers.ts传输任务 App.vue onMounted初始化
 
-工具 utils.ts(formatBytes/genId/joinPath/parentPath) api.ts封装所有invoke types.ts前后端类型
+工具 utils.ts(formatBytes/genId/joinPath/parentPath) api.ts封装所有invoke types.ts前后端类型 composables/useEscClose全局回调栈栈顶弹窗响应ESC(天然支持嵌套)所有模态弹窗统一禁点空白关仅按钮/ESC关 hasOpenModal供FileManager的ESC避让
 
 样式 styles.css全局CSS变量+scoped内联
 

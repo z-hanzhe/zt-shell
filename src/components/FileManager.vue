@@ -25,6 +25,7 @@ import {
 } from "../api";
 import type { FileEntry, TransferCreateResult } from "../types";
 import { formatShort, formatTime, joinPath, parentPath } from "../utils";
+import { hasOpenModal } from "../composables/useEscClose";
 import { useTransfersStore } from "../stores/transfers";
 import { useSessionsStore } from "../stores/sessions";
 
@@ -395,7 +396,8 @@ function onFileKeyDown(event: KeyboardEvent) {
   }
   if (handleTypeaheadKey(event)) return;
   if (handleNavKey(event)) return;
-  if (event.key !== "Escape" || dialog.open) return;
+  // 存在打开中的模态弹窗时，ESC 交由弹窗关闭，避免同时清空文件选择
+  if (event.key !== "Escape" || dialog.open || hasOpenModal()) return;
   if (contextMenu.open) {
     closeContextMenu();
     return;
