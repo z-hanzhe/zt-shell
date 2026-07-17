@@ -6,6 +6,7 @@ import { computed, ref } from "vue";
 import Icon from "./Icon.vue";
 import ConnectionEditor from "./ConnectionEditor.vue";
 import { useConnectionsStore } from "../stores/connections";
+import { useEscClose } from "../composables/useEscClose";
 import type { ConnectionConfig } from "../types";
 
 const emit = defineEmits<{
@@ -23,6 +24,12 @@ const selectedId = ref("");
 const editing = ref<ConnectionConfig | null | undefined>(undefined);
 /** 连接后关闭窗口 */
 const closeAfterConnect = ref(true);
+
+// ESC 关闭：内层编辑弹窗打开时其回调在栈顶，会先被关闭，故此处只需关闭本弹窗
+useEscClose(
+  () => true,
+  () => emit("close")
+);
 
 /** 关键字过滤后的连接列表 */
 const filtered = computed(() => {
@@ -70,7 +77,7 @@ function onConnect(config: ConnectionConfig) {
 </script>
 
 <template>
-  <div class="modal-mask" @mousedown.self="emit('close')">
+  <div class="modal-mask">
     <div class="modal conn-mgr">
       <div class="modal-header">
         <span>连接管理器</span>

@@ -47,6 +47,11 @@ export function terminalResize(
   return invoke("terminal_resize", { sessionId, cols, rows });
 }
 
+/** 判断本地路径是否为目录（终端拖拽上传前校验，仅允许单文件） */
+export function pathIsDir(path: string): Promise<boolean> {
+  return invoke("path_is_dir", { path });
+}
+
 /** 采集监控数据 */
 export function monitorCollect(sessionId: string): Promise<MonitorData> {
   return invoke("monitor_collect", { sessionId });

@@ -78,6 +78,12 @@ pub async fn terminal_resize(
     map_err(manager.resize_terminal(&session_id, cols, rows).await)
 }
 
+/// 判断本地路径是否为目录（供终端拖拽上传前校验，仅允许单文件）
+#[tauri::command]
+pub async fn path_is_dir(path: String) -> CmdResult<bool> {
+    Ok(std::path::Path::new(&path).is_dir())
+}
+
 /// 采集一次远程监控数据
 #[tauri::command]
 pub async fn monitor_collect(

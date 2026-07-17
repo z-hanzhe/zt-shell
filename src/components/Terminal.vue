@@ -10,9 +10,11 @@ import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { Channel } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import Icon from "./Icon.vue";
-import { terminalOpen, terminalWrite, terminalResize } from "../api";
+import AppDialog from "./AppDialog.vue";
+import { terminalOpen, terminalWrite, terminalResize, pathIsDir, transferUpload } from "../api";
 import { useSettingsStore } from "../stores/settings";
 
 const props = defineProps<{
@@ -59,6 +61,66 @@ const contextMenu = reactive({ open: false, x: 0, y: 0 });
 const search = reactive({ open: false, keyword: "", current: 0, total: 0 });
 /** 查找输入框引用 */
 const searchInput = ref<HTMLInputElement>();
+
+/** 系统文件拖入终端上传的悬停提示（仅单文件时显示） */
+const dropHover = ref(false);
+/** 系统文件拖拽事件反注册函数 */
+let unlistenDragDrop: (() => void) | null = null;
+// 记录当前拖拽是否为单文件（over 事件不带 paths，需在 enter 时判定后沿用）
+let dragSingleFile = false;
+
+/** 上传相关弹窗状态（复用 AppDialog，风格与文件管理一致） */
+const uploadDialog = reactive<{
+  open: boolean;
+  type: "info" | "confirm";
+  title: string;
+  message: string;
+  confirmText: string;
+  confirmDanger: boolean;
+  resolve?: (value: boolean) => void;
+}>({ open: false, type: "info", title: "", message: "", confirmText: "确定", confirmDanger: false });
+
+/** 显示覆盖确认弹窗，返回用户是否确认 */
+function confirmOverwrite(message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    Object.assign(uploadDialog, {
+      open: true,
+      type: "confirm",
+      title: "覆盖确认",
+      message,
+      confirmText: "覆盖",
+      confirmDanger: true,
+      resolve,
+    });
+  });
+}
+
+/** 显示纯提示弹窗（拒绝上传、上传失败等，仅一个确定按钮） */
+function showUploadInfo(title: string, message: string) {
+  Object.assign(uploadDialog, {
+    open: true,
+    type: "info",
+    title,
+    message,
+    confirmText: "确定",
+    confirmDanger: false,
+    resolve: undefined,
+  });
+}
+
+/** 上传弹窗确认 */
+function onUploadDialogConfirm() {
+  const resolve = uploadDialog.resolve;
+  uploadDialog.open = false;
+  resolve?.(true);
+}
+
+/** 上传弹窗取消 */
+function onUploadDialogCancel() {
+  const resolve = uploadDialog.resolve;
+  uploadDialog.open = false;
+  resolve?.(false);
+}
 
 /** 查找高亮配色（命中蓝框、当前项橙底） */
 const searchDecorations = {
@@ -467,6 +529,53 @@ function requestCwd(): Promise<string> {
   });
 }
 
+/** 判断窗口物理坐标是否落在终端区域内 */
+function isInTerminal(position: { x: number; y: number }): boolean {
+  const rect = container.value?.getBoundingClientRect();
+  if (!rect) return false;
+  // Tauri 拖拽事件坐标为物理像素，需按缩放比转换为 CSS 像素
+  const scale = window.devicePixelRatio || 1;
+  const x = position.x / scale;
+  const y = position.y / scale;
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+/**
+ * 处理拖入终端的文件：仅允许单个文件（多文件与文件夹拒绝），
+ * 上传至终端当前所在目录，目标存在同名文件时弹窗确认覆盖
+ */
+async function handleFileDrop(paths: string[]) {
+  if (!props.connected) return;
+  if (paths.length !== 1) {
+    showUploadInfo("无法上传", "仅支持拖拽单个文件上传，请勿一次拖入多个文件");
+    return;
+  }
+  const localPath = paths[0];
+  try {
+    // 文件夹不允许上传
+    if (await pathIsDir(localPath)) {
+      showUploadInfo("无法上传", "仅支持拖拽单个文件上传，不支持文件夹");
+      return;
+    }
+    // 取终端当前目录作为上传目标
+    const remoteDir = await requestCwd();
+    let overwrite = false;
+    for (;;) {
+      const result = await transferUpload(props.sessionId, [localPath], remoteDir, true, overwrite);
+      if (result.existNames.length > 0) {
+        const name = result.existNames[0];
+        if (!(await confirmOverwrite(`目标目录已存在同名文件「${name}」，是否覆盖？`))) return;
+        overwrite = true;
+        continue;
+      }
+      break;
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    showUploadInfo("上传失败", message);
+  }
+}
+
 /** 启动终端并在当前终端内显示初始化错误 */
 function startTerminal() {
   setup().catch((error) => {
@@ -483,14 +592,41 @@ watch(
   }
 );
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener("pointerdown", onGlobalPointerDown);
   if (props.connected) startTerminal();
+  // 注册系统文件拖入上传（仅 Tauri 环境有效，浏览器预览下静默失败）
+  try {
+    unlistenDragDrop = await getCurrentWebview().onDragDropEvent((event) => {
+      const payload = event.payload;
+      // 仅处理落在本终端区域内的拖拽，未连接或非激活选项卡不响应
+      if (!props.connected || !props.active) {
+        dropHover.value = false;
+        return;
+      }
+      if (payload.type === "enter") {
+        // 仅单文件拖拽显示悬停提示（多文件时不提示，落下再拒绝）
+        dragSingleFile = payload.paths.length === 1;
+        dropHover.value = isInTerminal(payload.position) && dragSingleFile;
+      } else if (payload.type === "over") {
+        dropHover.value = isInTerminal(payload.position) && dragSingleFile;
+      } else if (payload.type === "drop") {
+        const inside = isInTerminal(payload.position);
+        dropHover.value = false;
+        if (inside && payload.paths.length > 0) handleFileDrop(payload.paths);
+      } else {
+        dropHover.value = false;
+      }
+    });
+  } catch (e) {
+    console.warn("注册终端文件拖拽失败（可能非 Tauri 环境）", e);
+  }
 });
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   unlistenClose?.();
+  unlistenDragDrop?.();
   window.removeEventListener("pointerdown", onGlobalPointerDown);
   term.value?.dispose();
   pendingPwdRequests.clear();
@@ -538,6 +674,21 @@ defineExpose({ fit: doFit, activate, reopen, cdTo, requestCwd });
         {{ item.label }}
       </button>
     </div>
+
+    <!-- 拖拽单文件上传悬停提示 -->
+    <div v-if="dropHover" class="term-drop-overlay">松开鼠标上传到终端当前目录</div>
+
+    <!-- 上传相关弹窗（覆盖确认 / 提示） -->
+    <AppDialog
+      :open="uploadDialog.open"
+      :type="uploadDialog.type"
+      :title="uploadDialog.title"
+      :message="uploadDialog.message"
+      :confirm-text="uploadDialog.confirmText"
+      :confirm-danger="uploadDialog.confirmDanger"
+      @confirm="onUploadDialogConfirm"
+      @cancel="onUploadDialogCancel"
+    />
   </div>
 </template>
 
@@ -553,6 +704,21 @@ defineExpose({ fit: doFit, activate, reopen, cdTo, requestCwd });
   width: 100%;
   height: 100%;
   padding: 6px 12px;
+}
+
+/* 拖拽单文件上传悬停提示：覆盖终端区域的虚线框 */
+.term-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed #7aa2f7;
+  background: rgba(122, 162, 247, 0.1);
+  color: #c0caf5;
+  font-size: 13px;
+  pointer-events: none;
 }
 
 /* 查找栏：右上角浮层 */

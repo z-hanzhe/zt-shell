@@ -3,6 +3,7 @@
  * 通用轻量弹窗：支持提示、确认与单输入，避免使用浏览器内置弹窗行为
  */
 import { computed, nextTick, ref, watch } from "vue";
+import { useEscClose } from "../composables/useEscClose";
 
 const props = withDefaults(
   defineProps<{
@@ -73,10 +74,16 @@ function requestCancel() {
   if (props.type === "loading") return;
   emit("cancel");
 }
+
+// ESC 关闭（loading 类型不可关闭，由 requestCancel 内部拦截）
+useEscClose(
+  () => props.open,
+  () => requestCancel()
+);
 </script>
 
 <template>
-  <div v-if="open" class="modal-mask" @mousedown.self="requestCancel" @keydown.esc="requestCancel">
+  <div v-if="open" class="modal-mask">
     <div class="modal app-dialog" role="dialog" aria-modal="true">
       <div class="modal-header">
         <span>{{ title }}</span>

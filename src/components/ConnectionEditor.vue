@@ -5,6 +5,7 @@
 import { reactive, watch } from "vue";
 import type { ConnectionConfig } from "../types";
 import { genId } from "../utils";
+import { useEscClose } from "../composables/useEscClose";
 
 const props = defineProps<{
   /** 待编辑的连接，null 表示新增 */
@@ -52,10 +53,16 @@ function submit() {
   if (!form.name.trim()) form.name = form.host;
   emit("save", { ...form });
 }
+
+// ESC 关闭：始终随组件挂载而生效（嵌套于连接管理器之上，栈顶优先关闭本弹窗）
+useEscClose(
+  () => true,
+  () => emit("cancel")
+);
 </script>
 
 <template>
-  <div class="modal-mask" @mousedown.self="emit('cancel')">
+  <div class="modal-mask">
     <div class="modal" style="width: 460px">
       <div class="modal-header">
         <span>{{ model ? "编辑连接" : "新建连接" }}</span>

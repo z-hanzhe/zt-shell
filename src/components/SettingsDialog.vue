@@ -4,6 +4,7 @@
  */
 import { reactive, watch } from "vue";
 import type { AppSettings } from "../stores/settings";
+import { useEscClose } from "../composables/useEscClose";
 
 const props = defineProps<{
   /** 当前设置 */
@@ -28,10 +29,16 @@ function submit() {
   emit("save", { ...form });
   emit("close");
 }
+
+// 组件挂载即为打开状态，ESC 关闭
+useEscClose(
+  () => true,
+  () => emit("close")
+);
 </script>
 
 <template>
-  <div class="modal-mask" @mousedown.self="emit('close')">
+  <div class="modal-mask">
     <div class="modal" style="width: 420px">
       <div class="modal-header">
         <span>设置</span>

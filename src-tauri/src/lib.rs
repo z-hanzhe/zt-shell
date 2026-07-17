@@ -34,6 +34,7 @@ pub fn run() {
             commands::terminal_open,
             commands::terminal_write,
             commands::terminal_resize,
+            commands::path_is_dir,
             commands::monitor_collect,
             commands::sftp_list,
             commands::sftp_home,

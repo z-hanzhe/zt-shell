@@ -9,6 +9,7 @@ import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+import { useEscClose } from "../composables/useEscClose";
 
 declare global {
   interface Window {
@@ -51,6 +52,11 @@ const confirmDialog = reactive({ open: false, title: "", message: "", resolve: u
 const saving = ref(false);
 /** 保存结果弹窗：成功时主按钮退出编辑器，叉号仅关闭弹窗 */
 const resultDialog = reactive({ open: false, title: "", message: "", exit: false });
+
+// ESC 关闭：嵌套弹窗（结果/二次确认）在栈顶优先关闭，保存中不可关闭故不注册
+useEscClose(() => resultDialog.open, () => dismissResult());
+useEscClose(() => confirmDialog.open, () => confirmAction(false));
+useEscClose(() => props.open, () => requestClose());
 
 const detectedLanguage = computed(() => detectLanguage(props.path));
 const languageOptions = [
