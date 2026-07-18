@@ -46,6 +46,8 @@ pub fn run() {
             commands::sftp_rename,
             commands::sftp_upload,
             commands::sftp_download,
+            commands::sftp_create_archive,
+            commands::sftp_extract_archive,
             commands::sftp_set_sudo,
             commands::sftp_check_writable,
             commands::transfer_upload,

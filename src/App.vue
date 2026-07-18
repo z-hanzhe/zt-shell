@@ -118,7 +118,7 @@ function preventBrowserShortcut(e: KeyboardEvent) {
   ) {
     return;
   }
-  // 终端内部放行：Ctrl+Shift+C/V/F/A 由终端快捷键处理，其余 Ctrl 组合与 F3/F5/F7
+  // 终端内部放行：Ctrl+Shift+C/V/F/A、Alt+Insert 由终端处理，其余 Ctrl 组合与 F3/F5/F7
   // 转义后发往远端（vim 翻页、shell 历史搜索等），xterm 会阻止浏览器默认行为
   if (target?.closest?.(".terminal-wrap") && (ctrlOrMeta || blockedBrowserKeys.has(e.key))) {
     return;

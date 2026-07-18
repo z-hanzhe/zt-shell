@@ -16,6 +16,8 @@ import {
   sftpCreateDir,
   sftpRename,
   sftpWrite,
+  sftpCreateArchive,
+  sftpExtractArchive,
   sftpSetSudo,
   transferUpload,
   transferDownload,
@@ -92,7 +94,7 @@ const marquee = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 });
 /** 拖拽移动状态 */
 const fileDrag = reactive({ active: false, count: 0, x: 0, y: 0, target: "" });
 /** 右键菜单状态 */
-const contextMenu = reactive({ open: false, x: 0, y: 0 });
+const contextMenu = reactive({ open: false, x: 0, y: 0, submenuLeft: false });
 /** 系统文件拖入悬停提示 */
 const dropHover = ref(false);
 /** 键入快速定位状态 */
@@ -121,6 +123,7 @@ type TreeNode = { path: string; name: string; depth: number };
 type ColumnKey = SortKey;
 type PointerMode = "select" | "drag";
 type TypeaheadZone = "tree" | "list";
+type ArchiveFormat = "zip" | "tarGz";
 type EditorSavedPayload = { sessionId: string; path: string };
 type PointerAction = {
   mode: PointerMode;
@@ -140,10 +143,19 @@ type MenuAction =
   | "uploadDir"
   | "download"
   | "packDownload"
+  | "archiveZip"
+  | "archiveTarGz"
+  | "extractArchive"
   | "newFile"
   | "newDir"
   | "delete";
-type MenuItem = { action: MenuAction; label: string; disabled: boolean };
+type MenuItem = {
+  key: string;
+  label: string;
+  disabled: boolean;
+  action?: MenuAction;
+  children?: MenuItem[];
+};
 type DialogState = {
   open: boolean;
   type: "info" | "confirm" | "prompt" | "loading";
@@ -197,23 +209,60 @@ const contextMenuItems = computed<MenuItem[]>(() => {
   const multi = count > 1;
   const singleDir = count === 1 && first?.isDir;
   return [
-    { action: "refresh", label: "刷新", disabled: false },
-    { action: "edit", label: "编辑文本", disabled: count !== 1 || singleDir || multi },
-    { action: "copyPath", label: "复制路径", disabled: count !== 1 || multi },
-    { action: "rename", label: "重命名", disabled: count !== 1 || multi },
-    { action: "uploadFile", label: "上传文件", disabled: false },
-    { action: "uploadDir", label: "上传文件夹", disabled: false },
-    { action: "download", label: "下载", disabled: count === 0 },
-    { action: "packDownload", label: "打包下载", disabled: count === 0 },
-    { action: "newFile", label: "新建文件", disabled: false },
-    { action: "newDir", label: "新建文件夹", disabled: false },
+    { key: "refresh", action: "refresh", label: "刷新", disabled: false },
+    { key: "edit", action: "edit", label: "编辑文本", disabled: count !== 1 || singleDir || multi },
+    { key: "copyPath", action: "copyPath", label: "复制路径", disabled: count !== 1 || multi },
+    { key: "rename", action: "rename", label: "重命名", disabled: count !== 1 || multi },
+    {
+      key: "new",
+      label: "新建",
+      disabled: false,
+      children: [
+        { key: "newFile", action: "newFile", label: "文件", disabled: false },
+        { key: "newDir", action: "newDir", label: "文件夹", disabled: false },
+      ],
+    },
+    {
+      key: "archive",
+      label: "压缩",
+      disabled: count === 0,
+      children: [
+        { key: "archiveZip", action: "archiveZip", label: "压缩为 zip", disabled: count === 0 },
+        { key: "archiveTarGz", action: "archiveTarGz", label: "压缩为 tar.gz", disabled: count === 0 },
+        {
+          key: "extractArchive",
+          action: "extractArchive",
+          label: "解压到当前目录",
+          disabled: count !== 1 || singleDir || !isExtractableArchive(first?.name ?? ""),
+        },
+      ],
+    },
+    {
+      key: "upload",
+      label: "上传",
+      disabled: false,
+      children: [
+        { key: "uploadFile", action: "uploadFile", label: "文件", disabled: false },
+        { key: "uploadDir", action: "uploadDir", label: "文件夹", disabled: false },
+      ],
+    },
+    {
+      key: "download",
+      label: "下载",
+      disabled: count === 0,
+      children: [
+        { key: "downloadDirect", action: "download", label: "直接下载", disabled: count === 0 },
+        { key: "packDownload", action: "packDownload", label: "打包下载", disabled: count === 0 },
+      ],
+    },
     // sudo 模式经 SFTP 递归删除，普通模式经 rm -rf 快速删除
-    { action: "delete", label: sudoActive.value ? "删除" : "删除(rm -rf)", disabled: count === 0 },
+    { key: "delete", action: "delete", label: sudoActive.value ? "删除" : "删除(rm -rf)", disabled: count === 0 },
   ];
 });
 
-const CONTEXT_MENU_WIDTH = 140;
-const CONTEXT_MENU_HEIGHT = 272;
+const CONTEXT_MENU_WIDTH = 152;
+const CONTEXT_SUBMENU_WIDTH = 172;
+const CONTEXT_MENU_HEIGHT = 226;
 const CONTEXT_MENU_MARGIN = 8;
 /** PageUp/PageDown 一次移动的条目数 */
 const PAGE_STEP = 10;
@@ -422,6 +471,9 @@ function handleNavKey(event: KeyboardEvent): boolean {
   if (!props.active || !props.connected || dialog.open || contextMenu.open) return false;
   const target = event.target as HTMLElement;
   if (target.closest?.("input, textarea, select, .xterm")) return false;
+  if (target.closest?.(".dir-tree") || (activeZone === "tree" && target === document.body)) {
+    return handleTreeNavKey(event);
+  }
   const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : event.key === "PageDown" ? PAGE_STEP : event.key === "PageUp" ? -PAGE_STEP : 0;
   if (step === 0) return false;
   const names = selectableEntries.value.map((entry) => entry.name);
@@ -447,6 +499,42 @@ function handleNavKey(event: KeyboardEvent): boolean {
       .find((row) => row.dataset.name === names[next])
       ?.scrollIntoView({ block: "nearest" });
   });
+  event.preventDefault();
+  return true;
+}
+
+/** 处理目录树方向键与回车：上下移动，左右展开收起，回车切换展开状态 */
+function handleTreeNavKey(event: KeyboardEvent): boolean {
+  const nodes = treeNodes.value;
+  let visiblePath = cwd.value;
+  let current = nodes.findIndex((node) => node.path === visiblePath);
+  while (current < 0 && visiblePath !== "/") {
+    visiblePath = parentPath(visiblePath);
+    current = nodes.findIndex((node) => node.path === visiblePath);
+  }
+  current = Math.max(current, 0);
+  const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : event.key === "PageDown" ? PAGE_STEP : event.key === "PageUp" ? -PAGE_STEP : 0;
+  if (step !== 0) {
+    const next = Math.max(0, Math.min(nodes.length - 1, current + step));
+    if (nodes[next]) selectTreeNode(nodes[next].path);
+    scrollActiveTreeNodeIntoView();
+  } else if (event.key === "ArrowRight") {
+    const node = nodes[current];
+    if (node && !expandedDirs.value.has(node.path)) toggleTreeNode(node.path);
+  } else if (event.key === "ArrowLeft") {
+    const node = nodes[current];
+    if (node && node.path !== "/" && expandedDirs.value.has(node.path)) {
+      toggleTreeNode(node.path);
+    } else if (node && node.path !== "/") {
+      selectTreeNode(parentPath(node.path));
+      scrollActiveTreeNodeIntoView();
+    }
+  } else if (event.key === "Enter") {
+    const node = nodes[current];
+    if (node && node.path !== "/") toggleTreeNode(node.path);
+  } else {
+    return false;
+  }
   event.preventDefault();
   return true;
 }
@@ -481,6 +569,11 @@ function handleTypeaheadKey(event: KeyboardEvent): boolean {
       typeahead.index = 0;
       if (typeahead.keyword) applyTypeahead();
       else endTypeahead();
+      event.preventDefault();
+      return true;
+    }
+    if (event.key === "Enter") {
+      endTypeahead();
       event.preventDefault();
       return true;
     }
@@ -555,12 +648,14 @@ function cancelTypeahead() {
 /** 记录最近交互区域为目录树，并打断进行中的快速定位 */
 function onTreeZonePointerDown() {
   activeZone = "tree";
+  dirTreeRef.value?.focus({ preventScroll: true });
   if (typeahead.active) cancelTypeahead();
 }
 
 /** 记录最近交互区域为文件列表，并打断进行中的快速定位 */
 function onListZonePointerDown() {
   activeZone = "list";
+  fileListRef.value?.focus({ preventScroll: true });
   if (typeahead.active) cancelTypeahead();
 }
 
@@ -662,10 +757,11 @@ function onEntryPointerDown(entry: FileEntry, event: PointerEvent) {
   window.addEventListener("pointerup", onFilePointerUp, { once: true });
 }
 
-/** 行右键：右键未选中项等同空白处右键，先清空选择再打开菜单 */
+/** 行右键：未选中项先切换为单选，确保菜单动作作用于右键目标 */
 function onEntryContextMenu(entry: FileEntry, event: MouseEvent) {
   event.preventDefault();
-  if (entry.name === "..." || !isSelected(entry)) clearSelection();
+  if (entry.name === "...") clearSelection();
+  else if (!isSelected(entry)) selectSingle(entry.name);
   openContextMenu(event);
 }
 
@@ -682,6 +778,7 @@ function openContextMenu(event: MouseEvent) {
   contextMenu.open = true;
   contextMenu.x = Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_MARGIN);
   contextMenu.y = Math.min(event.clientY, window.innerHeight - CONTEXT_MENU_HEIGHT - CONTEXT_MENU_MARGIN);
+  contextMenu.submenuLeft = contextMenu.x + CONTEXT_MENU_WIDTH + CONTEXT_SUBMENU_WIDTH > window.innerWidth - CONTEXT_MENU_MARGIN;
 }
 
 /** 开始空白区域框选 */
@@ -799,7 +896,7 @@ async function moveSelectedTo(targetDir: string) {
 
 /** 执行右键菜单动作 */
 async function runMenuAction(item: MenuItem) {
-  if (item.disabled) return;
+  if (item.disabled || !item.action) return;
   closeContextMenu();
   switch (item.action) {
     case "refresh":
@@ -825,6 +922,15 @@ async function runMenuAction(item: MenuItem) {
       break;
     case "packDownload":
       await onPackDownload();
+      break;
+    case "archiveZip":
+      await onCreateArchive("zip");
+      break;
+    case "archiveTarGz":
+      await onCreateArchive("tarGz");
+      break;
+    case "extractArchive":
+      await onExtractArchive();
       break;
     case "newFile":
       await onNewFile();
@@ -874,6 +980,11 @@ async function onEditText() {
   } catch (e) {
     showMessage("打开失败", String(e));
   }
+}
+
+/** 处理菜单项点击，父级菜单仅负责展开子菜单 */
+function onMenuItemClick(item: MenuItem) {
+  if (item.action) runMenuAction(item);
 }
 
 /** 获取表格单元格完整内容 */
@@ -1255,6 +1366,93 @@ async function onPackDownload() {
   }
 }
 
+/** 判断文件名是否为当前支持解压的压缩包格式 */
+function isExtractableArchive(name: string): boolean {
+  const lowerName = name.toLowerCase();
+  return lowerName.endsWith(".zip") || lowerName.endsWith(".tar.gz") || lowerName.endsWith(".tgz");
+}
+
+/** 将选中条目压缩为当前远端目录下的指定格式 */
+async function onCreateArchive(format: ArchiveFormat) {
+  const targets = selectedEntries.value;
+  if (targets.length === 0) return;
+  const suffix = format === "zip" ? ".zip" : ".tar.gz";
+  const directoryName = cwd.value.split("/").filter(Boolean).pop() ?? "archive";
+  const baseName = targets.length === 1
+    ? targets[0].name.replace(/\.(?:tar\.gz|tgz|zip)$/i, "")
+    : directoryName;
+  const input = await showPrompt(
+    format === "zip" ? "压缩为 zip" : "压缩为 tar.gz",
+    "请输入压缩包名称",
+    "压缩包名称",
+    `${baseName}${suffix}`,
+    joinPath(cwd.value, "{value}")
+  );
+  if (!input?.trim()) return;
+  let archiveName = input.trim();
+  if (!archiveName.toLowerCase().endsWith(suffix)) archiveName += suffix;
+  if (archiveName === "." || archiveName === ".." || archiveName.includes("/") || archiveName.includes("\0")) {
+    showMessage("压缩失败", "压缩包名称不合法");
+    return;
+  }
+  if (targets.some((entry) => entry.name === archiveName)) {
+    showMessage("压缩失败", "压缩包名称不能与选中的文件同名");
+    return;
+  }
+  const existing = entries.value.find((entry) => entry.name === archiveName);
+  if (existing?.isDir) {
+    showMessage("压缩失败", `当前目录存在同名文件夹「${archiveName}」，请更换压缩包名称`);
+    return;
+  }
+  if (existing) {
+    const overwrite = await showConfirm(
+      "覆盖确认",
+      `当前目录已存在「${archiveName}」，继续压缩将覆盖该文件，是否继续？`,
+      "覆盖",
+      true
+    );
+    if (!overwrite) return;
+  }
+
+  openDialogState("loading", "压缩中", `正在创建「${archiveName}」，请稍候…`, "");
+  try {
+    await sftpCreateArchive(
+      props.sessionId,
+      cwd.value,
+      targets.map((entry) => entry.name),
+      format,
+      archiveName
+    );
+    await refresh();
+    showMessage("压缩完成", `「${archiveName}」已创建`);
+  } catch (e) {
+    showMessage("压缩失败", String(e));
+  }
+}
+
+/** 将选中的压缩包解压到当前远端目录 */
+async function onExtractArchive() {
+  const target = selectedEntries.value[0];
+  if (!target || target.isDir || !isExtractableArchive(target.name)) return;
+  const confirmed = await showConfirm(
+    "解压确认",
+    `将「${target.name}」解压到当前目录，可能覆盖同名文件，是否继续？`,
+    "继续解压",
+    true
+  );
+  if (!confirmed) return;
+
+  openDialogState("loading", "解压中", `正在解压「${target.name}」，请稍候…`, "");
+  try {
+    await sftpExtractArchive(props.sessionId, cwd.value, target.name);
+    invalidateTreeDirs(cwd.value);
+    await refresh();
+    showMessage("解压完成", `「${target.name}」已解压到当前目录`);
+  } catch (e) {
+    showMessage("解压失败", String(e));
+  }
+}
+
 /** 删除当前选中的条目 */
 async function onDeleteSelected() {
   await deleteEntries(selectedEntries.value);
@@ -1324,7 +1522,7 @@ async function onNewDir() {
 
 /** 重命名选中项 */
 async function onRename(entry: FileEntry) {
-  const newName = await showPrompt("重命名", "请输入新名称", "新名称", entry.name);
+  const newName = await showPrompt("重命名", `将「${entry.name}」重命名为`, "新名称", entry.name);
   if (!newName?.trim() || newName.trim() === entry.name) return;
   try {
     await sftpRename(
@@ -1546,6 +1744,7 @@ defineExpose({ setPathFromTerminal });
       <div
         ref="dirTreeRef"
         class="dir-tree"
+        tabindex="0"
         :style="{ flexBasis: `${treeWidth}px`, width: `${treeWidth}px` }"
         @pointerdown.capture="onTreeZonePointerDown"
       >
@@ -1577,6 +1776,7 @@ defineExpose({ setPathFromTerminal });
         <div
           ref="fileListRef"
           class="file-list"
+          tabindex="0"
           @pointerdown="onFileListPointerDown"
           @pointerdown.capture="onListZonePointerDown"
           @contextmenu="onFileListContextMenu"
@@ -1652,14 +1852,31 @@ defineExpose({ setPathFromTerminal });
           :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
           @click.stop
         >
-          <button
+          <div
             v-for="item in contextMenuItems"
-            :key="item.action"
-            :disabled="item.disabled"
-            @click="runMenuAction(item)"
+            :key="item.key"
+            class="context-menu-item"
+            :class="{ disabled: item.disabled, 'has-submenu': item.children }"
           >
-            {{ item.label }}
-          </button>
+            <button :disabled="item.disabled" @click.stop="onMenuItemClick(item)">
+              <span>{{ item.label }}</span>
+              <Icon v-if="item.children" name="chevronRight" :size="11" class="submenu-arrow" />
+            </button>
+            <div
+              v-if="item.children"
+              class="context-submenu"
+              :class="{ left: contextMenu.submenuLeft }"
+            >
+              <button
+                v-for="child in item.children"
+                :key="child.key"
+                :disabled="child.disabled"
+                @click.stop="onMenuItemClick(child)"
+              >
+                {{ child.label }}
+              </button>
+            </div>
+          </div>
         </div>
         </div>
         <div v-if="dropHover" class="drop-overlay">松开鼠标上传到当前目录</div>
@@ -1799,6 +2016,11 @@ defineExpose({ setPathFromTerminal });
   overflow-y: auto;
   background: #fbfcfd;
   font-size: 12px;
+  outline: none;
+}
+.dir-tree:focus-visible,
+.file-list:focus-visible {
+  box-shadow: inset 0 0 0 1px #9db8d3;
 }
 .tree-resizer {
   flex: 0 0 5px;
@@ -1875,6 +2097,7 @@ defineExpose({ setPathFromTerminal });
   flex: 1;
   overflow: auto;
   min-width: 0;
+  outline: none;
 }
 /* 系统文件拖入提示遮罩 */
 .drop-overlay {
@@ -2043,15 +2266,21 @@ defineExpose({ setPathFromTerminal });
 .context-menu {
   position: fixed;
   z-index: 30;
-  min-width: 132px;
+  width: 152px;
+  box-sizing: border-box;
   padding: 4px;
   border: 1px solid #b8c6d6;
   border-radius: 4px;
   background: #fff;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
 }
+.context-menu-item {
+  position: relative;
+}
 .context-menu button {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   width: 100%;
   height: 24px;
   padding: 0 10px;
@@ -2070,5 +2299,30 @@ defineExpose({ setPathFromTerminal });
 .context-menu button:disabled {
   color: #aab2bb;
   cursor: not-allowed;
+}
+.submenu-arrow {
+  flex: 0 0 auto;
+  color: #7d8792;
+}
+.context-submenu {
+  display: none;
+  position: absolute;
+  top: -4px;
+  left: 100%;
+  width: 172px;
+  box-sizing: border-box;
+  padding: 4px;
+  border: 1px solid #b8c6d6;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+.context-submenu.left {
+  right: 100%;
+  left: auto;
+}
+.context-menu-item.has-submenu:not(.disabled):hover > .context-submenu,
+.context-menu-item.has-submenu:not(.disabled):focus-within > .context-submenu {
+  display: block;
 }
 </style>

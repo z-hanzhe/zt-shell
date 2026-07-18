@@ -5,7 +5,10 @@ use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::FileType;
 use tokio::io::AsyncWriteExt;
+use uuid::Uuid;
 
+use super::manager::SessionManager;
+use super::transfer::shell_quote;
 use super::types::FileEntry;
 
 /// 将 SFTP 错误格式化为简洁文案，避免状态码与消息重复（如 Failure: Failure）
@@ -198,4 +201,182 @@ pub async fn download(sftp: &SftpSession, remote_path: &str, local_path: &str) -
     tokio::fs::write(local_path, &data)
         .await
         .map_err(|e| anyhow!("写入本地文件失败：{}", e))
+}
+
+/// 在远端当前目录创建 zip 或 tar.gz 压缩包
+pub async fn create_archive(
+    manager: &SessionManager,
+    session_id: &str,
+    directory: &str,
+    names: &[String],
+    archive_format: &str,
+    archive_name: &str,
+) -> Result<()> {
+    ensure_normal_exec_mode(manager, session_id).await?;
+    validate_directory(directory)?;
+    validate_entry_name(archive_name, "压缩包名称")?;
+    if names.is_empty() {
+        return Err(anyhow!("未选择需要压缩的文件"));
+    }
+    for name in names {
+        validate_entry_name(name, "文件名")?;
+    }
+    if names.iter().any(|name| name == archive_name) {
+        return Err(anyhow!("压缩包名称不能与选中的文件同名"));
+    }
+
+    let (tool, suffix) = match archive_format {
+        "zip" => ("zip", ".zip"),
+        "tarGz" => ("tar", ".tar.gz"),
+        _ => return Err(anyhow!("不支持的压缩格式")),
+    };
+    if !archive_name.to_ascii_lowercase().ends_with(suffix) {
+        return Err(anyhow!("压缩包扩展名与压缩格式不匹配"));
+    }
+    ensure_remote_tool(manager, session_id, tool).await?;
+
+    let temp_name = format!("./.ztshell-{}{}", Uuid::new_v4(), suffix);
+    let target_name = format!("./{}", archive_name);
+    let source_args = names
+        .iter()
+        .map(|name| shell_quote(&format!("./{}", name)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let archive_command = if archive_format == "zip" {
+        format!(
+            "zip -rq {} {} >/dev/null 2>&1",
+            shell_quote(&temp_name),
+            source_args
+        )
+    } else {
+        format!(
+            "tar -czf {} {} >/dev/null 2>&1",
+            shell_quote(&temp_name),
+            source_args
+        )
+    };
+    let command = format!(
+        "cd {} && test ! -d {} && rm -f -- {} && {} && mv -f -- {} {} && printf __ZTOK__ || {{ rm -f -- {}; printf __ZTFAIL__; }}",
+        shell_quote(directory),
+        shell_quote(&target_name),
+        shell_quote(&temp_name),
+        archive_command,
+        shell_quote(&temp_name),
+        shell_quote(&target_name),
+        shell_quote(&temp_name)
+    );
+    let output = manager.exec(session_id, &command).await?;
+    if !output.contains("__ZTOK__") {
+        return Err(anyhow!("远端压缩失败，请检查文件权限和剩余空间"));
+    }
+    Ok(())
+}
+
+/// 将远端 zip 或 tar.gz 压缩包解压到当前目录
+pub async fn extract_archive(
+    manager: &SessionManager,
+    session_id: &str,
+    directory: &str,
+    archive_name: &str,
+) -> Result<()> {
+    ensure_normal_exec_mode(manager, session_id).await?;
+    validate_directory(directory)?;
+    validate_entry_name(archive_name, "压缩包名称")?;
+
+    let lower_name = archive_name.to_ascii_lowercase();
+    let (tool, extract_command) = if lower_name.ends_with(".zip") {
+        (
+            "unzip",
+            format!(
+                "unzip -oq {} -d . >/dev/null 2>&1",
+                shell_quote(&format!("./{}", archive_name))
+            ),
+        )
+    } else if lower_name.ends_with(".tar.gz") || lower_name.ends_with(".tgz") {
+        (
+            "tar",
+            format!(
+                "tar -xzf {} >/dev/null 2>&1",
+                shell_quote(&format!("./{}", archive_name))
+            ),
+        )
+    } else {
+        return Err(anyhow!("仅支持解压 zip、tar.gz 或 tgz 文件"));
+    };
+    ensure_remote_tool(manager, session_id, tool).await?;
+
+    let command = format!(
+        "cd {} && {} && printf __ZTOK__ || printf __ZTFAIL__",
+        shell_quote(directory),
+        extract_command
+    );
+    let output = manager.exec(session_id, &command).await?;
+    if !output.contains("__ZTOK__") {
+        return Err(anyhow!(
+            "远端解压失败，请检查压缩包内容、文件权限和剩余空间"
+        ));
+    }
+    Ok(())
+}
+
+/// 校验压缩命令只能在普通文件管理模式下执行
+async fn ensure_normal_exec_mode(manager: &SessionManager, session_id: &str) -> Result<()> {
+    if manager.is_sudo(session_id).await? {
+        return Err(anyhow!(
+            "sudo 文件管理模式暂不支持压缩和解压"
+        ));
+    }
+    Ok(())
+}
+
+/// 探测远端压缩工具是否可用
+async fn ensure_remote_tool(manager: &SessionManager, session_id: &str, tool: &str) -> Result<()> {
+    let command = format!(
+        "command -v {} >/dev/null 2>&1 && printf __ZTOK__ || printf __ZTNO__",
+        tool
+    );
+    let output = manager.exec(session_id, &command).await?;
+    if !output.contains("__ZTOK__") {
+        return Err(anyhow!("远端未找到 {} 命令", tool));
+    }
+    Ok(())
+}
+
+/// 校验远端工作目录为绝对路径且不含空字符
+fn validate_directory(directory: &str) -> Result<()> {
+    if !directory.starts_with('/') || directory.contains('\0') {
+        return Err(anyhow!("非法的远端目录路径"));
+    }
+    Ok(())
+}
+
+/// 校验名称为当前目录下的单个条目，禁止路径穿越
+fn validate_entry_name(name: &str, label: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+        return Err(anyhow!("{}不合法", label));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_directory, validate_entry_name};
+
+    /// 单层条目名允许 shell 特殊字符，但拒绝路径穿越与空字符
+    #[test]
+    fn validates_single_entry_names() {
+        assert!(validate_entry_name("普通 文件'名", "文件名").is_ok());
+        for name in ["", ".", "..", "子目录/文件", "文件\0名"] {
+            assert!(validate_entry_name(name, "文件名").is_err());
+        }
+    }
+
+    /// 工作目录必须为不含空字符的绝对路径
+    #[test]
+    fn validates_absolute_directories() {
+        assert!(validate_directory("/").is_ok());
+        assert!(validate_directory("/目录/子目录").is_ok());
+        assert!(validate_directory("相对路径").is_err());
+        assert!(validate_directory("/目录\0子目录").is_err());
+    }
 }

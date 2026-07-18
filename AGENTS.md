@@ -41,3 +41,7 @@ Vue响应式坑 pinia ref数组push普通对象后勿直接改原始对象引用
 会话生命周期 终端channel是会话核心 结束后后端须按条目身份清理同代SSH/SFTP与传输资源 防止旧channel关闭误删重连后的同sessionId新会话
 
 文件管理会话状态 目录列表/路径/树/sudo按sessionId缓存 普通选项卡切换不刷新SFTP 外部变更标脏后切回刷新 终端断开或选项卡关闭清缓存 异步结果须校验视图版本防跨会话污染
+
+远端压缩解压 普通模式exec调用zip/tar/unzip sudo SFTP提权不作用于exec故sudo模式禁止 路径必须shell转义并校验单层条目名
+
+终端Alt+Insert 仅有选区时复制到原生剪贴板并立即写回终端 无选区放行

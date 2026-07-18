@@ -225,6 +225,40 @@ pub async fn sftp_download(
     map_err(sftp::download(&sftp, &remote_path, &local_path).await)
 }
 
+/// 将选中的远端文件压缩为当前目录下的 zip 或 tar.gz 文件
+#[tauri::command]
+pub async fn sftp_create_archive(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+    directory: String,
+    names: Vec<String>,
+    archive_format: String,
+    archive_name: String,
+) -> CmdResult<()> {
+    map_err(
+        sftp::create_archive(
+            &manager,
+            &session_id,
+            &directory,
+            &names,
+            &archive_format,
+            &archive_name,
+        )
+        .await,
+    )
+}
+
+/// 将远端压缩包解压到当前目录
+#[tauri::command]
+pub async fn sftp_extract_archive(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+    directory: String,
+    archive_name: String,
+) -> CmdResult<()> {
+    map_err(sftp::extract_archive(&manager, &session_id, &directory, &archive_name).await)
+}
+
 /// 检测当前权限模式下对远端文件是否有写入权限
 ///
 /// sudo 提权模式以 root 身份读写视为可写；普通模式经 exec 以登录用户执行 test -w 判断

@@ -2,7 +2,9 @@ SFTP文件管理
 
 实现 基于russh-sftp的SftpSession 按后端SessionEntry惰性建立并缓存 首次使用时open_sftp_channel请求sftp子系统 普通终端选项卡切换不重建
 
-操作 list_dir/read_file/write_file/remove_file/remove_dir/remove_dir_all/create_dir/rename/canonicalize(解析绝对路径用于定位主目录) upload/download 删目录普通模式exec rm -rf(哨兵__ZTOK__/__ZTFAIL__ 防空路径与根) sudo模式exec不提权回落SFTP递归删 符号链unlink不深入 错误统一走format_sftp_error(Status错误消息与状态码同名时去重 避免Failure:Failure) 所有SFTP错误文案与transfer.rs统一走它
+操作 list_dir/read_file/write_file/remove_file/remove_dir/remove_dir_all/create_dir/rename/canonicalize(解析绝对路径用于定位主目录) upload/download/create_archive/extract_archive 删目录普通模式exec rm -rf(哨兵__ZTOK__/__ZTFAIL__ 防空路径与根) sudo模式exec不提权回落SFTP递归删 符号链unlink不深入 错误统一走format_sftp_error(Status错误消息与状态码同名时去重 避免Failure:Failure) 所有SFTP错误文案与transfer.rs统一走它
+
+压缩解压 普通模式经exec调用远端zip/tar/unzip 支持zip与tar.gz/tgz 路径逐项shell转义并用临时包完成后替换目标 避免失败破坏已有压缩包 解压会覆盖同名内容需前端确认 工具缺失明确报错 一次性exec不继承sudo SFTP提权故sudo模式禁止
 
 sudo提权 会话可切换普通/sudo两种 sudo走exec sudo -S启动sftp-server 密码stdin喂入 提示报错走stderr不污染stdout 握手哨兵__ZTOK__就绪__ZTPW__密码提示__ZTNO__缺失 覆盖需密码/已缓存/NOPASSWD 再次收到密码提示即密码错 is_sudo供删除选择rm -rf或SFTP递归 仅Linux 私钥无密码时仅NOPASSWD可成功 sftp_set_sudo启用时立即建提权会话失败回滚 关闭清空提权会话缓存回落普通
 

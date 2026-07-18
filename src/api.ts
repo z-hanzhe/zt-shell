@@ -123,6 +123,26 @@ export function sftpDownload(
   return invoke("sftp_download", { sessionId, remotePath, localPath });
 }
 
+/** 将远端文件压缩到当前目录 */
+export function sftpCreateArchive(
+  sessionId: string,
+  directory: string,
+  names: string[],
+  archiveFormat: "zip" | "tarGz",
+  archiveName: string
+): Promise<void> {
+  return invoke("sftp_create_archive", { sessionId, directory, names, archiveFormat, archiveName });
+}
+
+/** 将远端压缩包解压到当前目录 */
+export function sftpExtractArchive(
+  sessionId: string,
+  directory: string,
+  archiveName: string
+): Promise<void> {
+  return invoke("sftp_extract_archive", { sessionId, directory, archiveName });
+}
+
 /** 切换 sudo 提权文件管理开关 */
 export function sftpSetSudo(sessionId: string, enabled: boolean): Promise<void> {
   return invoke("sftp_set_sudo", { sessionId, enabled });

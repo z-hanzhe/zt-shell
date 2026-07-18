@@ -247,9 +247,21 @@ async function setup() {
     search.current = e.resultCount === 0 ? 0 : e.resultIndex + 1;
   });
 
-  // 快捷键：Ctrl+Shift+C/V/F/A，preventDefault 阻止 WebView 默认行为并返回 false 跳过终端输入
+  // 快捷键：Ctrl+Shift+C/V/F/A 与有选区时 Alt+Insert，拦截后跳过终端原始按键输入
   t.attachCustomKeyEventHandler((event) => {
     if (event.type !== "keydown") return true;
+    if (
+      event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      event.key === "Insert" &&
+      t.getSelection()
+    ) {
+      event.preventDefault();
+      copyAndPasteSelection().catch(() => {});
+      return false;
+    }
     if (event.ctrlKey && event.shiftKey) {
       const key = event.key.toLowerCase();
       if (key === "c") {
@@ -380,6 +392,18 @@ async function copySelection() {
   } catch {
     // 剪贴板不可用时忽略
   }
+}
+
+/** 将当前选区复制到系统剪贴板，并把同一内容立即写入终端 */
+async function copyAndPasteSelection() {
+  const text = term.value?.getSelection();
+  if (!text) return;
+  try {
+    await writeText(text);
+  } catch {
+    // 剪贴板不可用不影响选区内容继续写入终端
+  }
+  await writeToTerminal(text);
 }
 
 /** 从剪贴板粘贴到终端（走原生剪贴板，避免 WebView 权限弹窗） */
