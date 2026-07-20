@@ -39,8 +39,19 @@ Copy-Item .\src-tauri\icons\128x128.png .\public\app-icon.png -Force
 # 修改版本号
 # Tauri 应用及安装包版本：src-tauri/tauri.conf.json:4
 # Rust 应用版本：src-tauri/Cargo.toml:3
-# 前端项目版本：package.json:4
+# 前端项目版本：package.json:4，并同步更新 package-lock.json
 ```
+
+## 发布
+
+推送任意 tag 后，GitHub Actions 会并行构建 Windows x64、Linux x64、macOS Intel 与 Apple Silicon 安装包。全部平台成功后，对应 tag 的 Release 会以草稿形式创建，补充发布说明并核对附件后再手动发布
+
+```bash
+git tag v0.1.3
+git push origin v0.1.3
+```
+
+创建 tag 前须保持 `package.json`、`package-lock.json`、`src-tauri/tauri.conf.json` 与 `src-tauri/Cargo.toml` 的版本号一致，并先提交版本修改
 
 ## 说明
 

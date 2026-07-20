@@ -1,0 +1,167 @@
+name: 跨平台打包并创建发布草稿
+
+run-name: 发布 ${{ github.ref_name }}
+
+on:
+  push:
+    tags:
+      - "**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-version:
+    name: 校验应用版本
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "lts/*"
+
+      - name: 校验各清单版本号一致
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import { readFileSync } from "node:fs";
+
+          const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
+          const cargoMetadata = JSON.parse(execFileSync(
+            "cargo",
+            ["metadata", "--locked", "--no-deps", "--format-version", "1", "--manifest-path", "src-tauri/Cargo.toml"],
+            { encoding: "utf8" },
+          ));
+          const versions = {
+            "package.json": readJson("package.json").version,
+            "package-lock.json": readJson("package-lock.json").version,
+            "package-lock.json 根包": readJson("package-lock.json").packages[""].version,
+            "src-tauri/tauri.conf.json": readJson("src-tauri/tauri.conf.json").version,
+            "src-tauri/Cargo.toml": cargoMetadata.packages[0].version,
+          };
+
+          if (new Set(Object.values(versions)).size !== 1) {
+            throw new Error(`版本号不一致：${JSON.stringify(versions)}`);
+          }
+          console.log(`应用版本：${Object.values(versions)[0]}`);
+          NODE
+
+  build:
+    name: 打包 ${{ matrix.name }}
+    needs: validate-version
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            platform: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            args: --target x86_64-pc-windows-msvc --bundles msi,nsis --ci
+          - name: macOS Apple Silicon
+            platform: macos-latest
+            rust-target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg --ci
+          - name: macOS Intel
+            platform: macos-latest
+            rust-target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg --ci
+          - name: Linux x64
+            platform: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            args: --target x86_64-unknown-linux-gnu --bundles deb,rpm,appimage --ci
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Linux 构建依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "lts/*"
+          cache: npm
+
+      - name: 配置 Rust stable
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --target "${{ matrix.rust-target }}"
+          rustup default stable
+
+      - name: 缓存 Rust 依赖与构建产物
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: rust-${{ runner.os }}-${{ matrix.rust-target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            rust-${{ runner.os }}-${{ matrix.rust-target }}-
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建安装包
+        uses: tauri-apps/tauri-action@v1
+        with:
+          args: ${{ matrix.args }}
+          retryAttempts: 2
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: release-[platform]-[arch]-[bundle]
+
+  create-draft:
+    name: 创建发布草稿
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: 下载全部安装包
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: 创建或更新发布草稿
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' assets < <(find release-assets -type f -print0)
+          if (( ${#assets[@]} < 7 )); then
+            echo "安装包数量不足，预期至少 7 个，实际 ${#assets[@]} 个。" >&2
+            exit 1
+          fi
+
+          if release_is_draft="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            if [[ "$release_is_draft" != "true" ]]; then
+              echo "对应 Release 已正式发布，拒绝覆盖现有附件。" >&2
+              exit 1
+            fi
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "ZTShell $GITHUB_REF_NAME" \
+              --notes "此草稿由 GitHub Actions 自动创建，请补充发布说明并核对附件后手动发布。"
+          fi

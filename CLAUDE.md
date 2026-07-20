@@ -12,7 +12,7 @@
 
 技术栈 前端Vue3+TypeScript+Vite+pinia+xterm 后端Rust+Tauri2+russh+russh-sftp+tokio
 
-第三方库选型理由 见Cargo.toml与package.json 关键: russh纯Rust SSH免OpenSSL跨平台 ring替代aws-lc-rs避Windows需NASM @xterm/xterm终端渲染 tauri-plugin-store/dialog/opener/clipboard-manager均为官方插件 single-instance必须最先注册且再次启动时回调唤起已运行窗口 monaco-editor远程文本编辑 @fontsource/cascadia-mono内置终端等宽字体自托管跨平台一致
+第三方库选型理由 见Cargo.toml与package.json 关键: russh纯Rust SSH免OpenSSL跨平台 ring替代aws-lc-rs避Windows需NASM @xterm/xterm终端渲染 tauri-plugin-store/dialog/opener/clipboard-manager均为官方插件 single-instance必须最先注册且再次启动时回调唤起已运行窗口 monaco-editor远程文本编辑 @fontsource/cascadia-mono内置终端等宽字体自托管跨平台一致 tauri-apps/tauri-action由Tauri官方维护用于跨平台bundle识别与workflow artifacts上传
 
 功能文档 .ai-assisted/markdown/index.md 任务前读索引定位模块 涉及模块加载对应文档
 
@@ -45,3 +45,5 @@ Vue响应式坑 pinia ref数组push普通对象后勿直接改原始对象引用
 远端压缩解压 普通模式exec调用zip/tar/unzip sudo SFTP提权不作用于exec故sudo模式禁止 路径必须shell转义并校验单层条目名
 
 终端Alt+Insert 仅有选区时复制到原生剪贴板并立即写回终端 无选区放行
+
+发布流程 推送任意tag触发Windows x64、Linux x64、macOS双架构打包 全部成功后创建草稿Release 重跑仅覆盖草稿附件 详见release.md
