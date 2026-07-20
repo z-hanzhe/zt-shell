@@ -29,6 +29,8 @@ function defaults(): ConnectionConfig {
     password: "",
     privateKeyPath: "",
     passphrase: "",
+    parentId: null,
+    order: undefined,
   };
 }
 

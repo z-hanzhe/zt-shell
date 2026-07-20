@@ -16,6 +16,22 @@ export interface ConnectionConfig {
   password?: string;
   privateKeyPath?: string;
   passphrase?: string;
+  /** 所属文件夹 id，空或 null 表示位于根目录 */
+  parentId?: string | null;
+  /** 同级显示顺序，由连接管理器维护 */
+  order?: number;
+}
+
+/** 连接分组文件夹（支持多级嵌套） */
+export interface ConnectionFolder {
+  /** 文件夹唯一标识 */
+  id: string;
+  /** 文件夹显示名称 */
+  name: string;
+  /** 父文件夹 id，null 表示位于根目录 */
+  parentId: string | null;
+  /** 同级显示顺序，由连接管理器维护 */
+  order?: number;
 }
 
 /** SFTP 文件条目 */

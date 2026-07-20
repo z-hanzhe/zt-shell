@@ -4,7 +4,7 @@
 
 组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关 禁止点空白关闭 仅按钮或ESC关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue SettingsDialog.vue TextEditorWindow.vue(monaco-editor独立窗口) TitleBar.vue
 
-状态 connections.ts持久化连接 sessions.ts活动会话(open/close/activate/move/reconnect/markDisconnected/markActivity) settings.ts持久化设置 monitor.ts按会话采集(收发无关选项卡) transfers.ts传输任务 App.vue onMounted初始化
+状态 connections.ts持久化连接与分组文件夹(folders树形嵌套/upsert/remove/upsertFolder/removeFolderRecursive递归删/reorderItems维护同级order/moveItems防环/duplicateConnection同级复制/countFolderContents) sessions.ts活动会话(open/close/activate/move/reconnect/markDisconnected/markActivity) settings.ts持久化设置 monitor.ts按会话采集(收发无关选项卡) transfers.ts传输任务 App.vue onMounted初始化
 
 工具 utils.ts(formatBytes/genId/joinPath/parentPath) api.ts封装所有invoke types.ts前后端类型 composables/useEscClose全局回调栈栈顶弹窗响应ESC(天然支持嵌套)所有模态弹窗统一禁点空白关仅按钮/ESC关 hasOpenModal供FileManager的ESC避让
 
@@ -21,3 +21,5 @@
 文件管理 左侧树+右侧列表 树聚焦后上下切换/左右与回车展开收起 列表表头排序/多选/框选/拖拽移动 右键菜单含新建/压缩解压/上传/下载子菜单及编辑复制路径重命名删除 键入快速定位 地址栏↑cd当前终端 ↓printf OSC标记读PWD后切文件路径 目录浏览状态按sessionId缓存(普通选项卡切换不请求SFTP/编辑与上传等外部变更标脏后切回刷新/终端断开或选项卡关闭清缓存/视图版本丢弃跨会话异步结果) 文本编辑以会话+路径哈希创建自绘标题栏独立Tauri窗口(复用TitleBar/可并行操作/重复打开聚焦已有窗口/选项卡关闭联动销毁/重连复用sessionId/ESC不关闭窗口) TextEditorWindow集成monaco-editor ESM worker 只读自动检测(sudo恒可写 普通exec test -w) 1MB/二进制确认 变更退出二次确认
 
 监控面板 纯视图读monitor store 系统信息/CPU/内存/网卡图/磁盘/进程 未连骨架占位 采集出错底部提示 网卡历史按名切换 默认自动选网卡(物理优先 取历史累计流量最高者 有流量后自动锁定不再跳动 消失重新选 手动选后固定) 图双柱上传橙下载绿
+
+连接管理器 ConnectionManager弹窗 文件夹树形分组(多级嵌套 folder/conn统一扁平行visibleRows 仅展开文件夹向下递归 同级按order显示/旧数据文件夹优先名称兜底)+主机/端口/用户名列 名称ellipsis+title悬停 行内单选 方向键导航 左右展开收起 回车连接或展开文件夹 双击文件夹展开/连接则连接 指针拖拽支持同父级前后排序写order与拖入文件夹/空白根目录移动 搜索态扁平化禁拖拽) 右键菜单连接/编辑/重命名/复制/新建›[连接文件夹]/删除(新建位置按右键目标推断 复制仅连接 删除文件夹递归确认) ESC逐级关菜单→清选择→关窗 弹窗复用AppDialog 新建连接经editorParentId落入目标文件夹 后台FileManager经hasOpenModal避让方向键

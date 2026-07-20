@@ -469,6 +469,8 @@ function onFileKeyDown(event: KeyboardEvent) {
  */
 function handleNavKey(event: KeyboardEvent): boolean {
   if (!props.active || !props.connected || dialog.open || contextMenu.open) return false;
+  // 存在其他模态弹窗（如连接管理器）时不响应，避免后台文件列表被方向键误操作
+  if (hasOpenModal()) return false;
   const target = event.target as HTMLElement;
   if (target.closest?.("input, textarea, select, .xterm")) return false;
   if (target.closest?.(".dir-tree") || (activeZone === "tree" && target === document.body)) {
@@ -556,6 +558,8 @@ const typeaheadMatches = computed<string[]>(() => {
 /** 处理键入快速定位按键，返回 true 表示按键已被消费 */
 function handleTypeaheadKey(event: KeyboardEvent): boolean {
   if (!props.connected || dialog.open || contextMenu.open) return false;
+  // 存在其他模态弹窗时不响应键入快速定位
+  if (hasOpenModal()) return false;
   const target = event.target as HTMLElement;
   if (target.closest?.("input, textarea, select, .xterm")) return false;
   if (typeahead.active) {
