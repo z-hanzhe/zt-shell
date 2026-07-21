@@ -45,5 +45,3 @@ Vue响应式坑 pinia ref数组push普通对象后勿直接改原始对象引用
 远端压缩解压 普通模式exec调用zip/tar/unzip sudo SFTP提权不作用于exec故sudo模式禁止 路径必须shell转义并校验单层条目名
 
 终端Alt+Insert 仅有选区时复制到原生剪贴板并立即写回终端 无选区放行
-
-发布流程 推送任意tag触发Windows x64、Linux x64、macOS双架构打包 全部成功后创建草稿Release 重跑仅覆盖草稿附件 详见release.md

@@ -8,4 +8,4 @@
 
 附件 Windows生成MSI与NSIS，macOS生成两种架构DMG，Linux生成DEB、RPM与AppImage
 
-特殊陷阱 tag指向的提交必须已包含工作流且package.json、package-lock.json、tauri.conf.json、Cargo.toml版本一致；草稿重跑会覆盖同名附件，已正式发布的Release禁止覆盖；当前未配置Windows代码签名与Apple签名公证，系统可能显示未知发布者或安全警告；Linux固定Ubuntu 22.04作为较低glibc基线
+特殊陷阱 tag指向的提交必须已包含工作流且package.json、package-lock.json、tauri.conf.json、Cargo.toml版本一致；Tauri bundle使用的PNG图标必须为RGBA而非索引色/调色板模式，否则Linux与macOS会在generate_context阶段报icon is not RGBA；草稿重跑会覆盖同名附件，已正式发布的Release禁止覆盖；当前未配置Windows代码签名与Apple签名公证，系统可能显示未知发布者或安全警告；Linux固定Ubuntu 22.04作为较低glibc基线
