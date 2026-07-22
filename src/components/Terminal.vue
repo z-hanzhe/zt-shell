@@ -224,6 +224,8 @@ async function setup() {
     cursorBlink: settings.settings.cursorBlink,
     theme,
     scrollback: 5000,
+    // clear 的 ESC[2J 将当前屏推入回滚区，配合下方拦截 ESC[3J 完整保留历史
+    scrollOnEraseInDisplay: true,
     // SearchAddon 的 decorations 高亮依赖 registerDecoration（proposed API）
     allowProposedApi: true,
   });

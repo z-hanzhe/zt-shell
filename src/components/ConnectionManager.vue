@@ -547,7 +547,7 @@ function runMenuAction(item: MenuItem) {
   }
 }
 
-/** 处理菜单项点击，父级菜单仅负责展开子菜单 */
+/** 处理菜单项点击，父级菜单不执行动作，子菜单由鼠标悬停展开 */
 function onMenuItemClick(item: MenuItem) {
   if (item.action) runMenuAction(item);
 }
@@ -1090,8 +1090,7 @@ onBeforeUnmount(() => {
   right: 100%;
   left: auto;
 }
-.context-menu-item.has-submenu:not(.disabled):hover > .context-submenu,
-.context-menu-item.has-submenu:not(.disabled):focus-within > .context-submenu {
+.context-menu-item.has-submenu:not(.disabled):hover > .context-submenu {
   display: block;
 }
 </style>

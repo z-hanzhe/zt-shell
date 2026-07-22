@@ -237,24 +237,7 @@ pub async fn create_archive(
 
     let temp_name = format!("./.ztshell-{}{}", Uuid::new_v4(), suffix);
     let target_name = format!("./{}", archive_name);
-    let source_args = names
-        .iter()
-        .map(|name| shell_quote(&format!("./{}", name)))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let archive_command = if archive_format == "zip" {
-        format!(
-            "zip -rq {} {} >/dev/null 2>&1",
-            shell_quote(&temp_name),
-            source_args
-        )
-    } else {
-        format!(
-            "tar -czf {} {} >/dev/null 2>&1",
-            shell_quote(&temp_name),
-            source_args
-        )
-    };
+    let archive_command = build_archive_command(&temp_name, names, archive_format);
     let command = format!(
         "cd {} && test ! -d {} && rm -f -- {} && {} && mv -f -- {} {} && printf __ZTOK__ || {{ rm -f -- {}; printf __ZTFAIL__; }}",
         shell_quote(directory),
@@ -270,6 +253,34 @@ pub async fn create_archive(
         return Err(anyhow!("远端压缩失败，请检查文件权限和剩余空间"));
     }
     Ok(())
+}
+
+/// 构建远端压缩命令，确保 tar 包内条目不携带当前目录前缀
+fn build_archive_command(temp_name: &str, names: &[String], archive_format: &str) -> String {
+    let source_args = names
+        .iter()
+        .map(|name| {
+            if archive_format == "tarGz" {
+                shell_quote(name)
+            } else {
+                shell_quote(&format!("./{}", name))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    if archive_format == "zip" {
+        format!(
+            "zip -rq {} {} >/dev/null 2>&1",
+            shell_quote(temp_name),
+            source_args
+        )
+    } else {
+        format!(
+            "tar -czf {} -- {} >/dev/null 2>&1",
+            shell_quote(temp_name),
+            source_args
+        )
+    }
 }
 
 /// 将远端 zip 或 tar.gz 压缩包解压到当前目录
@@ -360,7 +371,22 @@ fn validate_entry_name(name: &str, label: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_directory, validate_entry_name};
+    use super::{build_archive_command, validate_directory, validate_entry_name};
+
+    /// tar 包内条目不应携带会被 Windows 解压工具显示为目录层的 ./ 前缀
+    #[test]
+    fn tar_archive_entries_have_no_current_directory_prefix() {
+        let command = build_archive_command(
+            "./临时包.tar.gz",
+            &["普通文件".to_string(), "-特殊文件".to_string()],
+            "tarGz",
+        );
+
+        assert_eq!(
+            command,
+            "tar -czf './临时包.tar.gz' -- '普通文件' '-特殊文件' >/dev/null 2>&1"
+        );
+    }
 
     /// 单层条目名允许 shell 特殊字符，但拒绝路径穿越与空字符
     #[test]
