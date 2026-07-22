@@ -8,4 +8,4 @@ SFTP文件管理
 
 sudo提权 会话可切换普通/sudo两种 sudo走exec sudo -S启动sftp-server 密码stdin喂入 提示报错走stderr不污染stdout 握手哨兵__ZTOK__就绪__ZTPW__密码提示__ZTNO__缺失 覆盖需密码/已缓存/NOPASSWD 再次收到密码提示即密码错 is_sudo供删除选择rm -rf或SFTP递归 仅Linux 私钥无密码时仅NOPASSWD可成功 sftp_set_sudo启用时立即建提权会话失败回滚 关闭清空提权会话缓存回落普通
 
-注意 远端路径统一正斜杠 sftp_upload/download为整文件一次性读写(简单场景) 批量/大文件/断点续传走传输任务 终端channel结束会移除所属SessionEntry并释放普通/提权SFTP缓存
+注意 远端路径统一正斜杠 sftp_upload/download为整文件一次性读写(简单场景) 批量/大文件/断点续传走传输任务

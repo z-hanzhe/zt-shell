@@ -6,4 +6,4 @@ SSH内核
 
 一次性命令 exec_command开exec通道收集stdout 用于监控等场景
 
-会话管理器 SessionManager用dashmap存储 每条含SSH会话+终端控制发端+惰性SFTP terminal结束或显式ssh_disconnect均移除条目使SSH/SFTP资源释放
+会话管理器 SessionManager用dashmap存储 每条含SSH会话+终端控制发端+惰性SFTP terminal结束或显式ssh_disconnect均移除条目释放SSH/SFTP与传输资源

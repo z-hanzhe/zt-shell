@@ -1,6 +1,8 @@
 架构总览
 
-技术栈 前端Vue3+TypeScript+Vite+pinia+xterm 后端Rust+Tauri2+russh+russh-sftp+tokio
+技术栈 前端Vue3+TypeScript+Vite+pinia+xterm 后端Rust+Tauri2+russh+russh-sftp+tokio(ring替代aws-lc-rs作crypto后端避Windows NASM依赖 见Cargo.toml)
+
+调试 SSH等invoke命令仅在Tauri原生窗口内有效 浏览器localhost:1420仅供预览布局 需npm run tauri dev
 
 三栏布局 顶部标题栏底部状态栏 左监控 右上终端选项卡 右下文件/传输 分隔条可拖拽 终端区自适应填充剩余空间
 
