@@ -249,9 +249,21 @@ async function setup() {
     search.current = e.resultCount === 0 ? 0 : e.resultIndex + 1;
   });
 
-  // 快捷键：Ctrl+Shift+C/V/F/A 与有选区时 Alt+Insert，拦截后跳过终端原始按键输入
+  // 快捷键：Ctrl+Shift+C/V/F/A、F3 与有选区时 Alt+Insert，拦截后跳过终端原始按键输入
   t.attachCustomKeyEventHandler((event) => {
     if (event.type !== "keydown") return true;
+    if (
+      event.key === "F3" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey
+    ) {
+      event.preventDefault();
+      if (search.open && search.keyword) findNext();
+      else openSearch();
+      return false;
+    }
     if (
       event.altKey &&
       !event.ctrlKey &&
@@ -476,7 +488,7 @@ function onSearchInput() {
 /** 打开右键菜单（边缘收敛不超出视口） */
 function onContextMenu(event: MouseEvent) {
   event.preventDefault();
-  const MENU_W = 180;
+  const MENU_W = 152;
   const MENU_H = menuItems.length * 24 + 8;
   contextMenu.open = true;
   contextMenu.x = Math.min(event.clientX, window.innerWidth - MENU_W - 8);
@@ -488,13 +500,13 @@ function closeContextMenu() {
   contextMenu.open = false;
 }
 
-/** 右键菜单项（快捷键作为文字直接展示） */
+/** 右键菜单项：快捷键统一通过悬停提示说明 */
 const menuItems = [
-  { action: "copy", label: "复制 Ctrl + Shift + C" },
-  { action: "paste", label: "粘贴 Ctrl + Shift + V" },
-  { action: "find", label: "查找 Ctrl + Shift + F" },
-  { action: "selectAll", label: "全选 Ctrl + Shift + A" },
-  { action: "clear", label: "清空屏幕缓存区" },
+  { action: "copy", label: "复制", tooltip: "Ctrl + Shift + C / Ctrl + Insert" },
+  { action: "paste", label: "粘贴", tooltip: "Ctrl + Shift + V / Shift + Insert" },
+  { action: "find", label: "查找", tooltip: "Ctrl + Shift + F / F3" },
+  { action: "selectAll", label: "全选", tooltip: "Ctrl + Shift + A" },
+  { action: "clear", label: "清空屏幕缓存区", tooltip: "" },
 ] as const;
 
 /** 执行右键菜单动作，操作完成后焦点归还终端便于继续输入 */
@@ -674,6 +686,7 @@ defineExpose({ fit: doFit, activate, reopen, cdTo, requestCwd });
         class="ts-input"
         placeholder="查找"
         @input="onSearchInput"
+        @keydown.f3.prevent="findNext"
         @keydown.enter.prevent="$event.shiftKey ? findPrevious() : findNext()"
         @keydown.esc.prevent="closeSearch"
       />
@@ -696,7 +709,12 @@ defineExpose({ fit: doFit, activate, reopen, cdTo, requestCwd });
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
     >
-      <button v-for="item in menuItems" :key="item.action" @click="runMenuAction(item.action)">
+      <button
+        v-for="item in menuItems"
+        :key="item.action"
+        :title="item.tooltip || undefined"
+        @click="runMenuAction(item.action)"
+      >
         {{ item.label }}
       </button>
     </div>
@@ -803,7 +821,8 @@ defineExpose({ fit: doFit, activate, reopen, cdTo, requestCwd });
 .term-context-menu {
   position: fixed;
   z-index: 30;
-  min-width: 172px;
+  width: 152px;
+  box-sizing: border-box;
   padding: 4px;
   border: 1px solid #b8c6d6;
   border-radius: 4px;

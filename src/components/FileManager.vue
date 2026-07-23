@@ -110,6 +110,8 @@ const dropHover = ref(false);
 const typeahead = reactive({ active: false, zone: "list" as TypeaheadZone, keyword: "", index: 0 });
 /** 树区快速定位当前命中的节点路径 */
 const typeaheadTreePath = ref("");
+/** 列表区快速定位当前命中的文件名 */
+const typeaheadListName = ref("");
 
 const transfersStore = useTransfersStore();
 const sessionsStore = useSessionsStore();
@@ -145,9 +147,7 @@ type PointerAction = {
   toggle: boolean;
 };
 type MenuAction =
-  | "refresh"
   | "edit"
-  | "copyPath"
   | "rename"
   | "uploadFile"
   | "uploadDir"
@@ -219,9 +219,7 @@ const contextMenuItems = computed<MenuItem[]>(() => {
   const multi = count > 1;
   const singleDir = count === 1 && first?.isDir;
   return [
-    { key: "refresh", action: "refresh", label: "刷新", disabled: false },
     { key: "edit", action: "edit", label: "编辑文本", disabled: count !== 1 || singleDir || multi },
-    { key: "copyPath", action: "copyPath", label: "复制路径", disabled: count !== 1 || multi },
     { key: "rename", action: "rename", label: "重命名", disabled: count !== 1 || multi },
     {
       key: "new",
@@ -272,8 +270,9 @@ const contextMenuItems = computed<MenuItem[]>(() => {
 
 const CONTEXT_MENU_WIDTH = 152;
 const CONTEXT_SUBMENU_WIDTH = 172;
-const CONTEXT_MENU_HEIGHT = 226;
 const CONTEXT_MENU_MARGIN = 8;
+const CONTEXT_MENU_ITEM_HEIGHT = 24;
+const CONTEXT_MENU_PADDING = 8;
 /** PageUp/PageDown 一次移动的条目数 */
 const PAGE_STEP = 10;
 
@@ -439,6 +438,22 @@ function isSelected(entry: FileEntry): boolean {
   return selectedNames.value.has(entry.name);
 }
 
+/** 将文件行完整滚动到粘性表头下方的可视区域 */
+function scrollListRowIntoView(row: HTMLElement | undefined) {
+  const list = fileListRef.value;
+  if (!list || !row) return;
+  const listRect = list.getBoundingClientRect();
+  const headerRect = list.querySelector<HTMLElement>("thead th")?.getBoundingClientRect();
+  const visibleTop = Math.max(listRect.top, headerRect?.bottom ?? listRect.top);
+  const visibleBottom = listRect.top + list.clientHeight;
+  const rowRect = row.getBoundingClientRect();
+  if (rowRect.top < visibleTop) {
+    list.scrollTop -= visibleTop - rowRect.top;
+  } else if (rowRect.bottom > visibleBottom) {
+    list.scrollTop += rowRect.bottom - visibleBottom;
+  }
+}
+
 /** 清空文件列表选择 */
 function clearSelection() {
   selectedNames.value = new Set();
@@ -507,9 +522,7 @@ function handleNavKey(event: KeyboardEvent): boolean {
   const next = current < 0 ? 0 : Math.max(0, Math.min(names.length - 1, current + step));
   selectSingle(names[next]);
   nextTick(() => {
-    entryRows()
-      .find((row) => row.dataset.name === names[next])
-      ?.scrollIntoView({ block: "nearest" });
+    scrollListRowIntoView(entryRows().find((row) => row.dataset.name === names[next]));
   });
   event.preventDefault();
   return true;
@@ -624,15 +637,15 @@ function applyTypeahead() {
   const matches = typeaheadMatches.value;
   if (matches.length === 0) {
     if (typeahead.zone === "tree") typeaheadTreePath.value = "";
+    else typeaheadListName.value = "";
     return;
   }
   const value = matches[Math.min(typeahead.index, matches.length - 1)];
   if (typeahead.zone === "list") {
     selectSingle(value);
+    typeaheadListName.value = value;
     nextTick(() => {
-      entryRows()
-        .find((row) => row.dataset.name === value)
-        ?.scrollIntoView({ block: "nearest" });
+      scrollListRowIntoView(entryRows().find((row) => row.dataset.name === value));
     });
   } else {
     typeaheadTreePath.value = value;
@@ -657,6 +670,7 @@ function cancelTypeahead() {
   typeahead.keyword = "";
   typeahead.index = 0;
   typeaheadTreePath.value = "";
+  typeaheadListName.value = "";
 }
 
 /** 记录最近交互区域为目录树，并打断进行中的快速定位 */
@@ -789,9 +803,10 @@ function onFileListContextMenu(event: MouseEvent) {
 
 /** 定位右键菜单 */
 function openContextMenu(event: MouseEvent) {
+  const menuHeight = contextMenuItems.value.length * CONTEXT_MENU_ITEM_HEIGHT + CONTEXT_MENU_PADDING;
   contextMenu.open = true;
   contextMenu.x = Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_MARGIN);
-  contextMenu.y = Math.min(event.clientY, window.innerHeight - CONTEXT_MENU_HEIGHT - CONTEXT_MENU_MARGIN);
+  contextMenu.y = Math.min(event.clientY, window.innerHeight - menuHeight - CONTEXT_MENU_MARGIN);
   contextMenu.submenuLeft = contextMenu.x + CONTEXT_MENU_WIDTH + CONTEXT_SUBMENU_WIDTH > window.innerWidth - CONTEXT_MENU_MARGIN;
 }
 
@@ -913,14 +928,8 @@ async function runMenuAction(item: MenuItem) {
   if (item.disabled || !item.action) return;
   closeContextMenu();
   switch (item.action) {
-    case "refresh":
-      await refresh();
-      break;
     case "edit":
       await onEditText();
-      break;
-    case "copyPath":
-      await copySelectedPath();
       break;
     case "rename":
       if (selectedEntries.value[0]) await onRename(selectedEntries.value[0]);
@@ -955,17 +964,6 @@ async function runMenuAction(item: MenuItem) {
     case "delete":
       await onDeleteSelected();
       break;
-  }
-}
-
-/** 复制单个选中项完整路径 */
-async function copySelectedPath() {
-  const entry = selectedEntries.value[0];
-  if (!entry) return;
-  try {
-    await navigator.clipboard.writeText(joinPath(cwd.value, entry.name));
-  } catch (e) {
-    showMessage("复制失败", String(e));
   }
 }
 
@@ -1917,7 +1915,7 @@ defineExpose({ setPathFromTerminal });
               v-for="entry in visibleEntries"
               :key="entry.name"
               class="file-row"
-              :class="{ selected: isSelected(entry), 'drop-target': fileDrag.target === (entry.name === '...' ? parentPath(cwd) : joinPath(cwd, entry.name)) }"
+              :class="{ selected: isSelected(entry), locating: typeaheadListName === entry.name, 'drop-target': fileDrag.target === (entry.name === '...' ? parentPath(cwd) : joinPath(cwd, entry.name)) }"
               :data-name="entry.name"
               @pointerdown="onEntryPointerDown(entry, $event)"
               @contextmenu="onEntryContextMenu(entry, $event)"
@@ -2291,6 +2289,17 @@ defineExpose({ setPathFromTerminal });
 }
 .file-list tbody tr.selected td {
   background: #d9e6f4;
+}
+/* 键入快速定位命中的文件行，与目录树定位样式一致 */
+.file-list tbody tr.locating td {
+  background: #fff3cd;
+  box-shadow: inset 0 1px #e0b64a, inset 0 -1px #e0b64a;
+}
+.file-list tbody tr.locating td:first-child {
+  box-shadow: inset 1px 0 #e0b64a, inset 0 1px #e0b64a, inset 0 -1px #e0b64a;
+}
+.file-list tbody tr.locating td:last-child {
+  box-shadow: inset -1px 0 #e0b64a, inset 0 1px #e0b64a, inset 0 -1px #e0b64a;
 }
 .file-list tbody tr.drop-target td {
   background: #cfe2f6;
