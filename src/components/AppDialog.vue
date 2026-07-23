@@ -13,7 +13,7 @@ const props = withDefaults(
     title: string;
     /** 主体提示文案 */
     message?: string;
-    /** 弹窗类型，loading 为进行中提示（无按钮且不可关闭） */
+    /** 弹窗类型，loading 为不可关闭的进行中提示，可配置附加操作按钮 */
     type?: "info" | "confirm" | "prompt" | "loading";
     /** 输入框默认值 */
     defaultValue?: string;
@@ -27,6 +27,10 @@ const props = withDefaults(
     confirmDanger?: boolean;
     /** 输入提示模板，使用 {value} 表示当前输入值 */
     hintTemplate?: string;
+    /** 进行中弹窗的附加操作按钮文案，非空时显示红色警示按钮 */
+    loadingActionText?: string;
+    /** 进行中弹窗附加操作按钮是否禁用 */
+    loadingActionDisabled?: boolean;
   }>(),
   {
     message: "",
@@ -37,12 +41,15 @@ const props = withDefaults(
     cancelText: "取消",
     confirmDanger: false,
     hintTemplate: "",
+    loadingActionText: "",
+    loadingActionDisabled: false,
   }
 );
 
 const emit = defineEmits<{
   (e: "confirm", value: string): void;
   (e: "cancel"): void;
+  (e: "loading-action"): void;
 }>();
 
 const inputValue = ref("");
@@ -105,9 +112,23 @@ useEscClose(
         />
         <div v-if="hintText" class="app-dialog-hint">{{ hintText }}</div>
       </div>
-      <div v-if="type !== 'loading'" class="modal-footer">
-        <button v-if="type !== 'info'" class="btn" @click="emit('cancel')">{{ cancelText }}</button>
-        <button :class="['btn', confirmDanger ? 'btn-danger' : 'btn-primary']" @click="submit">{{ confirmText }}</button>
+      <div v-if="type !== 'loading' || loadingActionText" class="modal-footer">
+        <button
+          v-if="type === 'loading' && loadingActionText"
+          class="btn btn-danger"
+          :disabled="loadingActionDisabled"
+          @click="emit('loading-action')"
+        >
+          {{ loadingActionText }}
+        </button>
+        <button v-if="type === 'confirm' || type === 'prompt'" class="btn" @click="emit('cancel')">{{ cancelText }}</button>
+        <button
+          v-if="type !== 'loading'"
+          :class="['btn', confirmDanger ? 'btn-danger' : 'btn-primary']"
+          @click="submit"
+        >
+          {{ confirmText }}
+        </button>
       </div>
     </div>
   </div>

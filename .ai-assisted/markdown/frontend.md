@@ -2,7 +2,7 @@
 
 入口 App.vue自绘标题栏+主体+底部状态栏 主体flex三栏布局 分隔条可拖拽
 
-组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关 禁止点空白关闭 仅按钮或ESC关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue SettingsDialog.vue TextEditorWindow.vue(monaco-editor独立窗口) TitleBar.vue
+组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关但可配置警示操作 禁止点空白关闭 仅按钮或ESC关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue SettingsDialog.vue TextEditorWindow.vue(monaco-editor独立窗口) TitleBar.vue
 
 状态 connections.ts持久化连接与分组文件夹(folders树形嵌套/upsert/remove/upsertFolder/removeFolderRecursive递归删/reorderItems维护同级order/moveItems防环/duplicateConnection同级复制/countFolderContents) sessions.ts活动会话(open/close/activate/move/reconnect/markDisconnected/markActivity)(⚠ ref数组push后须find取代理元素改 勿直接改原始对象) settings.ts持久化设置(tauri-plugin-store load的options需含defaults字段) monitor.ts按会话采集(收发无关选项卡) transfers.ts传输任务 App.vue onMounted初始化
 
@@ -18,7 +18,7 @@
 
 字体 @fontsource/cascadia-mono自托管 终端栈Consolas>Cascadia Mono UI中文系统栈
 
-文件管理 左侧树+右侧列表 树聚焦后上下切换/左右与回车展开收起 列表表头排序/多选/框选/拖拽移动 右键菜单含新建/压缩解压/上传/下载悬停子菜单及编辑复制路径重命名删除 键入快速定位 地址栏↑cd当前终端 ↓printf OSC标记读PWD后切文件路径 目录浏览状态按sessionId缓存(普通选项卡切换不请求SFTP/编辑与上传等外部变更标脏后切回刷新/终端断开或选项卡关闭清缓存/视图版本丢弃跨会话异步结果) 文本编辑以会话+路径哈希创建自绘标题栏独立Tauri窗口(复用TitleBar/可并行操作/重复打开聚焦已有窗口/选项卡关闭联动销毁/重连复用sessionId/ESC不关闭窗口) TextEditorWindow集成monaco-editor ESM worker 只读自动检测(sudo恒可写 普通exec test -w) 1MB/二进制确认 变更退出二次确认
+文件管理 左侧树+右侧列表 树聚焦后上下切换/左右与回车展开收起 列表表头排序/多选/框选/拖拽移动 右键菜单含新建/压缩解压/上传/下载悬停子菜单及编辑复制路径重命名删除 键入快速定位 地址栏↑cd当前终端 ↓printf OSC标记读PWD后切文件路径 压缩/解压/批量删除加载弹窗以operationId请求中断并二次确认，迟到响应按ID隔离，中断后刷新真实目录且不承诺回滚 目录浏览状态按sessionId缓存(普通选项卡切换不请求SFTP/编辑与上传等外部变更标脏后切回刷新/终端断开或选项卡关闭清缓存/视图版本丢弃跨会话异步结果) 文本编辑以会话+路径哈希创建自绘标题栏独立Tauri窗口(复用TitleBar/可并行操作/重复打开聚焦已有窗口/选项卡关闭联动销毁/重连复用sessionId/ESC不关闭窗口) TextEditorWindow集成monaco-editor ESM worker 只读自动检测(sudo恒可写 普通exec test -w) 1MB/二进制确认 变更退出二次确认
 
 监控面板 纯视图读monitor store 系统信息/CPU/内存/网卡图/磁盘/进程 未连骨架占位 采集出错底部提示 网卡历史按名切换 默认自动选网卡(物理优先 取历史累计流量最高者 有流量后自动锁定不再跳动 消失重新选 手动选后固定) 图双柱上传橙下载绿
 

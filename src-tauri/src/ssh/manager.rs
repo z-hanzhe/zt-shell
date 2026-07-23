@@ -3,11 +3,12 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use russh_sftp::client::SftpSession;
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Manager};
-use tokio::sync::{mpsc::UnboundedSender, Mutex};
+use tokio::sync::{mpsc::UnboundedSender, watch, Mutex};
 
 use super::session::{SshSession, TerminalCommand};
 use super::transfer::TransferManager;
@@ -29,10 +30,40 @@ struct SessionEntry {
     sudo_sftp: Mutex<Option<Arc<SftpSession>>>,
 }
 
+/// 单个可中断文件操作的控制信息
+struct OperationControl {
+    /// 操作所属会话，防止跨会话误中断
+    session_id: String,
+    /// 中断通知发送端
+    cancel_tx: watch::Sender<bool>,
+}
+
+/// 可中断文件操作句柄，离开作用域时自动移除注册信息
+pub struct OperationGuard<'a> {
+    operations: &'a DashMap<String, OperationControl>,
+    operation_id: String,
+    cancel_rx: watch::Receiver<bool>,
+}
+
+impl OperationGuard<'_> {
+    /// 获取供具体操作监听的中断通知接收端
+    pub fn cancellation(&mut self) -> &mut watch::Receiver<bool> {
+        &mut self.cancel_rx
+    }
+}
+
+impl Drop for OperationGuard<'_> {
+    fn drop(&mut self) {
+        self.operations.remove(&self.operation_id);
+    }
+}
+
 /// 全局会话管理器，作为 Tauri 托管状态
 #[derive(Default)]
 pub struct SessionManager {
     sessions: DashMap<String, Arc<SessionEntry>>,
+    /// 正在运行且允许中断的文件操作
+    operations: DashMap<String, OperationControl>,
 }
 
 impl SessionManager {
@@ -62,6 +93,7 @@ impl SessionManager {
 
     /// 断开并移除会话，释放其终端与 SFTP 资源
     pub fn disconnect(&self, session_id: &str) {
+        self.cancel_session_operations(session_id);
         if let Some((_, entry)) = self.sessions.remove(session_id) {
             Self::close_entry(entry);
         }
@@ -75,6 +107,7 @@ impl SessionManager {
             .sessions
             .remove_if(session_id, |_, entry| Arc::ptr_eq(entry, expected));
         if let Some((_, entry)) = removed {
+            self.cancel_session_operations(session_id);
             Self::close_entry(entry);
             true
         } else {
@@ -149,6 +182,71 @@ impl SessionManager {
     pub async fn exec(&self, session_id: &str, command: &str) -> Result<String> {
         let entry = self.entry(session_id)?;
         entry.session.exec_command(command).await
+    }
+
+    /// 在远端执行允许中断的一次性命令
+    pub async fn exec_cancellable(
+        &self,
+        session_id: &str,
+        command: &str,
+        cancellation: &mut watch::Receiver<bool>,
+    ) -> Result<String> {
+        let entry = self.entry(session_id)?;
+        entry
+            .session
+            .exec_command_cancellable(command, cancellation)
+            .await
+    }
+
+    /// 登记一个可中断文件操作，操作结束时由返回的句柄自动清理
+    pub fn begin_operation<'a>(
+        &'a self,
+        session_id: &str,
+        operation_id: &str,
+    ) -> Result<OperationGuard<'a>> {
+        self.entry(session_id)?;
+        if operation_id.trim().is_empty() {
+            return Err(anyhow!("文件操作标识不能为空"));
+        }
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        match self.operations.entry(operation_id.to_string()) {
+            Entry::Occupied(_) => Err(anyhow!("文件操作标识已存在")),
+            Entry::Vacant(entry) => {
+                entry.insert(OperationControl {
+                    session_id: session_id.to_string(),
+                    cancel_tx,
+                });
+                Ok(OperationGuard {
+                    operations: &self.operations,
+                    operation_id: operation_id.to_string(),
+                    cancel_rx,
+                })
+            }
+        }
+    }
+
+    /// 请求中断指定会话中的文件操作，操作已经结束时返回 false
+    pub fn cancel_operation(&self, session_id: &str, operation_id: &str) -> Result<bool> {
+        let Some(operation) = self.operations.get(operation_id) else {
+            return Ok(false);
+        };
+        if operation.session_id != session_id {
+            return Err(anyhow!("文件操作不属于当前会话"));
+        }
+        operation
+            .cancel_tx
+            .send(true)
+            .map_err(|_| anyhow!("文件操作已经结束"))?;
+        Ok(true)
+    }
+
+    /// 请求中断会话中的全部文件操作
+    fn cancel_session_operations(&self, session_id: &str) {
+        for operation in self.operations.iter() {
+            if operation.session_id == session_id {
+                let _ = operation.cancel_tx.send(true);
+            }
+        }
     }
 
     /// 获取会话当前生效的 SFTP 客户端：按是否启用 sudo 返回提权或普通会话

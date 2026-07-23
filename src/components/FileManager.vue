@@ -11,8 +11,8 @@ import Icon from "./Icon.vue";
 import {
   sftpList,
   sftpHome,
-  sftpRemoveFile,
-  sftpRemoveDir,
+  sftpRemoveEntries,
+  sftpCancelOperation,
   sftpCreateDir,
   sftpRename,
   sftpWrite,
@@ -24,7 +24,7 @@ import {
   transferPackDownload,
 } from "../api";
 import type { FileEntry, TransferCreateResult } from "../types";
-import { formatShort, formatTime, joinPath, parentPath } from "../utils";
+import { formatShort, formatTime, genId, joinPath, parentPath } from "../utils";
 import { hasOpenModal } from "../composables/useEscClose";
 import { useTransfersStore } from "../stores/transfers";
 import { useSessionsStore } from "../stores/sessions";
@@ -89,6 +89,15 @@ const dialog = reactive<DialogState>({
   confirmDanger: false,
   resolve: undefined,
 });
+/** 当前正在执行的可中断文件操作 */
+const fileOperation = reactive<{
+  id: string;
+  sessionId: string;
+  kind: FileOperationKind | null;
+  cancelling: boolean;
+}>({ id: "", sessionId: "", kind: null, cancelling: false });
+/** 中断确认弹窗状态，叠加在进行中弹窗之上 */
+const interruptDialog = reactive({ open: false, message: "" });
 /** 鼠标框选状态 */
 const marquee = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 });
 /** 拖拽移动状态 */
@@ -124,6 +133,7 @@ type ColumnKey = SortKey;
 type PointerMode = "select" | "drag";
 type TypeaheadZone = "tree" | "list";
 type ArchiveFormat = "zip" | "tarGz";
+type FileOperationKind = "archive" | "extract" | "delete";
 type EditorSavedPayload = { sessionId: string; path: string };
 type PointerAction = {
   mode: PointerMode;
@@ -1217,6 +1227,9 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (fileOperation.id) {
+    void sftpCancelOperation(fileOperation.sessionId, fileOperation.id);
+  }
   stopResize?.();
   unlistenDragDrop?.();
   unlistenEditorSaved?.();
@@ -1370,6 +1383,81 @@ async function onPackDownload() {
   }
 }
 
+/** 开始一个可中断的文件操作并显示进行中弹窗 */
+function beginFileOperation(kind: FileOperationKind, title: string, message: string): string {
+  const operationId = genId();
+  Object.assign(fileOperation, {
+    id: operationId,
+    sessionId: props.sessionId,
+    kind,
+    cancelling: false,
+  });
+  openDialogState("loading", title, message, "");
+  return operationId;
+}
+
+/** 结束文件操作状态，避免刷新阶段继续显示中断按钮 */
+function finishFileOperation(operationId: string) {
+  if (fileOperation.id !== operationId) return;
+  Object.assign(fileOperation, { id: "", sessionId: "", kind: null, cancelling: false });
+  interruptDialog.open = false;
+}
+
+/** 读取当前操作对应的中断风险提示 */
+function interruptMessage(kind: FileOperationKind | null): string {
+  switch (kind) {
+    case "archive":
+      return "确认中断压缩？操作将尽快停止，临时文件会尝试清理；若压缩已进入最后替换阶段，目标文件可能已经更新。";
+    case "extract":
+      return "确认中断解压？已解压或覆盖的文件不会自动回滚。";
+    case "delete":
+      return "确认中断删除？已经删除的文件无法恢复，只会停止后续处理。";
+    default:
+      return "确认中断当前文件操作？已完成的部分不会自动回滚。";
+  }
+}
+
+/** 点击进行中弹窗的中断按钮，先显示风险确认 */
+function requestFileOperationCancel() {
+  if (!fileOperation.id || fileOperation.cancelling) return;
+  interruptDialog.message = interruptMessage(fileOperation.kind);
+  interruptDialog.open = true;
+}
+
+/** 取消中断确认 */
+function cancelInterruptRequest() {
+  interruptDialog.open = false;
+}
+
+/** 确认后向后端发送中断请求，原操作仍由其自身收尾 */
+async function confirmFileOperationCancel() {
+  if (!fileOperation.id || fileOperation.cancelling) return;
+  const operationId = fileOperation.id;
+  const sessionId = fileOperation.sessionId;
+  interruptDialog.open = false;
+  fileOperation.cancelling = true;
+  try {
+    const accepted = await sftpCancelOperation(sessionId, operationId);
+    if (!accepted && fileOperation.id === operationId) fileOperation.cancelling = false;
+  } catch (error) {
+    if (fileOperation.id !== operationId) return;
+    fileOperation.cancelling = false;
+    interruptDialog.message = `中断请求发送失败：${String(error)}`;
+    interruptDialog.open = true;
+  }
+}
+
+/** 判断后端错误是否为用户主动中断 */
+function isOperationCancelled(error: unknown): boolean {
+  return String(error).includes("文件操作已中断");
+}
+
+/** 刷新目录并显示操作中断结果 */
+async function showOperationCancelled() {
+  await refresh();
+  showMessage("操作已中断", "已停止后续处理，请检查已完成的部分。");
+}
+
 /** 判断文件名是否为当前支持解压的压缩包格式 */
 function isExtractableArchive(name: string): boolean {
   const lowerName = name.toLowerCase();
@@ -1418,19 +1506,23 @@ async function onCreateArchive(format: ArchiveFormat) {
     if (!overwrite) return;
   }
 
-  openDialogState("loading", "压缩中", `正在创建「${archiveName}」，请稍候…`, "");
+  const operationId = beginFileOperation("archive", "压缩中", `正在创建「${archiveName}」，请稍候…`);
   try {
     await sftpCreateArchive(
       props.sessionId,
       cwd.value,
       targets.map((entry) => entry.name),
       format,
-      archiveName
+      archiveName,
+      operationId
     );
+    finishFileOperation(operationId);
     await refresh();
     showMessage("压缩完成", `「${archiveName}」已创建`);
   } catch (e) {
-    showMessage("压缩失败", String(e));
+    finishFileOperation(operationId);
+    if (isOperationCancelled(e)) await showOperationCancelled();
+    else showMessage("压缩失败", String(e));
   }
 }
 
@@ -1446,14 +1538,21 @@ async function onExtractArchive() {
   );
   if (!confirmed) return;
 
-  openDialogState("loading", "解压中", `正在解压「${target.name}」，请稍候…`, "");
+  const operationId = beginFileOperation("extract", "解压中", `正在解压「${target.name}」，请稍候…`);
   try {
-    await sftpExtractArchive(props.sessionId, cwd.value, target.name);
+    await sftpExtractArchive(props.sessionId, cwd.value, target.name, operationId);
+    finishFileOperation(operationId);
     invalidateTreeDirs(cwd.value);
     await refresh();
     showMessage("解压完成", `「${target.name}」已解压到当前目录`);
   } catch (e) {
-    showMessage("解压失败", String(e));
+    finishFileOperation(operationId);
+    if (isOperationCancelled(e)) {
+      invalidateTreeDirs(cwd.value);
+      await showOperationCancelled();
+    } else {
+      showMessage("解压失败", String(e));
+    }
   }
 }
 
@@ -1479,22 +1578,27 @@ async function deleteEntries(targets: FileEntry[]) {
   }
   const confirmed = await showConfirm("删除确认", message, "删除", true);
   if (!confirmed) return;
-  openDialogState("loading", "删除中", "正在删除，请稍候…", "");
+  const operationId = beginFileOperation("delete", "删除中", "正在删除，请稍候…");
   try {
-    for (const entry of targets) {
-      const path = joinPath(cwd.value, entry.name);
-      if (entry.isDir) {
-        await sftpRemoveDir(props.sessionId, path);
-      } else {
-        await sftpRemoveFile(props.sessionId, path);
-      }
-    }
+    await sftpRemoveEntries(
+      props.sessionId,
+      targets.map((entry) => ({ path: joinPath(cwd.value, entry.name), isDir: entry.isDir })),
+      operationId
+    );
+    finishFileOperation(operationId);
     clearSelection();
     invalidateTreeDirs(cwd.value);
     await refresh();
     showMessage("删除完成", targets.length === 1 ? `「${targets[0].name}」已删除` : `${targets.length} 个项目已删除`);
   } catch (e) {
-    showMessage("删除失败", String(e));
+    finishFileOperation(operationId);
+    if (isOperationCancelled(e)) {
+      clearSelection();
+      invalidateTreeDirs(cwd.value);
+      await showOperationCancelled();
+    } else {
+      showMessage("删除失败", String(e));
+    }
   }
 }
 
@@ -1905,8 +2009,21 @@ defineExpose({ setPathFromTerminal });
       :confirm-text="dialog.confirmText"
       :hint-template="dialog.hintTemplate"
       :confirm-danger="dialog.confirmDanger"
+      :loading-action-text="fileOperation.id ? (fileOperation.cancelling ? '正在中断…' : '中断操作') : ''"
+      :loading-action-disabled="fileOperation.cancelling"
       @confirm="onDialogConfirm"
       @cancel="onDialogCancel"
+      @loading-action="requestFileOperationCancel"
+    />
+    <AppDialog
+      :open="interruptDialog.open"
+      type="confirm"
+      title="中断确认"
+      :message="interruptDialog.message"
+      confirm-text="确认中断"
+      :confirm-danger="true"
+      @confirm="confirmFileOperationCancel"
+      @cancel="cancelInterruptRequest"
     />
   </div>
 </template>

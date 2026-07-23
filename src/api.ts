@@ -129,18 +129,34 @@ export function sftpCreateArchive(
   directory: string,
   names: string[],
   archiveFormat: "zip" | "tarGz",
-  archiveName: string
+  archiveName: string,
+  operationId: string
 ): Promise<void> {
-  return invoke("sftp_create_archive", { sessionId, directory, names, archiveFormat, archiveName });
+  return invoke("sftp_create_archive", { sessionId, directory, names, archiveFormat, archiveName, operationId });
 }
 
 /** 将远端压缩包解压到当前目录 */
 export function sftpExtractArchive(
   sessionId: string,
   directory: string,
-  archiveName: string
+  archiveName: string,
+  operationId: string
 ): Promise<void> {
-  return invoke("sftp_extract_archive", { sessionId, directory, archiveName });
+  return invoke("sftp_extract_archive", { sessionId, directory, archiveName, operationId });
+}
+
+/** 批量删除远端条目，目录递归删除支持中断 */
+export function sftpRemoveEntries(
+  sessionId: string,
+  entries: { path: string; isDir: boolean }[],
+  operationId: string
+): Promise<void> {
+  return invoke("sftp_remove_entries", { sessionId, entries, operationId });
+}
+
+/** 请求中断文件管理中的长耗时操作 */
+export function sftpCancelOperation(sessionId: string, operationId: string): Promise<boolean> {
+  return invoke("sftp_cancel_operation", { sessionId, operationId });
 }
 
 /** 切换 sudo 提权文件管理开关 */

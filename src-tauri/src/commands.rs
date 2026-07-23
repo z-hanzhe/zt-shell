@@ -5,7 +5,7 @@ use tauri::{AppHandle, State};
 
 use crate::ssh::manager::SessionManager;
 use crate::ssh::monitor::{self, MonitorData};
-use crate::ssh::sftp;
+use crate::ssh::sftp::{self, RemoveEntryArg};
 use crate::ssh::transfer::{
     self, RemoteItemArg, TransferCreateResult, TransferManager, TransferTaskDto,
 };
@@ -234,7 +234,9 @@ pub async fn sftp_create_archive(
     names: Vec<String>,
     archive_format: String,
     archive_name: String,
+    operation_id: String,
 ) -> CmdResult<()> {
+    let mut operation = map_err(manager.begin_operation(&session_id, &operation_id))?;
     map_err(
         sftp::create_archive(
             &manager,
@@ -243,6 +245,7 @@ pub async fn sftp_create_archive(
             &names,
             &archive_format,
             &archive_name,
+            operation.cancellation(),
         )
         .await,
     )
@@ -255,8 +258,41 @@ pub async fn sftp_extract_archive(
     session_id: String,
     directory: String,
     archive_name: String,
+    operation_id: String,
 ) -> CmdResult<()> {
-    map_err(sftp::extract_archive(&manager, &session_id, &directory, &archive_name).await)
+    let mut operation = map_err(manager.begin_operation(&session_id, &operation_id))?;
+    map_err(
+        sftp::extract_archive(
+            &manager,
+            &session_id,
+            &directory,
+            &archive_name,
+            operation.cancellation(),
+        )
+        .await,
+    )
+}
+
+/// 批量删除远端条目，支持在递归处理过程中中断
+#[tauri::command]
+pub async fn sftp_remove_entries(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+    entries: Vec<RemoveEntryArg>,
+    operation_id: String,
+) -> CmdResult<()> {
+    let mut operation = map_err(manager.begin_operation(&session_id, &operation_id))?;
+    map_err(sftp::remove_entries(&manager, &session_id, &entries, operation.cancellation()).await)
+}
+
+/// 请求中断当前会话中的文件操作
+#[tauri::command]
+pub fn sftp_cancel_operation(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+    operation_id: String,
+) -> CmdResult<bool> {
+    map_err(manager.cancel_operation(&session_id, &operation_id))
 }
 
 /// 检测当前权限模式下对远端文件是否有写入权限

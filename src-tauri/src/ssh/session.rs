@@ -5,12 +5,15 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use russh::client::{self, Handle};
 use russh::keys::PrivateKeyWithHashAlg;
-use russh::ChannelMsg;
+use russh::{ChannelMsg, Sig};
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::types::{AuthType, ConnectionConfig};
+
+/// 可中断文件操作主动结束时返回的统一错误文案
+pub const OPERATION_CANCELLED_MESSAGE: &str = "文件操作已中断";
 
 /// russh 客户端事件回调处理器。终端数据通过主动 wait 循环读取，此处仅需接受服务端公钥
 struct ClientHandler;
@@ -169,6 +172,30 @@ impl SshSession {
 
     /// 在远端执行一条命令并返回标准输出（用于监控数据采集等一次性命令）
     pub async fn exec_command(&self, command: &str) -> Result<String> {
+        self.exec_command_inner(command, None).await
+    }
+
+    /// 在远端执行一条允许中断的命令，中断时终止远端进程组并关闭当前执行通道
+    pub async fn exec_command_cancellable(
+        &self,
+        command: &str,
+        cancellation: &mut watch::Receiver<bool>,
+    ) -> Result<String> {
+        self.exec_command_inner(command, Some(cancellation)).await
+    }
+
+    /// 执行一次性命令的公共实现，可选监听文件操作中断通知
+    async fn exec_command_inner(
+        &self,
+        command: &str,
+        mut cancellation: Option<&mut watch::Receiver<bool>>,
+    ) -> Result<String> {
+        if cancellation
+            .as_ref()
+            .is_some_and(|receiver| *receiver.borrow())
+        {
+            return Err(anyhow!(OPERATION_CANCELLED_MESSAGE));
+        }
         let mut channel = self
             .handle
             .channel_open_session()
@@ -180,7 +207,24 @@ impl SshSession {
             .map_err(|e| anyhow!("执行命令失败：{}", e))?;
 
         let mut output = Vec::new();
-        while let Some(msg) = channel.wait().await {
+        loop {
+            let msg = if let Some(receiver) = cancellation.as_deref_mut() {
+                tokio::select! {
+                    biased;
+                    _ = wait_for_cancellation(receiver) => {
+                        // OpenSSH 会将 signal 请求作用于该 exec 会话的整个进程组
+                        let _ = channel.signal(Sig::TERM).await;
+                        let _ = channel.close().await;
+                        return Err(anyhow!(OPERATION_CANCELLED_MESSAGE));
+                    }
+                    msg = channel.wait() => msg,
+                }
+            } else {
+                channel.wait().await
+            };
+            let Some(msg) = msg else {
+                break;
+            };
             match msg {
                 ChannelMsg::Data { data } => output.extend_from_slice(&data),
                 ChannelMsg::ExtendedData { .. } => {}
@@ -268,6 +312,18 @@ impl SshSession {
                 }
                 _ => {}
             }
+        }
+    }
+}
+
+/// 等待文件操作收到中断通知
+async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
+    if *cancellation.borrow() {
+        return;
+    }
+    while cancellation.changed().await.is_ok() {
+        if *cancellation.borrow() {
+            return;
         }
     }
 }

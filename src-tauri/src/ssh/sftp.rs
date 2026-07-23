@@ -4,12 +4,24 @@ use anyhow::{anyhow, Result};
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::FileType;
+use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::watch;
+use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use super::manager::SessionManager;
+use super::session::OPERATION_CANCELLED_MESSAGE;
 use super::transfer::shell_quote;
 use super::types::FileEntry;
+
+/// 批量删除命令中的单个远端条目
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveEntryArg {
+    pub path: String,
+    pub is_dir: bool,
+}
 
 /// 将 SFTP 错误格式化为简洁文案，避免状态码与消息重复（如 Failure: Failure）
 pub fn format_sftp_error(e: &SftpError) -> String {
@@ -139,13 +151,33 @@ pub async fn remove_dir(sftp: &SftpSession, path: &str) -> Result<()> {
 /// 通过 SFTP 遍历删除以保持与当前权限模式（普通/sudo 提权）一致，
 /// 先收集全部条目（父先于子）再逆序删除，确保先删文件与深层目录
 pub async fn remove_dir_all(sftp: &SftpSession, path: &str) -> Result<()> {
+    remove_dir_all_inner(sftp, path, None).await
+}
+
+/// 递归删除远端目录，并在每次 SFTP 请求之间响应中断
+async fn remove_dir_all_cancellable(
+    sftp: &SftpSession,
+    path: &str,
+    cancellation: &watch::Receiver<bool>,
+) -> Result<()> {
+    remove_dir_all_inner(sftp, path, Some(cancellation)).await
+}
+
+/// 递归删除的公共实现，中断不会回滚已经完成的删除
+async fn remove_dir_all_inner(
+    sftp: &SftpSession,
+    path: &str,
+    cancellation: Option<&watch::Receiver<bool>>,
+) -> Result<()> {
     let mut all: Vec<(String, bool)> = vec![(path.to_string(), true)];
     let mut stack: Vec<String> = vec![path.to_string()];
     while let Some(dir) = stack.pop() {
+        ensure_not_cancelled(cancellation)?;
         let read = sftp
             .read_dir(&dir)
             .await
             .map_err(|e| anyhow!("读取目录失败（{}）：{}", dir, format_sftp_error(&e)))?;
+        ensure_not_cancelled(cancellation)?;
         for item in read {
             let child = format!("{}/{}", dir.trim_end_matches('/'), item.file_name());
             // 符号链接按文件删除（unlink），不深入目标避免误删与循环
@@ -157,13 +189,69 @@ pub async fn remove_dir_all(sftp: &SftpSession, path: &str) -> Result<()> {
         }
     }
     for (entry_path, is_dir) in all.iter().rev() {
+        ensure_not_cancelled(cancellation)?;
         if *is_dir {
             remove_dir(sftp, entry_path).await?;
         } else {
             remove_file(sftp, entry_path).await?;
         }
     }
+    ensure_not_cancelled(cancellation)?;
     Ok(())
+}
+
+/// 批量删除远端条目，普通目录使用独立 exec 通道，sudo 目录使用共享 SFTP 递归
+pub async fn remove_entries(
+    manager: &SessionManager,
+    session_id: &str,
+    entries: &[RemoveEntryArg],
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    if entries.is_empty() {
+        return Err(anyhow!("未选择需要删除的文件"));
+    }
+    for entry in entries {
+        validate_removal_path(&entry.path)?;
+    }
+
+    let sudo = manager.is_sudo(session_id).await?;
+    let needs_sftp = sudo || entries.iter().any(|entry| !entry.is_dir);
+    let sftp = if needs_sftp {
+        ensure_not_cancelled(Some(cancellation))?;
+        Some(manager.sftp(session_id).await?)
+    } else {
+        None
+    };
+
+    for entry in entries {
+        ensure_not_cancelled(Some(cancellation))?;
+        if entry.is_dir && !sudo {
+            let command = format!(
+                "rm -rf -- {} && printf __ZTOK__ || printf __ZTFAIL__",
+                shell_quote(&entry.path)
+            );
+            let output = manager
+                .exec_cancellable(session_id, &command, cancellation)
+                .await?;
+            if !output.contains("__ZTOK__") {
+                return Err(anyhow!("删除目录失败，请检查文件权限"));
+            }
+        } else if entry.is_dir {
+            remove_dir_all_cancellable(
+                sftp.as_deref().ok_or_else(|| anyhow!("SFTP 会话未建立"))?,
+                &entry.path,
+                cancellation,
+            )
+            .await?;
+        } else {
+            remove_file(
+                sftp.as_deref().ok_or_else(|| anyhow!("SFTP 会话未建立"))?,
+                &entry.path,
+            )
+            .await?;
+        }
+    }
+    ensure_not_cancelled(Some(cancellation))
 }
 
 /// 创建远端目录
@@ -211,6 +299,7 @@ pub async fn create_archive(
     names: &[String],
     archive_format: &str,
     archive_name: &str,
+    cancellation: &mut watch::Receiver<bool>,
 ) -> Result<()> {
     ensure_normal_exec_mode(manager, session_id).await?;
     validate_directory(directory)?;
@@ -233,7 +322,7 @@ pub async fn create_archive(
     if !archive_name.to_ascii_lowercase().ends_with(suffix) {
         return Err(anyhow!("压缩包扩展名与压缩格式不匹配"));
     }
-    ensure_remote_tool(manager, session_id, tool).await?;
+    ensure_remote_tool(manager, session_id, tool, cancellation).await?;
 
     let temp_name = format!("./.ztshell-{}{}", Uuid::new_v4(), suffix);
     let target_name = format!("./{}", archive_name);
@@ -248,8 +337,18 @@ pub async fn create_archive(
         shell_quote(&target_name),
         shell_quote(&temp_name)
     );
-    let output = manager.exec(session_id, &command).await?;
+    let output = match manager
+        .exec_cancellable(session_id, &command, cancellation)
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            cleanup_archive_temp(manager, session_id, directory, &temp_name).await;
+            return Err(error);
+        }
+    };
     if !output.contains("__ZTOK__") {
+        cleanup_archive_temp(manager, session_id, directory, &temp_name).await;
         return Err(anyhow!("远端压缩失败，请检查文件权限和剩余空间"));
     }
     Ok(())
@@ -289,6 +388,7 @@ pub async fn extract_archive(
     session_id: &str,
     directory: &str,
     archive_name: &str,
+    cancellation: &mut watch::Receiver<bool>,
 ) -> Result<()> {
     ensure_normal_exec_mode(manager, session_id).await?;
     validate_directory(directory)?;
@@ -314,14 +414,16 @@ pub async fn extract_archive(
     } else {
         return Err(anyhow!("仅支持解压 zip、tar.gz 或 tgz 文件"));
     };
-    ensure_remote_tool(manager, session_id, tool).await?;
+    ensure_remote_tool(manager, session_id, tool, cancellation).await?;
 
     let command = format!(
         "cd {} && {} && printf __ZTOK__ || printf __ZTFAIL__",
         shell_quote(directory),
         extract_command
     );
-    let output = manager.exec(session_id, &command).await?;
+    let output = manager
+        .exec_cancellable(session_id, &command, cancellation)
+        .await?;
     if !output.contains("__ZTOK__") {
         return Err(anyhow!(
             "远端解压失败，请检查压缩包内容、文件权限和剩余空间"
@@ -341,14 +443,61 @@ async fn ensure_normal_exec_mode(manager: &SessionManager, session_id: &str) -> 
 }
 
 /// 探测远端压缩工具是否可用
-async fn ensure_remote_tool(manager: &SessionManager, session_id: &str, tool: &str) -> Result<()> {
+async fn ensure_remote_tool(
+    manager: &SessionManager,
+    session_id: &str,
+    tool: &str,
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<()> {
     let command = format!(
         "command -v {} >/dev/null 2>&1 && printf __ZTOK__ || printf __ZTNO__",
         tool
     );
-    let output = manager.exec(session_id, &command).await?;
+    let output = manager
+        .exec_cancellable(session_id, &command, cancellation)
+        .await?;
     if !output.contains("__ZTOK__") {
         return Err(anyhow!("远端未找到 {} 命令", tool));
+    }
+    Ok(())
+}
+
+/// 中断或异常后限时清理压缩临时包，清理失败不覆盖原始错误
+async fn cleanup_archive_temp(
+    manager: &SessionManager,
+    session_id: &str,
+    directory: &str,
+    temp_name: &str,
+) {
+    let command = format!(
+        "cd {} && rm -f -- {}",
+        shell_quote(directory),
+        shell_quote(temp_name)
+    );
+    let _ = timeout(Duration::from_secs(5), manager.exec(session_id, &command)).await;
+}
+
+/// 校验删除路径为非根绝对路径
+fn validate_removal_path(path: &str) -> Result<()> {
+    let is_root = path.trim_matches('/').is_empty();
+    let has_parent_component = path
+        .split('/')
+        .any(|component| component == "." || component == "..");
+    if path.is_empty()
+        || !path.starts_with('/')
+        || path.contains('\0')
+        || is_root
+        || has_parent_component
+    {
+        return Err(anyhow!("非法的删除路径"));
+    }
+    Ok(())
+}
+
+/// 在 SFTP 安全边界检查是否收到中断通知
+fn ensure_not_cancelled(cancellation: Option<&watch::Receiver<bool>>) -> Result<()> {
+    if cancellation.is_some_and(|receiver| *receiver.borrow()) {
+        return Err(anyhow!(OPERATION_CANCELLED_MESSAGE));
     }
     Ok(())
 }
@@ -371,7 +520,9 @@ fn validate_entry_name(name: &str, label: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_archive_command, validate_directory, validate_entry_name};
+    use super::{
+        build_archive_command, validate_directory, validate_entry_name, validate_removal_path,
+    };
 
     /// tar 包内条目不应携带会被 Windows 解压工具显示为目录层的 ./ 前缀
     #[test]
@@ -404,5 +555,25 @@ mod tests {
         assert!(validate_directory("/目录/子目录").is_ok());
         assert!(validate_directory("相对路径").is_err());
         assert!(validate_directory("/目录\0子目录").is_err());
+    }
+
+    /// 删除仅允许非根绝对路径
+    #[test]
+    fn validates_removal_paths() {
+        assert!(validate_removal_path("/目录/文件").is_ok());
+        assert!(validate_removal_path("/目录/ 文件 ").is_ok());
+        for path in [
+            "",
+            "/",
+            "//",
+            "相对路径",
+            "/.",
+            "/..",
+            "/目录/./文件",
+            "/目录/../文件",
+            "/目录\0文件",
+        ] {
+            assert!(validate_removal_path(path).is_err());
+        }
     }
 }
