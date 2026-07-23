@@ -889,8 +889,8 @@ async function moveSelectedTo(targetDir: string) {
   if (names.length === 0) return;
   const message =
     names.length === 1
-      ? `是否将「${names[0]}」移动至「${targetDir}」目录？`
-      : `是否将 ${names.length} 个文件移动至「${targetDir}」目录？`;
+      ? `是否将 [ ${names[0]} ] 移动至 [ ${targetDir} ] 目录？`
+      : `是否将 ${names.length} 个文件移动至 [ ${targetDir} ] 目录？`;
   const confirmed = await showConfirm("移动确认", message);
   if (!confirmed) return;
   try {
@@ -1493,20 +1493,20 @@ async function onCreateArchive(format: ArchiveFormat) {
   }
   const existing = entries.value.find((entry) => entry.name === archiveName);
   if (existing?.isDir) {
-    showMessage("压缩失败", `当前目录存在同名文件夹「${archiveName}」，请更换压缩包名称`);
+    showMessage("压缩失败", `当前目录存在同名文件夹 [ ${archiveName} ] ，请更换压缩包名称`);
     return;
   }
   if (existing) {
     const overwrite = await showConfirm(
       "覆盖确认",
-      `当前目录已存在「${archiveName}」，继续压缩将覆盖该文件，是否继续？`,
+      `当前目录已存在 [ ${archiveName} ] ，继续压缩将覆盖该文件，是否继续？`,
       "覆盖",
       true
     );
     if (!overwrite) return;
   }
 
-  const operationId = beginFileOperation("archive", "压缩中", `正在创建「${archiveName}」，请稍候…`);
+  const operationId = beginFileOperation("archive", "压缩中", `正在创建 [ ${archiveName} ] ，请稍候…`);
   try {
     await sftpCreateArchive(
       props.sessionId,
@@ -1518,7 +1518,7 @@ async function onCreateArchive(format: ArchiveFormat) {
     );
     finishFileOperation(operationId);
     await refresh();
-    showMessage("压缩完成", `「${archiveName}」已创建`);
+    showMessage("压缩完成", ` [ ${archiveName} ] 已创建`);
   } catch (e) {
     finishFileOperation(operationId);
     if (isOperationCancelled(e)) await showOperationCancelled();
@@ -1532,19 +1532,19 @@ async function onExtractArchive() {
   if (!target || target.isDir || !isExtractableArchive(target.name)) return;
   const confirmed = await showConfirm(
     "解压确认",
-    `将「${target.name}」解压到当前目录，可能覆盖同名文件，是否继续？`,
+    `将 [ ${target.name} ] 解压到当前目录，可能覆盖同名文件，是否继续？`,
     "继续解压",
     true
   );
   if (!confirmed) return;
 
-  const operationId = beginFileOperation("extract", "解压中", `正在解压「${target.name}」，请稍候…`);
+  const operationId = beginFileOperation("extract", "解压中", `正在解压 [ ${target.name} ] ，请稍候…`);
   try {
     await sftpExtractArchive(props.sessionId, cwd.value, target.name, operationId);
     finishFileOperation(operationId);
     invalidateTreeDirs(cwd.value);
     await refresh();
-    showMessage("解压完成", `「${target.name}」已解压到当前目录`);
+    showMessage("解压完成", ` [ ${target.name} ] 已解压到当前目录`);
   } catch (e) {
     finishFileOperation(operationId);
     if (isOperationCancelled(e)) {
@@ -1568,8 +1568,8 @@ async function deleteEntries(targets: FileEntry[]) {
   let message: string;
   if (targets.length === 1) {
     message = targets[0].isDir
-      ? `是否删除文件夹「${targets[0].name}」？其中的全部内容将一并删除`
-      : `是否删除「${targets[0].name}」？`;
+      ? `是否删除文件夹 [ ${targets[0].name} ] ？其中的全部内容将一并删除`
+      : `是否删除 [ ${targets[0].name} ] ？`;
   } else {
     message =
       dirCount > 0
@@ -1589,7 +1589,7 @@ async function deleteEntries(targets: FileEntry[]) {
     clearSelection();
     invalidateTreeDirs(cwd.value);
     await refresh();
-    showMessage("删除完成", targets.length === 1 ? `「${targets[0].name}」已删除` : `${targets.length} 个项目已删除`);
+    showMessage("删除完成", targets.length === 1 ? ` [ ${targets[0].name} ] 已删除` : `${targets.length} 个项目已删除`);
   } catch (e) {
     finishFileOperation(operationId);
     if (isOperationCancelled(e)) {
@@ -1630,7 +1630,7 @@ async function onNewDir() {
 
 /** 重命名选中项 */
 async function onRename(entry: FileEntry) {
-  const newName = await showPrompt("重命名", `将「${entry.name}」重命名为`, "新名称", entry.name);
+  const newName = await showPrompt("重命名", `将 [ ${entry.name} ] 重命名为`, "新名称", entry.name);
   if (!newName?.trim() || newName.trim() === entry.name) return;
   try {
     await sftpRename(

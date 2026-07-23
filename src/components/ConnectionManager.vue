@@ -450,13 +450,13 @@ async function onRename() {
   const folder = store.folders.find((f) => f.id === id);
   const conn = connMap.value.get(id);
   const current = folder?.name ?? conn?.name ?? "";
-  const name = await showPrompt("重命名", `将「${current}」重命名为`, "新名称", current);
+  const name = await showPrompt("重命名", `将 [ ${current} ] 重命名为`, "新名称", current);
   if (!name?.trim() || name.trim() === current) return;
   if (folder) await store.upsertFolder({ ...folder, name: name.trim() });
   else if (conn) await store.upsert({ ...conn, name: name.trim() });
 }
 
-/** 复制选中的连接：同级生成一份「原名 - 复制」 */
+/** 复制选中的连接：同级生成一份 [ 原名 - 复制 ]  */
 async function onDuplicate() {
   const id = selectedId.value;
   if (!id || !connMap.value.has(id)) return;
@@ -477,8 +477,8 @@ async function onDelete() {
     contentCount = contents.connCount + contents.folderCount;
   }
   const message = folder
-    ? `是否删除文件夹「${folder.name}」？文件夹及其内含的 ${contentCount} 个项目将一并删除`
-    : `是否删除连接「${conn?.name}」？`;
+    ? `是否删除文件夹 [ ${folder.name} ] ？文件夹及其内含的 ${contentCount} 个项目将一并删除`
+    : `是否删除连接 [ ${conn?.name} ] ？`;
   const confirmed = await showConfirm("删除确认", message, "删除", true);
   if (!confirmed) return;
   if (folder) await store.removeFolderRecursive(folder.id);

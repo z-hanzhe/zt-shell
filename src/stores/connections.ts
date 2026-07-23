@@ -222,7 +222,7 @@ export const useConnectionsStore = defineStore("connections", () => {
     if (changed) await persist();
   }
 
-  /** 复制连接：在同级目录下生成一份「原名 - 复制」，返回新连接 id */
+  /** 复制连接：在同级目录下生成一份 [ 原名 - 复制 ] ，返回新连接 id */
   async function duplicateConnection(id: string): Promise<string | null> {
     const source = connections.value.find((c) => c.id === id);
     if (!source) return null;

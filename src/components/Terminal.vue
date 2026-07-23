@@ -590,7 +590,7 @@ async function handleFileDrop(paths: string[]) {
       const result = await transferUpload(props.sessionId, [localPath], remoteDir, true, overwrite);
       if (result.existNames.length > 0) {
         const name = result.existNames[0];
-        if (!(await confirmOverwrite(`目标目录已存在同名文件「${name}」，是否覆盖？`))) return;
+        if (!(await confirmOverwrite(`目标目录已存在同名文件 [ ${name} ] ，是否覆盖？`))) return;
         overwrite = true;
         continue;
       }

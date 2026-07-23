@@ -250,7 +250,7 @@ async function closeTab(id: string) {
   if (s.status === "connecting" || s.status === "connected") {
     const ok = await showConfirm({
       title: "关闭会话",
-      message: `会话「${s.name}」仍处于连接中，确定要关闭吗？`,
+      message: `会话 [ ${s.name} ] 仍处于连接中，确定要关闭吗？`,
       confirmText: "关闭",
       confirmDanger: true,
     });
