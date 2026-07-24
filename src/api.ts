@@ -7,12 +7,15 @@ import type {
   ConnectionConfig,
   FileEntry,
   MonitorData,
+  ProxyConfig,
   TransferCreateResult,
   TransferTask,
 } from "./types";
 
 /** 建立 SSH 连接，返回会话标识 */
-export function sshConnect(config: ConnectionConfig): Promise<string> {
+export function sshConnect(
+  config: ConnectionConfig & { proxy?: ProxyConfig }
+): Promise<string> {
   return invoke("ssh_connect", { config });
 }
 

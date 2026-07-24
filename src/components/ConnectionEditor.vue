@@ -8,6 +8,7 @@ import type { ConnectionConfig } from "../types";
 import { genId } from "../utils";
 import { useEscClose } from "../composables/useEscClose";
 import Icon from "./Icon.vue";
+import ProxySettings from "./ProxySettings.vue";
 
 const props = defineProps<{
   /** 待编辑的连接，null 表示新增 */
@@ -48,6 +49,7 @@ function defaults(): ConnectionConfig {
     password: "",
     privateKeyPath: "",
     passphrase: "",
+    proxyId: null,
     parentId: null,
     order: undefined,
   };
@@ -185,6 +187,11 @@ useEscClose(
             </div>
           </section>
 
+          <ProxySettings
+            v-else-if="activeSection === 'proxy'"
+            v-model="form.proxyId"
+          />
+
           <section v-else class="setting-pane empty-pane" :aria-label="activeSectionLabel">
             <h3>{{ activeSectionLabel }}</h3>
           </section>
@@ -200,7 +207,7 @@ useEscClose(
 
 <style scoped>
 .connection-editor {
-  width: min(680px, calc(100vw - 32px));
+  width: min(760px, calc(100vw - 32px));
   height: min(500px, calc(100vh - 32px));
 }
 .editor-body {

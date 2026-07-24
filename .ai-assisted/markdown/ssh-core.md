@@ -1,6 +1,6 @@
 SSH内核
 
-连接认证 支持密码与私钥两种 私钥用load_secret_key加载 RSA哈希协商 check_server_key当前信任所有服务端公钥(后续可扩展known_hosts校验)
+连接认证 支持密码与私钥两种 私钥用load_secret_key加载 RSA哈希协商 check_server_key当前信任所有服务端公钥(后续可扩展known_hosts校验) SSH 建连可选代理隧道 SOCKS4(本地解析IPv4)/SOCKS4A(代理解析域名)/SOCKS5/HTTP CONNECT 代理握手完成后统一交给russh connect_stream
 
 终端 open_terminal申请PTY+xterm-256color后启动shell 输出经Channel<Response>发送Raw字节(不可用Channel<Vec<u8>>否则JSON数组) 读写分离于两个tokio任务 终端channel结束视为整个会话断开 后端先按Arc条目身份条件移除SessionManager资源与传输任务再走app.emit(terminal://close//)通知前端 条目身份校验避免旧channel关闭误删同sessionId重连新会话
 

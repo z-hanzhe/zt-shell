@@ -105,6 +105,23 @@ export const useConnectionsStore = defineStore("connections", () => {
     await persist();
   }
 
+  /** 统计引用指定代理的连接数量 */
+  function countProxyReferences(proxyId: string): number {
+    return connections.value.filter((connection) => connection.proxyId === proxyId).length;
+  }
+
+  /** 清除全部连接对指定代理的引用，返回受影响连接数量 */
+  async function clearProxyReferences(proxyId: string): Promise<number> {
+    let changed = 0;
+    for (const connection of connections.value) {
+      if (connection.proxyId !== proxyId) continue;
+      connection.proxyId = null;
+      changed += 1;
+    }
+    if (changed > 0) await persist();
+    return changed;
+  }
+
   /** 新增或更新文件夹，返回其 id */
   async function upsertFolder(folder: ConnectionFolder): Promise<string> {
     if (!folder.id) folder.id = genId();
@@ -250,6 +267,8 @@ export const useConnectionsStore = defineStore("connections", () => {
     init,
     upsert,
     remove,
+    countProxyReferences,
+    clearProxyReferences,
     upsertFolder,
     reorderItems,
     removeFolderRecursive,

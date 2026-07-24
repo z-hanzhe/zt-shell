@@ -10,6 +10,7 @@ use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, watch};
 
+use super::proxy::connect_through_proxy;
 use super::types::{AuthType, ConnectionConfig};
 
 /// 可中断文件操作主动结束时返回的统一错误文案
@@ -50,19 +51,22 @@ impl SshSession {
     /// 建立到远端的 SSH 连接并完成认证
     pub async fn connect(config: &ConnectionConfig) -> Result<Self> {
         let ssh_config = Arc::new(client::Config::default());
-        let addr = format!("{}:{}", config.host, config.port);
-
-        let mut handle = client::connect(ssh_config, addr, ClientHandler)
-            .await
-            .map_err(|e| anyhow!("连接失败：{}", e))?;
+        let mut handle = if let Some(proxy) = &config.proxy {
+            let stream = connect_through_proxy(proxy, &config.host, config.port).await?;
+            client::connect_stream(ssh_config, stream, ClientHandler)
+                .await
+                .map_err(|e| anyhow!("通过代理建立 SSH 连接失败：{}", e))?
+        } else {
+            let addr = format!("{}:{}", config.host, config.port);
+            client::connect(ssh_config, addr, ClientHandler)
+                .await
+                .map_err(|e| anyhow!("连接失败：{}", e))?
+        };
 
         // 根据认证方式完成认证
         let authenticated = match config.auth_type {
             AuthType::Password => {
-                let password = config
-                    .password
-                    .clone()
-                    .ok_or_else(|| anyhow!("缺少密码"))?;
+                let password = config.password.clone().ok_or_else(|| anyhow!("缺少密码"))?;
                 handle
                     .authenticate_password(&config.username, password)
                     .await
@@ -254,7 +258,10 @@ impl SshSession {
     /// 通过 `exec sudo -S` 在专用通道上以 root 身份启动 sftp-server：登录密码从 stdin 喂入，
     /// sudo 的密码提示与报错走 stderr（russh 的 into_stream 只读 stdout 故不污染二进制协议）。
     /// 命令内跨发行版探测 sftp-server 路径，握手用自定义提示符 `__ZTPW__` 与就绪哨兵 `__ZTOK__`
-    pub async fn open_sudo_sftp_channel(&self, password: &str) -> Result<russh::Channel<client::Msg>> {
+    pub async fn open_sudo_sftp_channel(
+        &self,
+        password: &str,
+    ) -> Result<russh::Channel<client::Msg>> {
         // 自定义 sudo 密码提示符与握手哨兵，避免依赖随系统语言变化的默认提示文案
         const PROMPT: &str = "__ZTPW__";
         const READY: &str = "__ZTOK__";

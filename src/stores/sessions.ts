@@ -11,6 +11,7 @@ import type { ConnectionConfig } from "../types";
 import { sshConnect, sshDisconnect } from "../api";
 import { genId } from "../utils";
 import { useMonitorStore } from "./monitor";
+import { useProxiesStore } from "./proxies";
 import { closeTextEditorWindowsForSession } from "../editorWindows";
 
 /**
@@ -33,6 +34,13 @@ export interface Session {
   error?: string;
   /** 未选中时有新输出的提示标记（仿 xshell 叹号提示） */
   activity?: boolean;
+}
+
+/** 按连接配置解析当前最新的共享代理快照 */
+function resolveProxy(config: ConnectionConfig) {
+  if (!config.proxyId) return undefined;
+  const proxy = useProxiesStore().proxies.find((item) => item.id === config.proxyId);
+  return proxy ? { ...proxy } : undefined;
 }
 
 export const useSessionsStore = defineStore("sessions", () => {
@@ -72,7 +80,7 @@ export const useSessionsStore = defineStore("sessions", () => {
 
     try {
       // 后端以该会话 id 建立连接，前端与后端共用同一标识
-      await sshConnect({ ...config, id });
+      await sshConnect({ ...config, id, proxy: resolveProxy(config) });
       setStatus(id, "connected");
       // 连接成功后启动持续监控，与激活的选项卡无关
       useMonitorStore().start(id);
@@ -141,7 +149,7 @@ export const useSessionsStore = defineStore("sessions", () => {
       // 旧连接可能已断开，忽略
     }
     try {
-      await sshConnect({ ...s.config, id });
+      await sshConnect({ ...s.config, id, proxy: resolveProxy(s.config) });
       setStatus(id, "connected");
       s.activity = false;
       useMonitorStore().start(id);

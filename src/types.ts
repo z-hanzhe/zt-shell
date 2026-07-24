@@ -5,6 +5,27 @@
 /** 认证方式 */
 export type AuthType = "password" | "privateKey";
 
+/** 代理协议 */
+export type ProxyType = "socks4" | "socks4a" | "socks5" | "http";
+
+/** 可复用代理配置 */
+export interface ProxyConfig {
+  /** 代理唯一标识 */
+  id: string;
+  /** 代理显示名称 */
+  name: string;
+  /** 代理协议 */
+  proxyType: ProxyType;
+  /** 代理服务器地址 */
+  host: string;
+  /** 代理服务器端口 */
+  port: number;
+  /** SOCKS4 用户标识或 SOCKS5/HTTP 用户名 */
+  username?: string;
+  /** SOCKS5 密码或 HTTP Basic 密码 */
+  password?: string;
+}
+
 /** 连接配置 */
 export interface ConnectionConfig {
   id: string;
@@ -16,6 +37,8 @@ export interface ConnectionConfig {
   password?: string;
   privateKeyPath?: string;
   passphrase?: string;
+  /** 使用的共享代理 id，空或 null 表示直连 */
+  proxyId?: string | null;
   /** 所属文件夹 id，空或 null 表示位于根目录 */
   parentId?: string | null;
   /** 同级显示顺序，由连接管理器维护 */

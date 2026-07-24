@@ -2,6 +2,7 @@
 
 pub mod manager;
 pub mod monitor;
+pub mod proxy;
 pub mod session;
 pub mod sftp;
 pub mod transfer;
