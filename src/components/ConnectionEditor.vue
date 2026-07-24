@@ -26,7 +26,7 @@ const settingSections: Array<{ id: SettingsSectionId; label: string }> = [
   { id: "connection", label: "连接配置" },
   { id: "proxy", label: "代理配置" },
   { id: "tunnel", label: "隧道管理" },
-  { id: "more", label: "更多设置" },
+  { id: "more", label: "更多功能" },
 ];
 
 /** 当前编辑分组 */
@@ -50,6 +50,7 @@ function defaults(): ConnectionConfig {
     privateKeyPath: "",
     passphrase: "",
     proxyId: null,
+    remark: "",
     parentId: null,
     order: undefined,
   };
@@ -184,6 +185,13 @@ useEscClose(
                   placeholder="无口令可留空"
                 />
               </template>
+
+              <label class="remark-label">备注</label>
+              <textarea
+                class="input remark-textarea"
+                v-model="form.remark"
+                rows="4"
+              ></textarea>
             </div>
           </section>
 
@@ -192,8 +200,13 @@ useEscClose(
             v-model="form.proxyId"
           />
 
-          <section v-else class="setting-pane empty-pane" :aria-label="activeSectionLabel">
+          <section v-else-if="activeSection === 'tunnel'" class="setting-pane empty-pane" :aria-label="activeSectionLabel">
             <h3>{{ activeSectionLabel }}</h3>
+          </section>
+
+          <section v-else class="setting-pane empty-pane more-pane" aria-label="更多功能">
+            <h3>更多功能</h3>
+            <p>更多功能还在筹备中，敬请期待</p>
           </section>
         </div>
       </div>
@@ -325,5 +338,19 @@ useEscClose(
   border-color: var(--accent);
   background: var(--bg-hover);
   color: var(--accent);
+}
+.remark-label {
+  align-self: start;
+  padding-top: 6px;
+}
+.remark-textarea {
+  min-height: 86px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.more-pane p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.7;
 }
 </style>

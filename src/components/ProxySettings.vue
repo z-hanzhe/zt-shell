@@ -58,6 +58,19 @@ const selectedProxy = computed(() =>
   proxiesStore.proxies.find((proxy) => proxy.id === props.modelValue)
 );
 
+/** 当前选中代理在完整列表中的位置 */
+const selectedProxyIndex = computed(() =>
+  proxiesStore.proxies.findIndex((proxy) => proxy.id === props.modelValue)
+);
+
+/** 选中代理是否可上移 */
+const canMoveProxyUp = computed(() => selectedProxyIndex.value > 0);
+
+/** 选中代理是否可下移 */
+const canMoveProxyDown = computed(
+  () => selectedProxyIndex.value >= 0 && selectedProxyIndex.value < proxiesStore.proxies.length - 1
+);
+
 /** 按名称、协议或地址筛选代理 */
 const filteredProxies = computed(() => {
   const value = keyword.value.trim().toLowerCase();
@@ -85,6 +98,12 @@ const deleteMessage = computed(() => {
 /** 选择当前连接使用的代理 */
 function selectProxy(id: string | null) {
   emit("update:modelValue", id);
+}
+
+/** 移动当前选中代理排序 */
+async function moveSelectedProxy(direction: "up" | "down") {
+  if (!selectedProxy.value) return;
+  await proxiesStore.move(selectedProxy.value.id, direction);
 }
 
 /** 打开新增代理弹窗 */
@@ -206,6 +225,24 @@ useEscClose(
         @click="requestDelete"
       >
         <Icon name="trash" :size="14" />
+      </button>
+      <button
+        class="proxy-tool-btn"
+        title="上移代理"
+        aria-label="上移代理"
+        :disabled="!canMoveProxyUp"
+        @click="moveSelectedProxy('up')"
+      >
+        <Icon name="arrowUp" :size="14" />
+      </button>
+      <button
+        class="proxy-tool-btn"
+        title="下移代理"
+        aria-label="下移代理"
+        :disabled="!canMoveProxyDown"
+        @click="moveSelectedProxy('down')"
+      >
+        <Icon name="arrowDown" :size="14" />
       </button>
       <div class="proxy-search">
         <Icon name="search" :size="13" />

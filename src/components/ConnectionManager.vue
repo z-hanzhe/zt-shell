@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 连接管理器弹窗：以文件夹树形分组展示已保存连接，支持新建/编辑/重命名/复制/删除、
+ * 连接管理器弹窗：以文件夹树形分组展示已保存连接，支持新建/编辑连接、重命名文件夹、复制/删除、
  * 分组归类、键盘导航、单选、同级拖拽排序与拖拽移动
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
@@ -94,7 +94,7 @@ type DialogState = {
 
 const CONTEXT_MENU_WIDTH = 152;
 const CONTEXT_SUBMENU_WIDTH = 132;
-const CONTEXT_MENU_HEIGHT = 232;
+const CONTEXT_MENU_HEIGHT = 128;
 const CONTEXT_MENU_MARGIN = 8;
 /** PageUp/PageDown 一次移动的行数 */
 const PAGE_STEP = 10;
@@ -197,6 +197,11 @@ const rowMap = computed(() => new Map(visibleRows.value.map((row) => [row.id, ro
 /** 当前选中的连接配置 */
 const selectedConn = computed(() => (selectedId.value ? connMap.value.get(selectedId.value) : undefined));
 
+/** 当前选中的文件夹 */
+const selectedFolder = computed(() =>
+  selectedId.value ? store.folders.find((folder) => folder.id === selectedId.value) : undefined
+);
+
 /** 选中项是否包含连接 */
 const hasConnSelected = computed(() => selectedConn.value !== undefined);
 
@@ -204,10 +209,12 @@ const hasConnSelected = computed(() => selectedConn.value !== undefined);
 const contextMenuItems = computed<MenuItem[]>(() => {
   const single = selectedId.value;
   const singleConn = selectedConn.value;
+  const singleFolder = selectedFolder.value;
   return [
     { key: "connect", action: "connect", label: "连接", disabled: !hasConnSelected.value },
-    { key: "edit", action: "edit", label: "编辑", disabled: !singleConn },
-    { key: "rename", action: "rename", label: "重命名", disabled: !single },
+    singleFolder
+      ? { key: "rename", action: "rename", label: "重命名", disabled: false }
+      : { key: "edit", action: "edit", label: "编辑", disabled: !singleConn },
     { key: "duplicate", action: "duplicate", label: "复制", disabled: !singleConn },
     {
       key: "new",
@@ -443,17 +450,13 @@ async function onNewFolder(parentId: string | null) {
   selectSingle(id);
 }
 
-/** 重命名选中的文件夹或连接 */
-async function onRename() {
-  const id = selectedId.value;
-  if (!id) return;
-  const folder = store.folders.find((f) => f.id === id);
-  const conn = connMap.value.get(id);
-  const current = folder?.name ?? conn?.name ?? "";
-  const name = await showPrompt("重命名", `将 [ ${current} ] 重命名为`, "新名称", current);
-  if (!name?.trim() || name.trim() === current) return;
-  if (folder) await store.upsertFolder({ ...folder, name: name.trim() });
-  else if (conn) await store.upsert({ ...conn, name: name.trim() });
+/** 重命名选中的文件夹 */
+async function onRenameFolder() {
+  const folder = selectedFolder.value;
+  if (!folder) return;
+  const name = await showPrompt("重命名", `将 [ ${folder.name} ] 重命名为`, "新名称", folder.name);
+  if (!name?.trim() || name.trim() === folder.name) return;
+  await store.upsertFolder({ ...folder, name: name.trim() });
 }
 
 /** 复制选中的连接：同级生成一份 [ 原名 - 复制 ]  */
@@ -530,7 +533,7 @@ function runMenuAction(item: MenuItem) {
       onEdit();
       break;
     case "rename":
-      onRename();
+      onRenameFolder();
       break;
     case "duplicate":
       onDuplicate();

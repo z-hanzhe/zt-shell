@@ -39,6 +39,8 @@ export interface ConnectionConfig {
   passphrase?: string;
   /** 使用的共享代理 id，空或 null 表示直连 */
   proxyId?: string | null;
+  /** 用户备注 */
+  remark?: string;
   /** 所属文件夹 id，空或 null 表示位于根目录 */
   parentId?: string | null;
   /** 同级显示顺序，由连接管理器维护 */

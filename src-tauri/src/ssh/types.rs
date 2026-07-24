@@ -76,6 +76,9 @@ pub struct ConnectionConfig {
     /// 当前连接使用的代理配置快照，空表示直连
     #[serde(default)]
     pub proxy: Option<ProxyConfig>,
+    /// 用户备注，后端建连暂不使用
+    #[serde(default)]
+    pub remark: Option<String>,
 }
 
 /// 一条 SFTP 文件条目

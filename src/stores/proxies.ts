@@ -46,5 +46,17 @@ export const useProxiesStore = defineStore("proxies", () => {
     await persist();
   }
 
-  return { proxies, init, upsert, remove };
+  /** 移动代理排序位置 */
+  async function move(id: string, direction: "up" | "down") {
+    const index = proxies.value.findIndex((proxy) => proxy.id === id);
+    const targetIndex = direction === "up" ? index - 1 : index + 1;
+    if (index < 0 || targetIndex < 0 || targetIndex >= proxies.value.length) return;
+    const next = [...proxies.value];
+    const [item] = next.splice(index, 1);
+    next.splice(targetIndex, 0, item);
+    proxies.value = next;
+    await persist();
+  }
+
+  return { proxies, init, upsert, remove, move };
 });
