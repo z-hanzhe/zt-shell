@@ -34,6 +34,8 @@ export interface Session {
   error?: string;
   /** 未选中时有新输出的提示标记（仿 xshell 叹号提示） */
   activity?: boolean;
+  /** 当前会话隧道启动警告 */
+  tunnelWarnings?: string[];
 }
 
 /** 按连接配置解析当前最新的共享代理快照 */
@@ -74,13 +76,15 @@ export const useSessionsStore = defineStore("sessions", () => {
       config,
       status: "connecting",
       activity: false,
+      tunnelWarnings: [],
     };
     sessions.value.push(session);
     activeId.value = id;
 
     try {
       // 后端以该会话 id 建立连接，前端与后端共用同一标识
-      await sshConnect({ ...config, id, proxy: resolveProxy(config) });
+      const result = await sshConnect({ ...config, id, proxy: resolveProxy(config) });
+      session.tunnelWarnings = result.tunnelWarnings;
       setStatus(id, "connected");
       // 连接成功后启动持续监控，与激活的选项卡无关
       useMonitorStore().start(id);
@@ -140,6 +144,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     // connected/disconnected 时终端组件仍挂载，可原地重开通道保留历史
     const hadTerminal = s.status === "connected" || s.status === "disconnected";
     reconnecting.add(id);
+    s.tunnelWarnings = [];
     useMonitorStore().stop(id);
     // 全新连接（首次失败或连接中）先置连接中以显示进度并触发终端挂载
     if (!hadTerminal) setStatus(id, "connecting");
@@ -149,7 +154,8 @@ export const useSessionsStore = defineStore("sessions", () => {
       // 旧连接可能已断开，忽略
     }
     try {
-      await sshConnect({ ...s.config, id, proxy: resolveProxy(s.config) });
+      const result = await sshConnect({ ...s.config, id, proxy: resolveProxy(s.config) });
+      s.tunnelWarnings = result.tunnelWarnings;
       setStatus(id, "connected");
       s.activity = false;
       useMonitorStore().start(id);

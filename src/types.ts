@@ -8,6 +8,9 @@ export type AuthType = "password" | "privateKey";
 /** 代理协议 */
 export type ProxyType = "socks4" | "socks4a" | "socks5" | "http";
 
+/** 隧道类型 */
+export type TunnelType = "local" | "remote" | "dynamic" | "dynamicHttp";
+
 /** 可复用代理配置 */
 export interface ProxyConfig {
   /** 代理唯一标识 */
@@ -26,6 +29,26 @@ export interface ProxyConfig {
   password?: string;
 }
 
+/** SSH 隧道配置 */
+export interface TunnelConfig {
+  /** 隧道唯一标识 */
+  id: string;
+  /** 隧道显示名称 */
+  name: string;
+  /** 隧道类型 */
+  tunnelType: TunnelType;
+  /** 是否启用，未勾选的隧道不随会话启动 */
+  enabled: boolean;
+  /** 是否仅接受监听端本机连接 */
+  localOnly: boolean;
+  /** 监听端口：本地/动态为本机端口，远程为服务器端口 */
+  listenPort: number;
+  /** 目标主机：本地为服务器侧目标，远程为客户端侧目标 */
+  targetHost?: string;
+  /** 目标端口 */
+  targetPort?: number;
+}
+
 /** 连接配置 */
 export interface ConnectionConfig {
   id: string;
@@ -41,10 +64,20 @@ export interface ConnectionConfig {
   proxyId?: string | null;
   /** 用户备注 */
   remark?: string;
+  /** 当前连接的隧道列表，运行时每个会话独立启动 */
+  tunnels?: TunnelConfig[];
   /** 所属文件夹 id，空或 null 表示位于根目录 */
   parentId?: string | null;
   /** 同级显示顺序，由连接管理器维护 */
   order?: number;
+}
+
+/** SSH 建连结果 */
+export interface ConnectResult {
+  /** 会话标识 */
+  sessionId: string;
+  /** 隧道启动警告，非空表示 SSH 已连接但部分隧道未启用 */
+  tunnelWarnings: string[];
 }
 
 /** 连接分组文件夹（支持多级嵌套） */

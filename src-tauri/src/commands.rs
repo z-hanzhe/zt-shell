@@ -9,7 +9,7 @@ use crate::ssh::sftp::{self, RemoveEntryArg};
 use crate::ssh::transfer::{
     self, RemoteItemArg, TransferCreateResult, TransferManager, TransferTaskDto,
 };
-use crate::ssh::types::{ConnectionConfig, FileEntry};
+use crate::ssh::types::{ConnectResult, ConnectionConfig, FileEntry};
 
 /// 统一将内部错误转为字符串返回给前端
 type CmdResult<T> = Result<T, String>;
@@ -18,12 +18,12 @@ fn map_err<T>(r: anyhow::Result<T>) -> CmdResult<T> {
     r.map_err(|e| e.to_string())
 }
 
-/// 建立 SSH 连接，返回会话标识
+/// 建立 SSH 连接，返回会话标识与隧道启动警告
 #[tauri::command]
 pub async fn ssh_connect(
     manager: State<'_, SessionManager>,
     config: ConnectionConfig,
-) -> CmdResult<String> {
+) -> CmdResult<ConnectResult> {
     map_err(manager.connect(&config).await)
 }
 

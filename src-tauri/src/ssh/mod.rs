@@ -6,4 +6,5 @@ pub mod proxy;
 pub mod session;
 pub mod sftp;
 pub mod transfer;
+pub mod tunnel;
 pub mod types;

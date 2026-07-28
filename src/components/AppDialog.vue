@@ -146,6 +146,7 @@ useEscClose(
 .app-dialog-message {
   line-height: 1.6;
   color: var(--text-secondary);
+  white-space: pre-line;
   word-break: break-word;
 }
 .app-dialog-input {

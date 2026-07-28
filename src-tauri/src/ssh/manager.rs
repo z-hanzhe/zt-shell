@@ -9,10 +9,12 @@ use russh_sftp::client::SftpSession;
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Manager};
 use tokio::sync::{mpsc::UnboundedSender, watch, Mutex};
+use tokio::task::JoinHandle;
 
 use super::session::{SshSession, TerminalCommand};
 use super::transfer::TransferManager;
-use super::types::ConnectionConfig;
+use super::tunnel;
+use super::types::{ConnectResult, ConnectionConfig};
 
 /// 单个会话持有的运行时资源
 struct SessionEntry {
@@ -28,6 +30,10 @@ struct SessionEntry {
     sudo_active: Mutex<bool>,
     /// sudo 提权 SFTP 会话（启用提权时惰性建立）
     sudo_sftp: Mutex<Option<Arc<SftpSession>>>,
+    /// 本会话启动的本地/动态隧道监听任务
+    tunnel_tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// 本会话全部隧道连接的取消信号
+    tunnel_cancel_tx: watch::Sender<bool>,
 }
 
 /// 单个可中断文件操作的控制信息
@@ -67,28 +73,48 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    /// 关闭已移除会话的终端控制通道，其余 SSH/SFTP 资源随条目引用释放
+    /// 关闭已移除会话的终端控制通道与隧道任务，其余 SSH/SFTP 资源随条目引用释放
     fn close_entry(entry: Arc<SessionEntry>) {
         if let Ok(mut guard) = entry.terminal_tx.try_lock() {
             if let Some(tx) = guard.take() {
                 let _ = tx.send(TerminalCommand::Close);
             }
         }
+        let _ = entry.tunnel_cancel_tx.send(true);
+        if let Ok(mut guard) = entry.tunnel_tasks.try_lock() {
+            for task in guard.drain(..) {
+                task.abort();
+            }
+        }
     }
 
-    /// 建立新会话并纳入管理，返回会话标识
-    pub async fn connect(&self, config: &ConnectionConfig) -> Result<String> {
-        let session = SshSession::connect(config).await?;
+    /// 建立新会话并纳入管理，返回会话标识与隧道启动警告
+    pub async fn connect(&self, config: &ConnectionConfig) -> Result<ConnectResult> {
+        let prepared_tunnels = tunnel::prepare_listeners(&config.tunnels).await;
+        let session = Arc::new(SshSession::connect(config).await?);
+        let (tunnel_cancel_tx, tunnel_cancel_rx) = watch::channel(false);
+        let tunnel_result = tunnel::start_tunnels(
+            session.clone(),
+            &config.tunnels,
+            prepared_tunnels,
+            tunnel_cancel_rx,
+        )
+        .await;
         let entry = Arc::new(SessionEntry {
-            session: Arc::new(session),
+            session,
             login_password: config.password.clone(),
             terminal_tx: Mutex::new(None),
             sftp: Mutex::new(None),
             sudo_active: Mutex::new(false),
             sudo_sftp: Mutex::new(None),
+            tunnel_tasks: Mutex::new(tunnel_result.tasks),
+            tunnel_cancel_tx,
         });
         self.sessions.insert(config.id.clone(), entry);
-        Ok(config.id.clone())
+        Ok(ConnectResult {
+            session_id: config.id.clone(),
+            tunnel_warnings: tunnel_result.warnings,
+        })
     }
 
     /// 断开并移除会话，释放其终端与 SFTP 资源

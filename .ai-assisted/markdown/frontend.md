@@ -2,7 +2,7 @@
 
 入口 App.vue自绘标题栏+主体+底部状态栏 主体flex三栏布局 分隔条可拖拽
 
-组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关但可配置警示操作 禁止点空白关闭 仅按钮或ESC关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue SettingsDialog.vue TextEditorWindow.vue(monaco-editor独立窗口) TitleBar.vue
+组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关但可配置警示操作 禁止点空白关闭 仅按钮或ESC关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue ProxySettings.vue TunnelSettings.vue SettingsDialog.vue TextEditorWindow.vue(monaco-editor独立窗口) TitleBar.vue
 
 状态 connections.ts持久化连接与分组文件夹(folders树形嵌套/upsert/remove/upsertFolder/removeFolderRecursive递归删/reorderItems维护同级order/moveItems防环/duplicateConnection同级复制/countFolderContents) sessions.ts活动会话(open/close/activate/move/reconnect/markDisconnected/markActivity)(⚠ ref数组push后须find取代理元素改 勿直接改原始对象) settings.ts持久化设置(tauri-plugin-store load的options需含defaults字段) monitor.ts按会话采集(收发无关选项卡) transfers.ts传输任务 App.vue onMounted初始化
 
@@ -22,4 +22,4 @@
 
 监控面板 纯视图读monitor store 系统信息/CPU/内存/网卡图/磁盘/进程 未连骨架占位 采集出错底部提示 网卡历史按名切换 默认自动选网卡(物理优先 取历史累计流量最高者 有流量后自动锁定不再跳动 消失重新选 手动选后固定) 图双柱上传橙下载绿
 
-连接管理器 ConnectionManager弹窗 文件夹树形分组(多级嵌套 folder/conn统一扁平行visibleRows 仅展开文件夹向下递归 同级按order显示/旧数据文件夹优先名称兜底)+主机/端口/用户名列 名称ellipsis+title悬停 行内单选 方向键导航 左右展开收起 回车连接或展开文件夹 双击文件夹展开/连接则连接 指针拖拽支持同父级前后排序写order与拖入文件夹/空白根目录移动 搜索态扁平化禁拖拽) 右键菜单连接/连接显示编辑/文件夹显示重命名/复制/悬停新建›[连接文件夹]/删除(新建位置按右键目标推断 复制仅连接 删除文件夹递归确认) ESC逐级关菜单→清选择→关窗 弹窗复用AppDialog 新建连接经editorParentId落入目标文件夹 后台FileManager经hasOpenModal避让方向键 ConnectionEditor左侧分组导航(连接配置含备注 代理/隧道/更多功能预留) 私钥路径支持手输或原生文件选择回填 代理配置页维护共享代理列表(搜索/新增/编辑/删除/上下移动排序/单选直连或代理 删除时清理连接引用) 连接仅持久化proxyId和备注等前端配置 会话建连时解析最新代理快照
+连接管理器 ConnectionManager弹窗 文件夹树形分组(多级嵌套 folder/conn统一扁平行visibleRows 仅展开文件夹向下递归 同级按order显示/旧数据文件夹优先名称兜底)+主机/端口/用户名列 名称ellipsis+title悬停 行内单选 方向键导航 左右展开收起 回车连接或展开文件夹 双击文件夹展开/连接则连接 指针拖拽支持同父级前后排序写order与拖入文件夹/空白根目录移动 搜索态扁平化禁拖拽) 右键菜单连接/连接显示编辑/文件夹显示重命名/复制/悬停新建›[连接文件夹]/删除(新建位置按右键目标推断 复制仅连接 删除文件夹递归确认) ESC逐级关菜单→清选择→关窗 弹窗复用AppDialog 新建连接经editorParentId落入目标文件夹 后台FileManager经hasOpenModal避让方向键 ConnectionEditor左侧分组导航(连接配置含备注 代理/隧道/更多功能) 私钥路径支持手输或原生文件选择回填 代理配置页维护共享代理列表(搜索/新增/编辑/删除/上下移动排序/单选直连或代理 删除时清理连接引用) 隧道页维护当前连接独立隧道列表(本地拨出/远程传入/动态SOCKS4/5/动态HTTP 新增默认未启用 表格勾选启用且行点击仅选中 上下移动排序 localOnly控制监听端仅本机) 连接持久化proxyId/备注/tunnels 会话建连时解析最新代理快照并按会话配置尝试启动启用隧道，失败不阻断SSH，终端右上角警告按钮展示详情

@@ -2,13 +2,14 @@
 /**
  * 连接编辑弹窗：新增或编辑一条连接配置
  */
-import { computed, reactive, ref, watch } from "vue";
+import { reactive, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { ConnectionConfig } from "../types";
+import type { ConnectionConfig, TunnelConfig } from "../types";
 import { genId } from "../utils";
 import { useEscClose } from "../composables/useEscClose";
 import Icon from "./Icon.vue";
 import ProxySettings from "./ProxySettings.vue";
+import TunnelSettings from "./TunnelSettings.vue";
 
 const props = defineProps<{
   /** 待编辑的连接，null 表示新增 */
@@ -31,11 +32,6 @@ const settingSections: Array<{ id: SettingsSectionId; label: string }> = [
 
 /** 当前编辑分组 */
 const activeSection = ref<SettingsSectionId>("connection");
-/** 当前编辑分组名称 */
-const activeSectionLabel = computed(
-  () =>
-    settingSections.find((section) => section.id === activeSection.value)?.label ?? "连接配置"
-);
 
 /** 表单默认值 */
 function defaults(): ConnectionConfig {
@@ -51,6 +47,7 @@ function defaults(): ConnectionConfig {
     passphrase: "",
     proxyId: null,
     remark: "",
+    tunnels: [],
     parentId: null,
     order: undefined,
   };
@@ -58,11 +55,16 @@ function defaults(): ConnectionConfig {
 
 const form = reactive<ConnectionConfig>(defaults());
 
+/** 克隆隧道列表，避免未保存编辑直接影响原配置 */
+function cloneTunnels(tunnels: TunnelConfig[] | undefined): TunnelConfig[] {
+  return (tunnels ?? []).map((tunnel) => ({ ...tunnel }));
+}
+
 // 打开时载入待编辑数据
 watch(
   () => props.model,
   (m) => {
-    Object.assign(form, defaults(), m ?? {});
+    Object.assign(form, defaults(), m ?? {}, { tunnels: cloneTunnels(m?.tunnels) });
     activeSection.value = "connection";
   },
   { immediate: true }
@@ -89,7 +91,7 @@ function submit() {
   }
   if (!form.id) form.id = genId();
   if (!form.name.trim()) form.name = form.host;
-  emit("save", { ...form });
+  emit("save", { ...form, tunnels: cloneTunnels(form.tunnels) });
 }
 
 // ESC 关闭：始终随组件挂载而生效（嵌套于连接管理器之上，栈顶优先关闭本弹窗）
@@ -200,9 +202,10 @@ useEscClose(
             v-model="form.proxyId"
           />
 
-          <section v-else-if="activeSection === 'tunnel'" class="setting-pane empty-pane" :aria-label="activeSectionLabel">
-            <h3>{{ activeSectionLabel }}</h3>
-          </section>
+          <TunnelSettings
+            v-else-if="activeSection === 'tunnel'"
+            v-model="form.tunnels"
+          />
 
           <section v-else class="setting-pane empty-pane more-pane" aria-label="更多功能">
             <h3>更多功能</h3>
@@ -220,8 +223,8 @@ useEscClose(
 
 <style scoped>
 .connection-editor {
-  width: min(760px, calc(100vw - 32px));
-  height: min(500px, calc(100vh - 32px));
+  width: min(860px, calc(100vw - 32px));
+  height: min(560px, calc(100vh - 32px));
 }
 .editor-body {
   display: flex;

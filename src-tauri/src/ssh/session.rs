@@ -1,6 +1,7 @@
-//! SSH 会话：建立连接、认证、终端通道读写与窗口变更
+//! SSH 会话：建立连接、认证、终端通道读写、隧道通道与窗口变更
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use russh::client::{self, Handle};
@@ -8,16 +9,24 @@ use russh::keys::PrivateKeyWithHashAlg;
 use russh::{ChannelMsg, Sig};
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, RwLock};
+use tokio::time::timeout;
 
 use super::proxy::connect_through_proxy;
+use super::tunnel::{forward_remote_tunnel_channel, RemoteTunnelRegistry, RemoteTunnelTarget};
 use super::types::{AuthType, ConnectionConfig};
 
 /// 可中断文件操作主动结束时返回的统一错误文案
 pub const OPERATION_CANCELLED_MESSAGE: &str = "文件操作已中断";
 
+/// SSH 转发通道创建的最长等待时间
+const SSH_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// russh 客户端事件回调处理器。终端数据通过主动 wait 循环读取，此处仅需接受服务端公钥
-struct ClientHandler;
+pub(crate) struct ClientHandler {
+    /// 远程传入隧道映射，用于处理服务端打开的 forwarded-tcpip 通道
+    remote_tunnels: RemoteTunnelRegistry,
+}
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
@@ -28,6 +37,29 @@ impl client::Handler for ClientHandler {
         _server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
         Ok(true)
+    }
+
+    /// 处理远程传入隧道的新连接
+    fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        _session: &mut client::Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        let target = self.remote_tunnels.get(connected_port);
+        async move {
+            if let Some(target) = target {
+                tokio::spawn(async move {
+                    let _ = forward_remote_tunnel_channel(channel, target).await;
+                });
+            } else {
+                let _ = channel.close().await;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -43,22 +75,28 @@ pub enum TerminalCommand {
 
 /// 一个已建立的 SSH 会话，持有可复用的连接句柄
 pub struct SshSession {
-    /// russh 客户端句柄，可克隆用于开启多个通道（终端、SFTP、监控）
-    handle: Handle<ClientHandler>,
+    /// russh 客户端句柄；普通通道可并发创建，远程监听申请独占修改
+    handle: RwLock<Handle<ClientHandler>>,
+    /// 远程传入隧道映射
+    remote_tunnels: RemoteTunnelRegistry,
 }
 
 impl SshSession {
     /// 建立到远端的 SSH 连接并完成认证
     pub async fn connect(config: &ConnectionConfig) -> Result<Self> {
         let ssh_config = Arc::new(client::Config::default());
+        let remote_tunnels = RemoteTunnelRegistry::default();
+        let handler = ClientHandler {
+            remote_tunnels: remote_tunnels.clone(),
+        };
         let mut handle = if let Some(proxy) = &config.proxy {
             let stream = connect_through_proxy(proxy, &config.host, config.port).await?;
-            client::connect_stream(ssh_config, stream, ClientHandler)
+            client::connect_stream(ssh_config, stream, handler)
                 .await
                 .map_err(|e| anyhow!("通过代理建立 SSH 连接失败：{}", e))?
         } else {
             let addr = format!("{}:{}", config.host, config.port);
-            client::connect(ssh_config, addr, ClientHandler)
+            client::connect(ssh_config, addr, handler)
                 .await
                 .map_err(|e| anyhow!("连接失败：{}", e))?
         };
@@ -95,7 +133,88 @@ impl SshSession {
             return Err(anyhow!("认证失败，请检查用户名与凭据"));
         }
 
-        Ok(Self { handle })
+        Ok(Self {
+            handle: RwLock::new(handle),
+            remote_tunnels,
+        })
+    }
+
+    /// 打开 direct-tcpip 通道，用于本地拨出与动态 SOCKS 隧道
+    pub async fn open_direct_tcpip(
+        self: &Arc<Self>,
+        target_host: &str,
+        target_port: u16,
+        originator_host: &str,
+        originator_port: u16,
+        mut cancellation: watch::Receiver<bool>,
+    ) -> Result<russh::Channel<client::Msg>> {
+        let session = Arc::clone(self);
+        let request_target_host = target_host.to_string();
+        let request_originator_host = originator_host.to_string();
+        let mut request_task = tokio::spawn(async move {
+            let handle = session.handle.read().await;
+            handle
+                .channel_open_direct_tcpip(
+                    request_target_host,
+                    u32::from(target_port),
+                    request_originator_host,
+                    u32::from(originator_port),
+                )
+                .await
+        });
+        tokio::select! {
+            result = timeout(SSH_CHANNEL_OPEN_TIMEOUT, &mut request_task) => match result {
+                Ok(Ok(Ok(channel))) => Ok(channel),
+                Ok(Ok(Err(error))) => Err(anyhow!("打开隧道通道失败：{}", error)),
+                Ok(Err(error)) => Err(anyhow!("打开隧道通道任务异常：{}", error)),
+                Err(_) => {
+                    // russh 的通道请求不可直接取消，稍后成功时主动关闭，避免遗留空闲通道
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            result = &mut request_task => {
+                                if let Ok(Ok(channel)) = result {
+                                    let _ = channel.close().await;
+                                }
+                            }
+                            _ = wait_for_cancellation(&mut cancellation) => {
+                                request_task.abort();
+                            }
+                        }
+                    });
+                    Err(anyhow!(
+                        "打开隧道通道超时：{}:{}",
+                        target_host,
+                        target_port
+                    ))
+                }
+            },
+            _ = wait_for_cancellation(&mut cancellation) => {
+                request_task.abort();
+                Err(anyhow!("SSH 会话已断开"))
+            }
+        }
+    }
+
+    /// 请求服务器开启远程传入隧道
+    pub async fn request_remote_forward(
+        &self,
+        bind_host: &str,
+        bind_port: u16,
+        target: RemoteTunnelTarget,
+    ) -> Result<()> {
+        self.remote_tunnels.insert(u32::from(bind_port), target);
+        let mut handle = self.handle.write().await;
+        match handle
+            .tcpip_forward(bind_host.to_string(), u32::from(bind_port))
+            .await
+        {
+            // 固定端口申请成功时 russh 返回 0，映射仍须保留配置的监听端口
+            Ok(_) => Ok(()),
+            Err(error) => {
+                self.remote_tunnels.remove(u32::from(bind_port));
+                Err(anyhow!("请求远程隧道失败：{}", error))
+            }
+        }
     }
 
     /// 开启一个交互式终端通道，返回用于向远端发送指令的通道
@@ -116,6 +235,8 @@ impl SshSession {
     {
         let channel = self
             .handle
+            .read()
+            .await
             .channel_open_session()
             .await
             .map_err(|e| anyhow!("打开终端通道失败：{}", e))?;
@@ -202,6 +323,8 @@ impl SshSession {
         }
         let mut channel = self
             .handle
+            .read()
+            .await
             .channel_open_session()
             .await
             .map_err(|e| anyhow!("打开执行通道失败：{}", e))?;
@@ -243,6 +366,8 @@ impl SshSession {
     pub async fn open_sftp_channel(&self) -> Result<russh::Channel<client::Msg>> {
         let channel = self
             .handle
+            .read()
+            .await
             .channel_open_session()
             .await
             .map_err(|e| anyhow!("打开 SFTP 通道失败：{}", e))?;
@@ -278,6 +403,8 @@ impl SshSession {
 
         let mut channel = self
             .handle
+            .read()
+            .await
             .channel_open_session()
             .await
             .map_err(|e| anyhow!("打开提权通道失败：{}", e))?;
@@ -323,7 +450,7 @@ impl SshSession {
     }
 }
 
-/// 等待文件操作收到中断通知
+/// 等待收到取消通知
 async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
     if *cancellation.borrow() {
         return;

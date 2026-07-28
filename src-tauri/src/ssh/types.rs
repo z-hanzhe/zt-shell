@@ -26,6 +26,20 @@ pub enum ProxyType {
     Http,
 }
 
+/// 隧道类型
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum TunnelType {
+    /// 本地拨出：监听本机端口，连接进入后由服务器侧拨向目标
+    Local,
+    /// 远程传入：监听服务器端口，连接进入后回到客户端侧目标
+    Remote,
+    /// 动态 SOCKS4/5：监听本机端口，按客户端请求动态拨出
+    Dynamic,
+    /// 动态 HTTP：监听本机 HTTP 代理端口，按客户端请求动态拨出
+    DynamicHttp,
+}
+
 /// SSH 建连使用的代理配置快照
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +60,37 @@ pub struct ProxyConfig {
     /// SOCKS5 密码或 HTTP Basic 密码
     #[serde(default)]
     pub password: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// SSH 隧道配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TunnelConfig {
+    /// 隧道唯一标识
+    pub id: String,
+    /// 隧道显示名称
+    #[serde(default)]
+    pub name: String,
+    /// 隧道类型
+    pub tunnel_type: TunnelType,
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// 是否仅接受监听端本机连接
+    #[serde(default = "default_true")]
+    pub local_only: bool,
+    /// 监听端口
+    pub listen_port: u16,
+    /// 目标主机，本地/远程隧道必填
+    #[serde(default)]
+    pub target_host: Option<String>,
+    /// 目标端口，本地/远程隧道必填
+    #[serde(default)]
+    pub target_port: Option<u16>,
 }
 
 /// 前端传入的连接配置
@@ -79,6 +124,19 @@ pub struct ConnectionConfig {
     /// 用户备注，后端建连暂不使用
     #[serde(default)]
     pub remark: Option<String>,
+    /// 当前连接的隧道列表，运行时每个会话独立启动
+    #[serde(default)]
+    pub tunnels: Vec<TunnelConfig>,
+}
+
+/// SSH 建连结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectResult {
+    /// 会话标识
+    pub session_id: String,
+    /// 隧道启动警告，非空表示 SSH 已连接但部分隧道未启用
+    pub tunnel_warnings: Vec<String>,
 }
 
 /// 一条 SFTP 文件条目

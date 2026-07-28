@@ -5,6 +5,7 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   ConnectionConfig,
+  ConnectResult,
   FileEntry,
   MonitorData,
   ProxyConfig,
@@ -12,10 +13,10 @@ import type {
   TransferTask,
 } from "./types";
 
-/** 建立 SSH 连接，返回会话标识 */
+/** 建立 SSH 连接，返回会话标识与隧道启动警告 */
 export function sshConnect(
   config: ConnectionConfig & { proxy?: ProxyConfig }
-): Promise<string> {
+): Promise<ConnectResult> {
   return invoke("ssh_connect", { config });
 }
 
