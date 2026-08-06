@@ -7,7 +7,7 @@
 
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { ConnectionConfig } from "../types";
+import type { ConnectionConfig, ExtensionEntry } from "../types";
 import { sshConnect, sshDisconnect } from "../api";
 import { genId } from "../utils";
 import { useMonitorStore } from "./monitor";
@@ -34,8 +34,12 @@ export interface Session {
   error?: string;
   /** 未选中时有新输出的提示标记（仿 xshell 叹号提示） */
   activity?: boolean;
-  /** 当前会话隧道启动警告 */
-  tunnelWarnings?: string[];
+  /** 本次连接使用的代理与隧道条目，非空时终端右侧显示扩展信息按钮 */
+  extensions?: ExtensionEntry[];
+  /** 扩展信息按钮相对终端区域顶部的垂直偏移（像素），拖拽后保留 */
+  extensionOffsetY?: number;
+  /** 本次连接是否已手动关闭异常闪烁，重连后重置 */
+  extensionBlinkMuted?: boolean;
 }
 
 /** 按连接配置解析当前最新的共享代理快照 */
@@ -76,7 +80,8 @@ export const useSessionsStore = defineStore("sessions", () => {
       config,
       status: "connecting",
       activity: false,
-      tunnelWarnings: [],
+      extensions: [],
+      extensionBlinkMuted: false,
     };
     sessions.value.push(session);
     activeId.value = id;
@@ -84,7 +89,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     try {
       // 后端以该会话 id 建立连接，前端与后端共用同一标识
       const result = await sshConnect({ ...config, id, proxy: resolveProxy(config) });
-      session.tunnelWarnings = result.tunnelWarnings;
+      session.extensions = result.extensions;
       setStatus(id, "connected");
       // 连接成功后启动持续监控，与激活的选项卡无关
       useMonitorStore().start(id);
@@ -144,7 +149,9 @@ export const useSessionsStore = defineStore("sessions", () => {
     // connected/disconnected 时终端组件仍挂载，可原地重开通道保留历史
     const hadTerminal = s.status === "connected" || s.status === "disconnected";
     reconnecting.add(id);
-    s.tunnelWarnings = [];
+    // 重连视为新一次连接，扩展条目与闪烁抑制一并重置，拖拽位置保留
+    s.extensions = [];
+    s.extensionBlinkMuted = false;
     useMonitorStore().stop(id);
     // 全新连接（首次失败或连接中）先置连接中以显示进度并触发终端挂载
     if (!hadTerminal) setStatus(id, "connecting");
@@ -155,7 +162,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     }
     try {
       const result = await sshConnect({ ...s.config, id, proxy: resolveProxy(s.config) });
-      s.tunnelWarnings = result.tunnelWarnings;
+      s.extensions = result.extensions;
       setStatus(id, "connected");
       s.activity = false;
       useMonitorStore().start(id);

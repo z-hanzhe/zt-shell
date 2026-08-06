@@ -72,12 +72,31 @@ export interface ConnectionConfig {
   order?: number;
 }
 
+/** 会话扩展功能条目类别 */
+export type ExtensionKind = "proxy" | "tunnel";
+
+/** 会话扩展功能条目：本次连接使用的代理与隧道及其成功失败状态 */
+export interface ExtensionEntry {
+  /** 条目类别 */
+  kind: ExtensionKind;
+  /** 条目显示名称 */
+  name: string;
+  /** 类型描述，如 SOCKS5、本地拨出 */
+  category: string;
+  /** 使用明细，如 本机 8080 → 服务器侧 db:3306 */
+  detail: string;
+  /** 是否正常启用 */
+  ok: boolean;
+  /** 失败原因，ok 为 true 时为空 */
+  error: string;
+}
+
 /** SSH 建连结果 */
 export interface ConnectResult {
   /** 会话标识 */
   sessionId: string;
-  /** 隧道启动警告，非空表示 SSH 已连接但部分隧道未启用 */
-  tunnelWarnings: string[];
+  /** 本次连接的扩展功能条目，存在 ok 为 false 的条目表示部分扩展未启用 */
+  extensions: ExtensionEntry[];
 }
 
 /** 连接分组文件夹（支持多级嵌套） */

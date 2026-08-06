@@ -13,6 +13,7 @@ use tokio::task::JoinHandle;
 
 use super::session::{SshSession, TerminalCommand};
 use super::transfer::TransferManager;
+use super::proxy;
 use super::tunnel;
 use super::types::{ConnectResult, ConnectionConfig};
 
@@ -88,7 +89,7 @@ impl SessionManager {
         }
     }
 
-    /// 建立新会话并纳入管理，返回会话标识与隧道启动警告
+    /// 建立新会话并纳入管理，返回会话标识与本次连接的扩展功能条目
     pub async fn connect(&self, config: &ConnectionConfig) -> Result<ConnectResult> {
         let prepared_tunnels = tunnel::prepare_listeners(&config.tunnels).await;
         let session = Arc::new(SshSession::connect(config).await?);
@@ -111,9 +112,15 @@ impl SessionManager {
             tunnel_cancel_tx,
         });
         self.sessions.insert(config.id.clone(), entry);
+        // 代理失败时建连已提前返回错误，能走到此处说明代理必然可用
+        let mut extensions = Vec::new();
+        if let Some(proxy) = &config.proxy {
+            extensions.push(proxy::proxy_entry(proxy));
+        }
+        extensions.extend(tunnel_result.entries);
         Ok(ConnectResult {
             session_id: config.id.clone(),
-            tunnel_warnings: tunnel_result.warnings,
+            extensions,
         })
     }
 

@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::session::SshSession;
-use super::types::{TunnelConfig, TunnelType};
+use super::types::{ExtensionEntry, ExtensionKind, TunnelConfig, TunnelType};
 
 const HTTP_HEADER_LIMIT: usize = 64 * 1024;
 /// 远程传入隧道回连客户端侧目标的最长等待时间
@@ -76,12 +76,12 @@ impl PreparedTunnelListeners {
     }
 }
 
-/// 隧道启动结果，失败项以警告形式返回，不阻断 SSH 主连接
+/// 隧道启动结果，失败项以条目状态返回，不阻断 SSH 主连接
 pub struct TunnelStartResult {
     /// 已启动的本地监听任务
     pub tasks: Vec<JoinHandle<()>>,
-    /// 隧道启动警告
-    pub warnings: Vec<String>,
+    /// 各启用隧道的启动情况，顺序与连接配置一致
+    pub entries: Vec<ExtensionEntry>,
 }
 
 /// 连接 SSH 前预绑定需要监听本机端口的隧道
@@ -104,9 +104,7 @@ pub async fn prepare_listeners(tunnels: &[TunnelConfig]) -> PreparedTunnelListen
                 prepared.listeners.insert(tunnel.id.clone(), listener);
             }
             Err(error) => {
-                prepared
-                    .failures
-                    .insert(tunnel.id.clone(), tunnel_warning(tunnel, error));
+                prepared.failures.insert(tunnel.id.clone(), error.to_string());
             }
         }
     }
@@ -121,7 +119,8 @@ pub async fn start_tunnels(
     cancellation: watch::Receiver<bool>,
 ) -> TunnelStartResult {
     let mut tasks = Vec::new();
-    let mut warnings = Vec::new();
+    // 各隧道启动失败原因，成功的隧道不入表
+    let mut failures: HashMap<String, String> = HashMap::new();
 
     // 远程监听需要独占 SSH 句柄，先完成申请再开放本地监听任务接收连接
     for tunnel in tunnels
@@ -130,7 +129,7 @@ pub async fn start_tunnels(
     {
         if let Err(error) = start_remote_tunnel(session.clone(), tunnel, cancellation.clone()).await
         {
-            warnings.push(tunnel_warning(tunnel, error));
+            failures.insert(tunnel.id.clone(), error.to_string());
         }
     }
 
@@ -140,12 +139,12 @@ pub async fn start_tunnels(
     {
         match tunnel.tunnel_type {
             TunnelType::Local => {
-                let Some(listener) = take_prepared_listener(tunnel, &mut prepared, &mut warnings)
+                let Some(listener) = take_prepared_listener(tunnel, &mut prepared, &mut failures)
                 else {
                     continue;
                 };
                 if let Err(error) = target(tunnel) {
-                    warnings.push(tunnel_warning(tunnel, error));
+                    failures.insert(tunnel.id.clone(), error.to_string());
                     continue;
                 }
                 let session = session.clone();
@@ -156,7 +155,7 @@ pub async fn start_tunnels(
                 }));
             }
             TunnelType::Dynamic => {
-                let Some(listener) = take_prepared_listener(tunnel, &mut prepared, &mut warnings)
+                let Some(listener) = take_prepared_listener(tunnel, &mut prepared, &mut failures)
                 else {
                     continue;
                 };
@@ -168,7 +167,7 @@ pub async fn start_tunnels(
                 }));
             }
             TunnelType::DynamicHttp => {
-                let Some(listener) = take_prepared_listener(tunnel, &mut prepared, &mut warnings)
+                let Some(listener) = take_prepared_listener(tunnel, &mut prepared, &mut failures)
                 else {
                     continue;
                 };
@@ -182,29 +181,77 @@ pub async fn start_tunnels(
             TunnelType::Remote => {}
         }
     }
-    TunnelStartResult { tasks, warnings }
+
+    // 按连接配置顺序汇总启用隧道的最终状态，保证面板展示顺序稳定
+    let entries = tunnels
+        .iter()
+        .filter(|tunnel| tunnel.enabled)
+        .map(|tunnel| tunnel_entry(tunnel, failures.remove(&tunnel.id)))
+        .collect();
+    TunnelStartResult { tasks, entries }
 }
 
-/// 取监听器；预绑定失败的隧道直接把原因转为警告
+/// 取监听器；预绑定失败的隧道直接记录失败原因
 fn take_prepared_listener(
     tunnel: &TunnelConfig,
     prepared: &mut PreparedTunnelListeners,
-    warnings: &mut Vec<String>,
+    failures: &mut HashMap<String, String>,
 ) -> Option<TcpListener> {
     if let Some(reason) = prepared.take_failure(tunnel) {
-        warnings.push(reason);
+        failures.insert(tunnel.id.clone(), reason);
         return None;
     }
     if let Some(listener) = prepared.take(tunnel) {
         return Some(listener);
     }
-    warnings.push(tunnel_warning(tunnel, anyhow!("监听器未准备")));
+    failures.insert(tunnel.id.clone(), "监听器未准备".to_string());
     None
 }
 
-/// 格式化隧道启动警告
-fn tunnel_warning(tunnel: &TunnelConfig, error: anyhow::Error) -> String {
-    format!("隧道 [ {} ]：{}", tunnel.name, error)
+/// 隧道类型的中文名称
+fn tunnel_category(tunnel_type: &TunnelType) -> &'static str {
+    match tunnel_type {
+        TunnelType::Local => "本地拨出",
+        TunnelType::Remote => "远程传入",
+        TunnelType::Dynamic => "动态 SOCKS4/5",
+        TunnelType::DynamicHttp => "动态 HTTP",
+    }
+}
+
+/// 隧道的转发链路描述
+fn tunnel_detail(tunnel: &TunnelConfig) -> String {
+    let scope = if tunnel.local_only {
+        "仅本机"
+    } else {
+        "允许外部"
+    };
+    let host = tunnel.target_host.as_deref().unwrap_or("").trim();
+    let port = tunnel.target_port.unwrap_or(0);
+    match tunnel.tunnel_type {
+        TunnelType::Local => format!(
+            "本机 {} → 服务器侧 {}:{}（{}）",
+            tunnel.listen_port, host, port, scope
+        ),
+        TunnelType::Remote => format!(
+            "服务器 {} → 本机侧 {}:{}（{}）",
+            tunnel.listen_port, host, port, scope
+        ),
+        TunnelType::Dynamic | TunnelType::DynamicHttp => {
+            format!("本机 {} 动态转发（{}）", tunnel.listen_port, scope)
+        }
+    }
+}
+
+/// 生成单条隧道的扩展条目，failure 为空表示启动成功
+fn tunnel_entry(tunnel: &TunnelConfig, failure: Option<String>) -> ExtensionEntry {
+    ExtensionEntry {
+        kind: ExtensionKind::Tunnel,
+        name: tunnel.name.clone(),
+        category: tunnel_category(&tunnel.tunnel_type).to_string(),
+        detail: tunnel_detail(tunnel),
+        ok: failure.is_none(),
+        error: failure.unwrap_or_default(),
+    }
 }
 
 /// 处理远程传入隧道中新到达的 forwarded-tcpip 通道
@@ -267,16 +314,13 @@ async fn bind_listener(tunnel: &TunnelConfig) -> Result<TcpListener> {
 fn target(tunnel: &TunnelConfig) -> Result<(String, u16)> {
     let host = tunnel.target_host.as_deref().unwrap_or("").trim();
     if host.is_empty() {
-        return Err(anyhow!("隧道 [ {} ] 缺少目标主机", tunnel.name));
+        return Err(anyhow!("缺少目标主机"));
     }
     let port = tunnel
         .target_port
-        .ok_or_else(|| anyhow!("隧道 [ {} ] 缺少目标端口", tunnel.name))?;
+        .ok_or_else(|| anyhow!("缺少目标端口"))?;
     if port == 0 {
-        return Err(anyhow!(
-            "隧道 [ {} ] 目标端口必须在 1 到 65535 之间",
-            tunnel.name
-        ));
+        return Err(anyhow!("目标端口必须在 1 到 65535 之间"));
     }
     Ok((host.to_string(), port))
 }
@@ -354,7 +398,7 @@ async fn start_remote_tunnel(
     session
         .request_remote_forward(bind_host(tunnel), tunnel.listen_port, target)
         .await
-        .map_err(|e| anyhow!("启动远程隧道 [ {} ] 失败：{}", tunnel.name, e))
+        .map_err(|e| anyhow!("申请服务器端口监听失败：{}", e))
 }
 
 /// 启动动态 SOCKS4/5 隧道监听循环

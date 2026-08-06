@@ -8,7 +8,39 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{lookup_host, TcpStream};
 use tokio_socks::tcp::{Socks4Stream, Socks5Stream};
 
-use super::types::{ProxyConfig, ProxyType};
+use super::types::{ExtensionEntry, ExtensionKind, ProxyConfig, ProxyType};
+
+/// 代理协议的显示名称
+fn proxy_category(proxy_type: &ProxyType) -> &'static str {
+    match proxy_type {
+        ProxyType::Socks4 => "SOCKS4",
+        ProxyType::Socks4a => "SOCKS4A",
+        ProxyType::Socks5 => "SOCKS5",
+        ProxyType::Http => "HTTP CONNECT",
+    }
+}
+
+/// 生成代理的扩展条目，仅在 SSH 已通过该代理建连成功时调用
+pub fn proxy_entry(proxy: &ProxyConfig) -> ExtensionEntry {
+    let authed = proxy
+        .username
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    ExtensionEntry {
+        kind: ExtensionKind::Proxy,
+        name: proxy.name.clone(),
+        category: proxy_category(&proxy.proxy_type).to_string(),
+        detail: format!(
+            "{}:{}（{}）",
+            proxy.host,
+            proxy.port,
+            if authed { "已认证" } else { "无认证" }
+        ),
+        ok: true,
+        error: String::new(),
+    }
+}
 
 /// 可交给 russh 的异步传输流
 pub trait AsyncTransport: AsyncRead + AsyncWrite + Unpin + Send {}

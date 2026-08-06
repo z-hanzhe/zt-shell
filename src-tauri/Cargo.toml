@@ -2,7 +2,7 @@
 name = "zt-shell"
 version = "0.2.1"
 description = "跨平台桌面 SSH 客户端"
-authors = ["you"]
+authors = ["hanzhe"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

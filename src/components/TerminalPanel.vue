@@ -9,7 +9,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import Icon from "./Icon.vue";
 import Terminal from "./Terminal.vue";
 import AppDialog from "./AppDialog.vue";
-import { useSessionsStore, type Session } from "../stores/sessions";
+import TerminalExtensions from "./TerminalExtensions.vue";
+import { useSessionsStore } from "../stores/sessions";
 
 const emit = defineEmits<{
   (e: "open-conn-manager"): void;
@@ -55,19 +56,6 @@ function showConfirm(opts: {
   });
 }
 
-/** 显示提示弹窗 */
-function showInfo(title: string, message: string) {
-  Object.assign(dialog, {
-    open: true,
-    type: "info",
-    title,
-    message,
-    confirmText: "知道了",
-    confirmDanger: false,
-    resolve: undefined,
-  });
-}
-
 /** 确认弹窗 */
 function onDialogConfirm() {
   const resolve = dialog.resolve;
@@ -80,14 +68,6 @@ function onDialogCancel() {
   const resolve = dialog.resolve;
   dialog.open = false;
   resolve?.(false);
-}
-
-/** 显示当前会话的隧道启动警告 */
-function showTunnelWarnings(session: Session) {
-  const message = (session.tunnelWarnings ?? [])
-    .map((warning, index) => `${index + 1}. ${warning}`)
-    .join("\n");
-  showInfo("隧道警告", message || "暂无隧道警告");
 }
 
 /** 各会话终端组件引用，用于切换选项卡后触发尺寸自适应 */
@@ -504,14 +484,6 @@ defineExpose({ cdActiveTerminal, requestActiveTerminalCwd, hasLiveSessions });
     <div class="term-area">
       <template v-for="s in store.sessions" :key="s.id">
         <div v-show="store.activeId === s.id" class="term-slot">
-          <button
-            v-if="s.tunnelWarnings?.length"
-            class="term-warning"
-            title="查看隧道警告"
-            @click="showTunnelWarnings(s)"
-          >
-            !
-          </button>
           <div v-if="s.status === 'connecting'" class="term-status">
             正在连接 {{ s.config.host }} ...
           </div>
@@ -526,6 +498,16 @@ defineExpose({ cdActiveTerminal, requestActiveTerminalCwd, hasLiveSessions });
             :active="store.activeId === s.id"
             @closed="onTerminalClosed(s.id)"
             @activity="onTerminalActivity(s.id)"
+          />
+
+          <!-- 扩展功能浮层：本次连接使用了代理或隧道时显示 -->
+          <TerminalExtensions
+            v-if="s.extensions?.length"
+            :entries="s.extensions"
+            :offset-y="s.extensionOffsetY ?? 0"
+            :blink-muted="s.extensionBlinkMuted ?? false"
+            @update:offset-y="s.extensionOffsetY = $event"
+            @update:blink-muted="s.extensionBlinkMuted = $event"
           />
         </div>
       </template>
@@ -719,27 +701,6 @@ defineExpose({ cdActiveTerminal, requestActiveTerminalCwd, hasLiveSessions });
 .term-slot {
   position: absolute;
   inset: 0;
-}
-.term-warning {
-  position: absolute;
-  top: 8px;
-  right: 10px;
-  z-index: 10;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 1px solid rgba(255, 184, 77, 0.8);
-  border-radius: 50%;
-  background: rgba(255, 184, 77, 0.18);
-  color: var(--warning);
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.term-warning:hover {
-  background: rgba(255, 184, 77, 0.28);
 }
 .term-status {
   padding: 20px;

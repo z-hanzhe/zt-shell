@@ -129,14 +129,42 @@ pub struct ConnectionConfig {
     pub tunnels: Vec<TunnelConfig>,
 }
 
+/// 会话扩展功能条目类别
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum ExtensionKind {
+    /// 建连使用的代理
+    Proxy,
+    /// 会话启动的隧道
+    Tunnel,
+}
+
+/// 会话扩展功能条目：记录本次连接使用的代理与隧道及其成功失败状态
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionEntry {
+    /// 条目类别
+    pub kind: ExtensionKind,
+    /// 条目显示名称
+    pub name: String,
+    /// 类型描述，如 SOCKS5、本地拨出
+    pub category: String,
+    /// 使用明细，如 监听 8080 转发至 db:3306
+    pub detail: String,
+    /// 是否正常启用
+    pub ok: bool,
+    /// 失败原因，ok 为 true 时为空
+    pub error: String,
+}
+
 /// SSH 建连结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectResult {
     /// 会话标识
     pub session_id: String,
-    /// 隧道启动警告，非空表示 SSH 已连接但部分隧道未启用
-    pub tunnel_warnings: Vec<String>,
+    /// 本次连接的扩展功能条目，存在 ok 为 false 的条目表示部分扩展未启用
+    pub extensions: Vec<ExtensionEntry>,
 }
 
 /// 一条 SFTP 文件条目

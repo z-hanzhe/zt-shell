@@ -1,6 +1,6 @@
 # ZTShell
 
-基于 Tauri 2 + Vue 3 + Rust 构建的跨平台桌面端 SSH 客户端 ZTShell，布局借鉴 FinalShell 及其他同款优秀工具
+基于 Tauri 2 + Vue 3 + Rust 构建的跨平台桌面端 SSH 工具 ZTShell，布局借鉴 FinalShell 及其他同款优秀工具
 
 ![homepage.jpg](./.ai-assisted/img/homepage.png)
 
@@ -56,5 +56,4 @@ git push origin v0.1.3
 ## 说明
 
 - 监控功能依赖远端为 Linux（读取 `/proc` 及 `df` / `ps`），Windows / 其他远端暂不支持监控。
-- 项目由 AI 全程开发，规范与功能文档见 `AGENTS.md` / `CLAUDE.md` 的 Prompt 节与 `.ai-assisted/markdown/`。
-- 对待实现的需求感兴趣，可参考 `.ai-assisted/TODO.md` 文件
+- 项目由 AI 全程开发，规范与功能文档见 `AGENTS.md` / `CLAUDE.md` 与 `.ai-assisted/markdown/`。
