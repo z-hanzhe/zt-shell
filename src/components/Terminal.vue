@@ -408,7 +408,10 @@ async function copySelection() {
   }
 }
 
-/** 将当前选区复制到系统剪贴板，并把同一内容立即写入终端 */
+/**
+ * 将当前选区复制到系统剪贴板，并把同一内容立即写入终端
+ * 经 xterm paste 归一化换行，避免多行内容产生空行
+ */
 async function copyAndPasteSelection() {
   const text = term.value?.getSelection();
   if (!text) return;
@@ -417,14 +420,20 @@ async function copyAndPasteSelection() {
   } catch {
     // 剪贴板不可用不影响选区内容继续写入终端
   }
-  await writeToTerminal(text);
+  term.value?.paste(text);
 }
 
-/** 从剪贴板粘贴到终端（走原生剪贴板，避免 WebView 权限弹窗） */
+/**
+ * 从剪贴板粘贴到终端（走原生剪贴板，避免 WebView 权限弹窗）
+ *
+ * 必须交由 xterm paste 处理而非直接写字节：它会把 \r\n 归一化为 \r
+ * 并按终端当前模式补上括号粘贴标记，否则 Windows 剪贴板的多行内容
+ * 会因 \r\n 被 PTY 当成两次换行而每行之间多出空行
+ */
 async function pasteClipboard() {
   try {
     const text = await readText();
-    if (text) await writeToTerminal(text);
+    if (text) term.value?.paste(text);
   } catch {
     // 剪贴板为空或不可用时忽略
   }
@@ -747,7 +756,24 @@ defineExpose({ fit: doFit, activate, reopen, cdTo, requestCwd });
 .terminal-body {
   width: 100%;
   height: 100%;
+}
+
+/*
+ * 终端留白放在 .xterm 自身而非外层容器：
+ * 选区的 mousedown 绑定在 .xterm 上，且 xterm 换算坐标时会扣掉自身 padding
+ * 并把越界值钳到最近的行列，故在留白区按下也能从行首正常框选；
+ * 若把 padding 放到外层容器，留白区属于容器而非 .xterm，按下不触发选区
+ */
+.terminal-body :deep(.xterm) {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
   padding: 6px 12px;
+}
+/* xterm.css 给 viewport 固定了纯黑底，会在留白处露出与终端底色不一致的黑边，置透明由外层统一着色 */
+.terminal-body :deep(.xterm-viewport),
+.terminal-body :deep(.xterm-scrollable-element) {
+  background-color: transparent !important;
 }
 
 /* 拖拽单文件上传悬停提示：覆盖终端区域的虚线框 */

@@ -2,7 +2,7 @@
 
 入口 App.vue自绘标题栏+主体+底部状态栏 主体flex三栏布局 分隔条可拖拽
 
-组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关但可配置警示操作 禁止点空白关闭 仅按钮或ESC关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) TerminalExtensions.vue终端扩展信息浮层 Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue ProxySettings.vue TunnelSettings.vue SettingsDialog.vue TextEditorWindow.vue(monaco-editor独立窗口) TitleBar.vue
+组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关但可配置警示操作 禁止点空白关闭 仅按钮或ESC关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) TerminalExtensions.vue终端连接信息浮层 Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue ProxySettings.vue TunnelSettings.vue SettingsDialog.vue TextEditorWindow.vue(monaco-editor独立窗口) TitleBar.vue
 
 状态 connections.ts持久化连接与分组文件夹(folders树形嵌套/upsert/remove/upsertFolder/removeFolderRecursive递归删/reorderItems维护同级order/moveItems防环/duplicateConnection同级复制/countFolderContents) sessions.ts活动会话(open/close/activate/move/reconnect/markDisconnected/markActivity)(⚠ ref数组push后须find取代理元素改 勿直接改原始对象) settings.ts持久化设置(tauri-plugin-store load的options需含defaults字段) monitor.ts按会话采集(收发无关选项卡) transfers.ts传输任务 App.vue onMounted初始化
 
@@ -14,7 +14,9 @@
 
 选项卡 指针自绘拖拽排序(WebView2 HTML5拖放不稳定) 溢出横向滚动按钮 左侧状态指示(点/叹号) 右键关闭/重连 重连复用同一sessionId原地重开通道保留xterm历史(reconnecting集合+Terminal suppressClose双重抑制旧通道terminal://close误标掉线) 掉线/远端exit经terminal://close由store.markDisconnected置disconnected并停监控 窗口关闭时含连接中的会话弹确认后destroy
 
-终端 shallowRef防代理 allowProposedApi true(FitAddon/SearchAddon) Tokyo Night配色 背景不透明 右键菜单走原生剪贴板 快捷键attachCustomKeyEventHandler(Alt+Insert有选区时复制到原生剪贴板并立即写回终端/F3打开或继续查找) 菜单不显示快捷键文字，统一通过悬停提示说明各项快捷键，Ctrl+Insert与Shift+Insert不拦截 clear通过scrollOnEraseInDisplay将当前屏推入回滚区并拦主屏ESC[3J保留完整历史) 输入Promise队列保序 resize独立同步 隐写时doFit跳过 App层放行终端Ctrl组合与F3/F5/F7 FileManager的F5在事件源自.xterm时跳过 拖入单文件onDragDropEvent上传至终端当前目录(requestCwd 仅激活选项卡 多文件/文件夹经path_is_dir拒绝 同名走transferUpload的existNames弹AppDialog确认覆盖) Vite生产build.target保持es2021规避@xterm/xterm二次压缩缺陷(xterm.js#5800)
+终端 shallowRef防代理 allowProposedApi true(FitAddon/SearchAddon) Tokyo Night配色 背景不透明 右键菜单走原生剪贴板 粘贴统一走term.paste()而非直接写字节(xterm会把\r\n归一化为\r并按模式补括号粘贴标记 直写会让Windows剪贴板多行内容每行间多空行) 快捷键attachCustomKeyEventHandler(Alt+Insert有选区时复制到原生剪贴板并立即写回终端/F3打开或继续查找) 菜单不显示快捷键文字，统一通过悬停提示说明各项快捷键，Ctrl+Insert与Shift+Insert不拦截 clear通过scrollOnEraseInDisplay将当前屏推入回滚区并拦主屏ESC[3J保留完整历史) 输入Promise队列保序 resize独立同步 隐写时doFit跳过 App层放行终端Ctrl组合与F3/F5/F7 FileManager的F5在事件源自.xterm时跳过 拖入单文件onDragDropEvent上传至终端当前目录(requestCwd 仅激活选项卡 多文件/文件夹经path_is_dir拒绝 同名走transferUpload的existNames弹AppDialog确认覆盖) Vite生产build.target保持es2021规避@xterm/xterm二次压缩缺陷(xterm.js#5800)
+
+终端留白 ⚠两处约定改动前须确认：留白padding必须挂在.xterm自身不能放外层容器(选区mousedown绑在.xterm上 且xterm换算坐标会扣自身padding并把越界值钳到最近行列 故留白区按下仍能从行首框选；放外层则留白属容器不触发选区)；.xterm-viewport与.xterm-scrollable-element须置transparent(xterm.css给了固定纯黑底 会在留白处露出与终端底色不一致的黑边)。doFit保持纯fit不额外调整留白：fit按可用高度向下取整算行数，不足一行的余高留在底部，拖底栏时最后一行到底边的距离会在0~1行间跳动，此为已知取舍——曾先后试过"余高补顶部留白"与"多渲染一行+负margin上移"，前者顶部空白过大、后者在缓冲区不足一屏时(如刚建连只有一行提示符)会裁掉仅有的正文，均按实际使用体验回退
 
 字体 @fontsource/cascadia-mono自托管 终端栈Consolas>Cascadia Mono UI中文系统栈
 
@@ -22,6 +24,6 @@
 
 监控面板 纯视图读monitor store 系统信息/CPU/内存/网卡图/磁盘/进程 未连骨架占位 采集出错底部提示 网卡历史按名切换 默认自动选网卡(物理优先 取历史累计流量最高者 有流量后自动锁定不再跳动 消失重新选 手动选后固定) 图双柱上传橙下载绿
 
-连接管理器 ConnectionManager弹窗 文件夹树形分组(多级嵌套 folder/conn统一扁平行visibleRows 仅展开文件夹向下递归 同级按order显示/旧数据文件夹优先名称兜底)+主机/端口/用户名列 名称ellipsis+title悬停 行内单选 方向键导航 左右展开收起 回车连接或展开文件夹 双击文件夹展开/连接则连接 指针拖拽支持同父级前后排序写order与拖入文件夹/空白根目录移动 搜索态扁平化禁拖拽) 右键菜单连接/连接显示编辑/文件夹显示重命名/复制/悬停新建›[连接文件夹]/删除(新建位置按右键目标推断 复制仅连接 删除文件夹递归确认) ESC逐级关菜单→清选择→关窗 弹窗复用AppDialog 新建连接经editorParentId落入目标文件夹 后台FileManager经hasOpenModal避让方向键 ConnectionEditor左侧分组导航(连接配置含备注 代理/隧道/更多功能) 私钥路径支持手输或原生文件选择回填 代理配置页维护共享代理列表(搜索/新增/编辑/删除/上下移动排序/单选直连或代理 删除时清理连接引用) 隧道页维护当前连接独立隧道列表(本地拨出/远程传入/动态SOCKS4/5/动态HTTP 新增默认未启用 表格勾选启用且行点击仅选中 上下移动排序 localOnly控制监听端仅本机) 连接持久化proxyId/备注/tunnels 会话建连时解析最新代理快照并按会话配置尝试启动启用隧道，失败不阻断SSH，条目化结果交终端扩展信息浮层展示
+连接管理器 ConnectionManager弹窗 文件夹树形分组(多级嵌套 folder/conn统一扁平行visibleRows 仅展开文件夹向下递归 同级按order显示/旧数据文件夹优先名称兜底)+主机/端口/用户名列 名称ellipsis+title悬停 行内单选 方向键导航 左右展开收起 回车连接或展开文件夹 双击文件夹展开/连接则连接 指针拖拽支持同父级前后排序写order与拖入文件夹/空白根目录移动 搜索态扁平化禁拖拽) 右键菜单连接/连接显示编辑/文件夹显示重命名/复制/悬停新建›[连接文件夹]/删除(新建位置按右键目标推断 复制仅连接 删除文件夹递归确认) ESC逐级关菜单→清选择→关窗 弹窗复用AppDialog 新建连接经editorParentId落入目标文件夹 后台FileManager经hasOpenModal避让方向键 ConnectionEditor左侧分组导航(连接配置含备注 代理/隧道/更多功能) 私钥路径支持手输或原生文件选择回填 代理配置页维护共享代理列表(搜索/新增/编辑/删除/上下移动排序/单选直连或代理 删除时清理连接引用) 隧道页维护当前连接独立隧道列表(本地拨出/远程传入/动态SOCKS4/5/动态HTTP 新增默认未启用 表格勾选启用且行点击仅选中 上下移动排序 localOnly控制监听端仅本机) 连接持久化proxyId/备注/tunnels 会话建连时解析最新代理快照并按会话配置尝试启动启用隧道，失败不阻断SSH，条目化结果交终端连接信息浮层展示
 
-终端扩展信息 TerminalExtensions.vue在会话使用代理或隧道时覆盖终端区域(inset:0 pointer-events:none 仅按钮与面板可交互 不影响xterm选中输入) 按钮默认右上角 指针自绘拖拽仅取垂直位移(水平恒贴右侧 位移<4px判为点击切换面板) 偏移存Session.extensionOffsetY按会话独立、切换选项卡与重连均保留 ResizeObserver在区域变小时回夹 面板贴按钮左侧展开并随其浮动、触底上移 条目取ConnectResult.extensions(代理在前+按配置顺序的已启用隧道 各带kind/name/category/detail/ok/error 未启用隧道不列出) 存在ok=false条目时按钮转警示色并闪烁，面板内切换extensionBlinkMuted关闭/恢复闪烁(仅本次连接 重连重置) 点浮层外或ESC关面板
+终端连接信息 TerminalExtensions.vue在会话使用代理或隧道且status为connected时覆盖终端区域(inset:0 pointer-events:none 仅按钮与面板可交互 不影响xterm选中输入 exit或掉线后随连接隐藏) 按钮right:30px避开终端右侧滚动条(留白12+滚动条14)否则压在滚动条上点不到 默认右上角 指针自绘拖拽仅取垂直位移(水平恒贴右侧 位移<4px判为点击切换面板) 偏移存Session.extensionOffsetY按会话独立、切换选项卡与重连均保留 ResizeObserver在区域变小时回夹 面板贴按钮左侧展开并随其浮动、触底上移 条目取ConnectResult.extensions(代理在前+按配置顺序的已启用隧道 各带kind/name/category/detail/ok/error 未启用隧道不列出) 存在ok=false条目时按钮转警示色并闪烁，面板内切换extensionBlinkMuted关闭/恢复闪烁(仅本次连接 重连重置) 点浮层外或ESC关面板

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 终端扩展信息浮层：会话使用了代理或隧道时在终端右侧显示入口按钮
+ * 终端连接信息浮层：会话使用了代理或隧道时在终端右侧显示入口按钮
  *
  * 按钮默认位于右上角，可在终端区域内垂直拖拽（禁止左右移动），
  * 点击展开面板列出各条目的使用明细与成功失败状态；
  * 存在失败条目时按钮闪烁提示，可在面板内手动关闭闪烁。
+ * 仅在会话保持连接时由父组件渲染，断开后随之隐藏。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import Icon from "./Icon.vue";
@@ -12,7 +13,7 @@ import { useEscClose } from "../composables/useEscClose";
 import type { ExtensionEntry } from "../types";
 
 const props = defineProps<{
-  /** 本次连接的扩展功能条目 */
+  /** 本次连接的代理与隧道条目 */
   entries: ExtensionEntry[];
   /** 按钮相对终端区域可用范围顶部的垂直偏移（像素） */
   offsetY: number;
@@ -53,8 +54,8 @@ const blinking = computed(() => failedCount.value > 0 && !props.blinkMuted);
 /** 按钮悬浮提示 */
 const buttonTitle = computed(() =>
   failedCount.value
-    ? `扩展功能 ${props.entries.length} 项，其中 ${failedCount.value} 项未启用`
-    : `扩展功能 ${props.entries.length} 项，全部正常`
+    ? `连接信息 ${props.entries.length} 项，其中 ${failedCount.value} 项未启用`
+    : `连接信息 ${props.entries.length} 项，全部正常`
 );
 
 /** 将垂直偏移限制在终端区域内 */
@@ -161,7 +162,7 @@ onBeforeUnmount(() => {
 
     <div v-if="open" ref="panelRef" class="ext-panel" :style="{ top: `${panelTop}px` }">
       <div class="ext-head">
-        <span class="ext-head-title">扩展信息</span>
+        <span class="ext-head-title">连接信息</span>
         <button
           v-if="failedCount > 0"
           class="ext-mute"
@@ -204,7 +205,8 @@ onBeforeUnmount(() => {
 }
 .ext-btn {
   position: absolute;
-  right: 8px;
+  /* 避开终端右侧滚动条（终端右留白 12px + 滚动条 14px），否则按钮压在滚动条上点不到 */
+  right: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -247,7 +249,7 @@ onBeforeUnmount(() => {
 /* 详情面板：贴按钮左侧展开，随按钮垂直位置浮动 */
 .ext-panel {
   position: absolute;
-  right: 40px;
+  right: 62px;
   width: 300px;
   max-height: calc(100% - 16px);
   display: flex;

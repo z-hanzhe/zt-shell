@@ -72,10 +72,10 @@ export interface ConnectionConfig {
   order?: number;
 }
 
-/** 会话扩展功能条目类别 */
+/** 会话连接信息条目类别 */
 export type ExtensionKind = "proxy" | "tunnel";
 
-/** 会话扩展功能条目：本次连接使用的代理与隧道及其成功失败状态 */
+/** 会话连接信息条目：本次连接使用的代理与隧道及其成功失败状态 */
 export interface ExtensionEntry {
   /** 条目类别 */
   kind: ExtensionKind;
@@ -95,7 +95,7 @@ export interface ExtensionEntry {
 export interface ConnectResult {
   /** 会话标识 */
   sessionId: string;
-  /** 本次连接的扩展功能条目，存在 ok 为 false 的条目表示部分扩展未启用 */
+  /** 本次连接的代理与隧道条目，存在 ok 为 false 的条目表示部分功能未启用 */
   extensions: ExtensionEntry[];
 }
 

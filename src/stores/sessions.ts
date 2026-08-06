@@ -34,9 +34,9 @@ export interface Session {
   error?: string;
   /** 未选中时有新输出的提示标记（仿 xshell 叹号提示） */
   activity?: boolean;
-  /** 本次连接使用的代理与隧道条目，非空时终端右侧显示扩展信息按钮 */
+  /** 本次连接使用的代理与隧道条目，非空时终端右侧显示连接信息按钮 */
   extensions?: ExtensionEntry[];
-  /** 扩展信息按钮相对终端区域顶部的垂直偏移（像素），拖拽后保留 */
+  /** 连接信息按钮相对终端区域顶部的垂直偏移（像素），拖拽后保留 */
   extensionOffsetY?: number;
   /** 本次连接是否已手动关闭异常闪烁，重连后重置 */
   extensionBlinkMuted?: boolean;

@@ -500,9 +500,9 @@ defineExpose({ cdActiveTerminal, requestActiveTerminalCwd, hasLiveSessions });
             @activity="onTerminalActivity(s.id)"
           />
 
-          <!-- 扩展功能浮层：本次连接使用了代理或隧道时显示 -->
+          <!-- 连接信息浮层：仅连接保持期间显示，exit 或掉线后随连接一并隐藏 -->
           <TerminalExtensions
-            v-if="s.extensions?.length"
+            v-if="s.status === 'connected' && s.extensions?.length"
             :entries="s.extensions"
             :offset-y="s.extensionOffsetY ?? 0"
             :blink-muted="s.extensionBlinkMuted ?? false"
