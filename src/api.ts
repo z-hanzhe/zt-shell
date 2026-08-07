@@ -80,9 +80,10 @@ export function sftpRead(sessionId: string, path: string): Promise<number[]> {
 export function sftpWrite(
   sessionId: string,
   path: string,
-  data: number[]
+  data: number[],
+  operationId?: string
 ): Promise<void> {
-  return invoke("sftp_write", { sessionId, path, data });
+  return invoke("sftp_write", { sessionId, path, data, operationId: operationId ?? null });
 }
 
 /** 删除文件 */

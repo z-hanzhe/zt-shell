@@ -28,10 +28,9 @@ import { formatShort, formatTime, genId, joinPath, parentPath } from "../utils";
 import { hasOpenModal } from "../composables/useEscClose";
 import { useTransfersStore } from "../stores/transfers";
 import { useSessionsStore } from "../stores/sessions";
-import {
-  focusExistingTextEditorWindow,
-  openTextEditorWindow,
-} from "../editorWindows";
+import { openTextEditorWindow } from "../editorWindows";
+import type { EditorSavedPayload } from "../editorProtocol";
+import { EDITOR_SAVED_EVENT } from "../editorProtocol";
 
 const props = defineProps<{
   /** 当前会话标识，空表示无活动会话 */
@@ -136,7 +135,6 @@ type PointerMode = "select" | "drag";
 type TypeaheadZone = "tree" | "list";
 type ArchiveFormat = "zip" | "tarGz";
 type FileOperationKind = "archive" | "extract" | "delete";
-type EditorSavedPayload = { sessionId: string; path: string };
 type PointerAction = {
   mode: PointerMode;
   entry?: FileEntry;
@@ -973,21 +971,12 @@ async function onEditText() {
   if (!entry || entry.isDir) return;
   const path = joinPath(cwd.value, entry.name);
   try {
-    if (await focusExistingTextEditorWindow(props.sessionId, path)) return;
-  } catch (e) {
-    showMessage("打开失败", String(e));
-    return;
-  }
-  if (entry.size > 1024 * 1024) {
-    const confirmed = await showConfirm("编辑确认", "文件大于 1MB，是否继续打开编辑？");
-    if (!confirmed) return;
-  }
-  try {
     const session = sessionsStore.sessions.find((item) => item.id === props.sessionId);
     await openTextEditorWindow({
       sessionId: props.sessionId,
       sessionName: session?.name || session?.config.host || props.sessionId,
       path,
+      size: entry.size,
     });
   } catch (e) {
     showMessage("打开失败", String(e));
@@ -1081,6 +1070,7 @@ async function refresh() {
     const nextEntries = await sftpList(sessionId, path);
     if (version !== sessionViewVersion || sessionId !== props.sessionId || path !== cwd.value) return;
     entries.value = nextEntries;
+    sessionDirectories.set(sessionId, path);
     treeChildren.value = {
       ...treeChildren.value,
       [path]: nextEntries.filter((e) => e.isDir).sort((a, b) => compareName(a.name, b.name)),
@@ -1207,7 +1197,7 @@ onMounted(async () => {
     console.warn("注册文件拖拽失败（可能非 Tauri 环境）", e);
   }
   try {
-    unlistenEditorSaved = await listen<EditorSavedPayload>("editor://saved", (event) => {
+    unlistenEditorSaved = await listen<EditorSavedPayload>(EDITOR_SAVED_EVENT, (event) => {
       if (event.payload.sessionId !== props.sessionId) {
         staleSessionIds.add(event.payload.sessionId);
         return;
@@ -1711,6 +1701,8 @@ type SessionUiState = {
 
 /** 各会话的界面状态缓存 */
 const sessionUiStates = new Map<string, SessionUiState>();
+/** 各会话最后一次成功访问的目录，断线重连时用于恢复位置 */
+const sessionDirectories = new Map<string, string>();
 /** 已知发生文件变更、切回时需要刷新列表的会话 */
 const staleSessionIds = new Set<string>();
 /** 上一个活动会话标识，用于切换时保存其界面状态 */
@@ -1723,6 +1715,7 @@ function stashSessionUiState(id: string) {
   if (!id) return;
   if (!sessionsStore.sessions.some((s) => s.id === id)) {
     sessionUiStates.delete(id);
+    sessionDirectories.delete(id);
     return;
   }
   // 切换发生在异步加载完成前时不缓存半成品，下次进入重新初始化
@@ -1740,7 +1733,7 @@ function stashSessionUiState(id: string) {
   });
 }
 
-// 会话切换或连接成功后，恢复该会话的界面状态或定位到主目录
+// 会话切换或连接成功后，恢复该会话的界面状态、上次目录或主目录
 watch(
   () => [props.sessionId, props.connected] as const,
   async ([id, conn]) => {
@@ -1769,21 +1762,24 @@ watch(
       error.value = "";
       sudoActive.value = false;
       staleSessionIds.delete(id);
-      let home = "/";
-      try {
-        home = await sftpHome(id);
-      } catch {
-        // 主目录解析失败时沿用根目录，再由列表加载展示具体错误
+      let initialDirectory = sessionDirectories.get(id);
+      if (!initialDirectory) {
+        initialDirectory = "/";
+        try {
+          initialDirectory = await sftpHome(id);
+        } catch {
+          // 主目录解析失败时沿用根目录，再由列表加载展示具体错误
+        }
       }
       if (version !== sessionViewVersion) return;
-      cwd.value = home;
+      cwd.value = initialDirectory;
       treeChildren.value = {};
       expandedDirs.value = new Set(["/"]);
       await refresh();
       if (version !== sessionViewVersion) return;
       await syncTreeToCwd();
     } else {
-      // 断开或无会话：清空展示与该会话的缓存
+      // 断开或无会话：丢弃可能过期的内容快照，最后成功访问目录继续保留
       sessionUiStates.delete(id);
       staleSessionIds.delete(id);
       sudoActive.value = false;
@@ -1794,10 +1790,11 @@ watch(
   { immediate: true }
 );
 
-// 终端断开或选项卡关闭时清理对应前端缓存，重连后首次进入重新加载
+// 终端断开时清理内容快照；选项卡关闭时连同最后访问目录一起清理
 watch(
   () => sessionsStore.sessions.map((session) => `${session.id}:${session.status}`),
   () => {
+    const existingIds = new Set(sessionsStore.sessions.map((session) => session.id));
     const connectedIds = new Set(
       sessionsStore.sessions
         .filter((session) => session.status === "connected")
@@ -1808,6 +1805,9 @@ watch(
     }
     for (const id of staleSessionIds) {
       if (!connectedIds.has(id)) staleSessionIds.delete(id);
+    }
+    for (const id of sessionDirectories.keys()) {
+      if (!existingIds.has(id)) sessionDirectories.delete(id);
     }
   }
 );

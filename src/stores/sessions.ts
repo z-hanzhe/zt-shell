@@ -103,6 +103,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     const idx = sessions.value.findIndex((s) => s.id === id);
     if (idx < 0) return;
     // 编辑窗口从属于选项卡，会话移除前先强制关闭其全部编辑窗口
+    // 工作区模式下只移除该会话的文件标签，其他会话标签继续保留
     await closeTextEditorWindowsForSession(id);
     // 停止该会话监控
     useMonitorStore().stop(id);

@@ -451,7 +451,7 @@ impl SshSession {
 }
 
 /// 等待收到取消通知
-async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
+pub(crate) async fn wait_for_cancellation(cancellation: &mut watch::Receiver<bool>) {
     if *cancellation.borrow() {
         return;
     }

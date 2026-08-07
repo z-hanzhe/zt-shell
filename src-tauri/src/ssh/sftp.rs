@@ -11,7 +11,7 @@ use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use super::manager::SessionManager;
-use super::session::OPERATION_CANCELLED_MESSAGE;
+use super::session::{wait_for_cancellation, OPERATION_CANCELLED_MESSAGE};
 use super::transfer::shell_quote;
 use super::types::FileEntry;
 
@@ -130,6 +130,23 @@ pub async fn write_file(sftp: &SftpSession, path: &str, data: &[u8]) -> Result<(
     file.flush()
         .await
         .map_err(|e| anyhow!("刷新文件失败：{}", e))
+}
+
+/// 将内容写入远端文件，并在收到操作中断通知时停止等待后续写入
+///
+/// SFTP 覆盖写不提供事务回滚；中断发生在创建文件之后时，远端文件可能已写入部分内容。
+pub async fn write_file_cancellable(
+    sftp: &SftpSession,
+    path: &str,
+    data: &[u8],
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    ensure_not_cancelled(Some(cancellation))?;
+    tokio::select! {
+        biased;
+        _ = wait_for_cancellation(cancellation) => Err(anyhow!(OPERATION_CANCELLED_MESSAGE)),
+        result = write_file(sftp, path, data) => result,
+    }
 }
 
 /// 删除远端文件

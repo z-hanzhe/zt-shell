@@ -5,6 +5,7 @@ use tauri::{AppHandle, State};
 
 use crate::ssh::manager::SessionManager;
 use crate::ssh::monitor::{self, MonitorData};
+use crate::ssh::session::{wait_for_cancellation, OPERATION_CANCELLED_MESSAGE};
 use crate::ssh::sftp::{self, RemoveEntryArg};
 use crate::ssh::transfer::{
     self, RemoteItemArg, TransferCreateResult, TransferManager, TransferTaskDto,
@@ -132,7 +133,21 @@ pub async fn sftp_write(
     session_id: String,
     path: String,
     data: Vec<u8>,
+    operation_id: Option<String>,
 ) -> CmdResult<()> {
+    if let Some(operation_id) = operation_id {
+        let mut operation = map_err(manager.begin_operation(&session_id, &operation_id))?;
+        let sftp = tokio::select! {
+            biased;
+            _ = wait_for_cancellation(operation.cancellation()) => {
+                return Err(OPERATION_CANCELLED_MESSAGE.to_string());
+            }
+            result = manager.sftp(&session_id) => map_err(result)?,
+        };
+        return map_err(
+            sftp::write_file_cancellable(&sftp, &path, &data, operation.cancellation()).await,
+        );
+    }
     let sftp = map_err(manager.sftp(&session_id).await)?;
     map_err(sftp::write_file(&sftp, &path, &data).await)
 }
