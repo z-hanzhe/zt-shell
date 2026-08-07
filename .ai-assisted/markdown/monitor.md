@@ -1,9 +1,13 @@
-远程监控
+# 远程监控
 
-采集 collect通过SessionManager::exec执行MONITOR_SCRIPT一次性远程命令 脚本###段名###分隔区块 CPU与网卡各采样两次(间隔0.5秒)算速率 无需服务端状态
+## 职责与入口
 
-数据源 /etc/os-release /proc/uptime /proc/cpuinfo /proc/loadavg /proc/stat(两次差值算CPU) /proc/meminfo /proc/net/dev(跳过lo) df -kP(跳过tmpfs devtmpfs overlay) ps -eo pid,comm,%cpu,%mem,rss(CPU降序 rss为KiB转字节) 物理网卡靠/sys/class/net/*/device存在判定
+- `ssh/monitor.rs` 的 `collect` 通过现有 SSH 会话执行一次性远端命令并返回监控数据。
+- `stores/monitor.ts` 按会话持续采集和缓存，`MonitorPanel.vue` 仅负责展示与网卡选择。
+- 采集周期由 `stores/settings.ts` 的应用设置控制。
 
-解析 split_sections切分 parse_stat/parse_net/mem_field各取所需 仅Linux MonitorData字段见types.ts
+## 数据与限制
 
-前端 store按会话维度采集 会话建立start关闭stop 与激活选项卡无关 间隔取settings
+- 数据来自 Linux 的 `/proc`、`/etc/os-release`、`df`、`ps` 和网卡信息；包括系统信息、CPU、内存、磁盘、进程与网卡速率。
+- 监控随会话建立启动、随会话关闭停止，与当前激活的选项卡无关。
+- ⚠️ 陷阱：监控脚本依赖 Linux 数据源和常用命令；扩展到其他远端系统前，必须新增对应采集实现与解析逻辑。

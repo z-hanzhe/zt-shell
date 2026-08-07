@@ -1,11 +1,19 @@
-SSH内核
+# SSH 内核
 
-连接认证 支持密码与私钥两种 私钥用load_secret_key加载 RSA哈希协商 check_server_key当前信任所有服务端公钥(后续可扩展known_hosts校验) SSH 建连可选代理隧道 SOCKS4(本地解析IPv4)/SOCKS4A(代理解析域名)/SOCKS5/HTTP CONNECT 代理握手完成后统一交给russh connect_stream
+## 职责与入口
 
-终端 open_terminal申请PTY+xterm-256color后启动shell 输出经Channel<Response>发送Raw字节(不可用Channel<Vec<u8>>否则JSON数组) 读写分离于两个tokio任务 终端channel结束视为整个会话断开 后端先按Arc条目身份条件移除SessionManager资源与传输任务再走app.emit(terminal://close//)通知前端 条目身份校验避免旧channel关闭误删同sessionId重连新会话
+- `ssh/manager.rs` 的 `SessionManager` 负责建立、查找和释放 SSH 会话，并协调 SFTP、隧道和文件操作取消。
+- `ssh/session.rs` 实现认证、交互式终端与一次性远端命令；命令层入口为 `ssh_connect`、`ssh_disconnect`、`terminal_*`。
+- `ssh/types.rs` 定义连接、代理、隧道和建连结果；前端对应类型位于 `src/types.ts`。
 
-隧道 tunnel.rs按连接配置随会话启动启用项：本地拨出预绑定本机端口后走direct-tcpip；远程传入走tcpip_forward并在Handler的forwarded-tcpip回调连接客户端侧目标；动态SOCKS监听本机SOCKS4/4A/5无认证CONNECT再走direct-tcpip；动态HTTP监听本机HTTP代理端口，CONNECT直通TLS，普通HTTP绝对地址改写为origin-form后转发。localOnly映射监听端127.0.0.1/0.0.0.0；远程监听先于本地监听任务申请，固定端口映射不使用russh成功返回的0值；本地与动态请求并发创建SSH通道并各自限制建立时长，远程目标回连同样限制等待时长，单个目标不可达不阻塞其他请求；本地/动态端口在SSH认证前预绑定，端口占用等隧道失败只作为条目状态返回不阻断SSH；ConnectResult.extensions汇总本次连接扩展条目(代理在前+按配置顺序的已启用隧道，各带kind/name/category/detail/ok/error 供前端浮层展示)，代理失败会直接建连报错故其条目恒为ok；会话断开通过watch取消活跃转发并abort监听任务
+## 能力边界
 
-一次性命令 exec_command开exec通道收集stdout 用于监控等场景 文件管理长耗时命令走exec_command_cancellable监听watch取消；中断时向独立exec通道发送TERM并关闭通道 OpenSSH通常会终止该exec会话进程组 不支持signal的服务端只能降级为关闭通道
+- 支持密码与私钥认证，以及 SOCKS4、SOCKS4A、SOCKS5、HTTP CONNECT 代理。
+- 会话可启动本地、远程、动态 SOCKS 和动态 HTTP 隧道；隧道结果会随建连结果返回，供前端展示状态。
+- 终端使用 PTY 和 `xterm-256color`；终端通道结束视为会话断开，并释放该会话关联资源。
 
-会话管理器 SessionManager用dashmap存储 每条含SSH会话+终端控制发端+惰性SFTP+隧道任务 terminal结束或显式ssh_disconnect均移除条目释放SSH/SFTP/隧道与传输资源；文件操作按operationId登记取消通知，操作句柄离开作用域自动注销，会话断开会通知该会话全部操作
+## 稳定约束
+
+- ⚠️ 陷阱：重连必须防止旧终端通道的关闭事件清理新会话；会话资源释放须以当前会话条目为准。
+- ⚠️ 陷阱：当前实现信任所有服务端公钥；若引入主机校验，必须同时设计 `known_hosts` 的持久化与更新流程。
+- 代理建立失败会使 SSH 建连失败；单个已启用隧道启动失败只作为本次连接的状态条目返回，不阻断 SSH 会话。

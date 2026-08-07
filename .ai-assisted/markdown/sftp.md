@@ -1,11 +1,19 @@
-SFTP文件管理
+# SFTP 文件管理
 
-实现 基于russh-sftp的SftpSession 按后端SessionEntry惰性建立并缓存 首次使用时open_sftp_channel请求sftp子系统 普通终端选项卡切换不重建
+## 职责与入口
 
-操作 list_dir/read_file/write_file/remove_file/remove_dir/remove_dir_all/create_dir/rename/canonicalize(解析绝对路径用于定位主目录) upload/download/create_archive/extract_archive/remove_entries 删目录普通模式exec rm -rf(哨兵__ZTOK__/__ZTFAIL__ 防空路径与根) sudo模式exec不提权回落SFTP递归删 符号链unlink不深入 错误统一走format_sftp_error(Status错误消息与状态码同名时去重 避免Failure:Failure) 所有SFTP错误文案与transfer.rs统一走它
+- `ssh/sftp.rs` 提供目录浏览、文件读写、移动、删除、压缩和解压能力；命令层以 `sftp_*` 暴露给前端。
+- `FileManager.vue` 是文件管理界面入口，`src/api.ts` 是前端调用边界。
+- 会话的 SFTP 客户端按需建立并随 SSH 会话释放；普通选项卡切换不应重新建立后端 SFTP 会话。
 
-压缩解压 普通模式经exec调用远端zip/tar/unzip 支持zip与tar.gz/tgz 路径逐项shell转义并用临时包完成后替换目标 tar条目不带./前缀以兼容Windows解压查看器 避免失败破坏已有压缩包 解压会覆盖同名内容需前端确认 工具缺失明确报错 一次性exec不继承sudo SFTP提权故sudo模式禁止；压缩/解压/批量删除按operationId请求中断，exec依赖远端signal，SFTP递归在请求边界检查取消；文本编辑保存同样按operationId中断等待，SFTP覆盖写无事务回滚且中断后远端文件可能只有部分内容；中断不回滚已解压、已删除或已覆盖内容，压缩临时包仅尽力清理
+## 权限与操作边界
 
-sudo提权 会话可切换普通/sudo两种 sudo走exec sudo -S启动sftp-server 密码stdin喂入 提示报错走stderr不污染stdout 握手哨兵__ZTOK__就绪__ZTPW__密码提示__ZTNO__缺失 覆盖需密码/已缓存/NOPASSWD 再次收到密码提示即密码错 is_sudo供删除选择rm -rf或SFTP递归 仅Linux 私钥无密码时仅NOPASSWD可成功 sftp_set_sudo启用时立即建提权会话失败回滚 关闭清空提权会话缓存回落普通
+- 文件管理支持普通模式与 sudo 模式；sudo 通过独立 SFTP 会话获得权限，依赖远端提供 `sudo` 与 SFTP 服务端程序。
+- 普通文件读写适合简单场景；批量、大文件和断点续传应进入传输任务，见 `transfer.md`。
+- 压缩、解压和批量删除可按操作标识请求中断；文件编辑保存也使用同一取消机制。
 
-注意 远端路径统一正斜杠 sftp_upload/download为整文件一次性读写(简单场景) 批量/大文件/断点续传走传输任务
+## 稳定约束
+
+- ⚠️ 陷阱：sudo SFTP 不会提升一次性 `exec` 命令的权限；压缩、解压等依赖远端命令的能力必须在普通模式下执行。
+- ⚠️ 陷阱：取消操作不会回滚已删除、已解压或已覆盖的远端内容；界面和调用方不得承诺事务性恢复。
+- 路径与压缩条目名必须在后端校验和转义，禁止将前端输入直接拼接为远端命令。

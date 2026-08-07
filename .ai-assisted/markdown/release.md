@@ -1,9 +1,13 @@
-发布流水线
+# 发布流水线
 
-入口 .github/workflows/release.yml(tauri-apps/tauri-action由Tauri官方维护 用于跨平台bundle识别与artifacts上传)
+## 入口与产物
 
-数据流 tag push -> 校验四处应用版本一致(package.json/package-lock.json/tauri.conf.json/Cargo.toml) -> Windows x64、Linux x64、macOS Intel与Apple Silicon并行打包 -> workflow artifacts -> tauri-action汇总为同tag发布草稿
+- `.github/workflows/release.yml` 在推送标签时执行发布流程。
+- 工作流构建 Windows x64、macOS Intel、macOS Apple Silicon 和 Linux x64 安装包，并创建或更新对应标签的发布草稿。
+- 产物包括 Windows MSI/NSIS、macOS DMG，以及 Linux DEB/RPM/AppImage。
 
-附件 Windows MSI+NSIS macOS双架构DMG Linux DEB+RPM+AppImage
+## 发布约束
 
-陷阱 PNG图标必须RGBA非索引色/调色板 否则Linux/macOS generate_context报icon is not RGBA 草稿重跑覆盖同名附件 正式Release禁止覆盖 无代码签名/公证 系统显示未知发布者 Linux固定Ubuntu 22.04低glibc基线
+- 发布前会校验 `package.json`、`package-lock.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 中的版本一致。
+- 已正式发布的 Release 不会被工作流覆盖；草稿可重跑并更新附件，发布说明须在正式发布前人工确认。
+- ⚠️ 陷阱：应用 PNG 图标必须为 RGBA；使用索引色或调色板 PNG 会导致 Linux 或 macOS 打包失败。

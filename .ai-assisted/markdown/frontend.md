@@ -1,29 +1,29 @@
-前端结构
+# 前端
 
-入口 App.vue自绘标题栏+主体+底部状态栏 主体flex三栏布局 分隔条可拖拽
+## 入口与组件边界
 
-组件 Icon.vue内置SVG图标 AppDialog.vue通用弹窗(confirmDanger红色/loading不可关但可配置警示操作 禁止点空白关闭 仅按钮或ESC关) MonitorPanel.vue TerminalPanel.vue选项卡栏(指针自绘拖拽排序因WebView2 HTML5拖放不稳定/滚动溢出/右键菜单) TerminalExtensions.vue终端连接信息浮层 Terminal.vue封装xterm BottomPanel.vue(文件+传输选项卡) FileManager.vue TransferPanel.vue ConnectionManager.vue ConnectionEditor.vue ProxySettings.vue TunnelSettings.vue SettingsDialog.vue TextEditorWindow.vue(monaco-editor独立工作区) TitleBar.vue
+- `main.ts` 根据窗口参数加载 `App.vue` 或 `TextEditorWindow.vue`；两者各自创建 Vue 与 Pinia 应用。
+- `App.vue` 负责主窗口布局、应用初始化、窗口关闭协调和连接管理器入口。
+- `TerminalPanel.vue` 与 `Terminal.vue` 承载会话选项卡和 xterm；`BottomPanel.vue` 在文件管理与传输面板之间切换。
+- `ConnectionManager.vue`、`ConnectionEditor.vue`、`ProxySettings.vue` 和 `TunnelSettings.vue` 管理已保存连接及其扩展配置。
+- `TextEditorWindow.vue` 是单例独立工作区，使用 Monaco 编辑远端文件；`editorWindows.ts` 负责主窗口与编辑器窗口通信。
 
-状态 connections.ts持久化连接与分组文件夹(folders树形嵌套/upsert/remove/upsertFolder/removeFolderRecursive递归删/reorderItems维护同级order/moveItems防环/duplicateConnection同级复制/countFolderContents) sessions.ts活动会话(open/close/activate/move/reconnect/markDisconnected/markActivity)(⚠ ref数组push后须find取代理元素改 勿直接改原始对象) settings.ts持久化设置(tauri-plugin-store load的options需含defaults字段) monitor.ts按会话采集(收发无关选项卡) transfers.ts传输任务 App.vue onMounted初始化
+## 状态与调用边界
 
-工具 utils.ts(formatBytes/genId/joinPath/parentPath) api.ts封装所有invoke types.ts前后端类型 composables/useEscClose全局回调栈栈顶弹窗响应ESC(天然支持嵌套)所有模态弹窗统一禁点空白关仅按钮/ESC关 hasOpenModal供FileManager的ESC避让
+| 模块 | 职责 |
+| --- | --- |
+| `sessions.ts` | 活动 SSH 会话、选项卡状态和重连。 |
+| `connections.ts`、`proxies.ts` | 持久化连接、分组文件夹和共享代理。 |
+| `monitor.ts` | 按会话采集、缓存监控数据和网卡历史。 |
+| `transfers.ts` | 监听传输事件并维护任务快照。 |
+| `settings.ts` | 持久化终端和监控偏好。 |
 
-样式 styles.css全局CSS变量+scoped内联
+- `api.ts` 是所有 Tauri 调用的唯一封装入口，`types.ts` 是前端跨端类型入口。
+- `utils.ts` 放置路径、标识和展示格式等通用工具；组件间共享行为优先放入可复用模块而非复制。
 
-标题栏 decorations:false data-tauri-drag-region拖拽双击最大化 设置按钮置于金刚键左侧
+## 稳定约束
 
-选项卡 指针自绘拖拽排序(WebView2 HTML5拖放不稳定) 溢出横向滚动按钮 左侧状态指示(点/叹号) 右键关闭/重连 重连复用同一sessionId原地重开通道保留xterm历史(reconnecting集合+Terminal suppressClose双重抑制旧通道terminal://close误标掉线) 掉线/远端exit经terminal://close由store.markDisconnected置disconnected并停监控 窗口关闭时含连接中的会话弹确认后destroy
-
-终端 shallowRef防代理 allowProposedApi true(FitAddon/SearchAddon) Tokyo Night配色 背景不透明 右键菜单走原生剪贴板 粘贴统一走term.paste()而非直接写字节(xterm会把\r\n归一化为\r并按模式补括号粘贴标记 直写会让Windows剪贴板多行内容每行间多空行) 快捷键attachCustomKeyEventHandler(Alt+Insert有选区时复制到原生剪贴板并立即写回终端/F3打开或继续查找) 菜单不显示快捷键文字，统一通过悬停提示说明各项快捷键，Ctrl+Insert与Shift+Insert不拦截 clear通过scrollOnEraseInDisplay将当前屏推入回滚区并拦主屏ESC[3J保留完整历史) 输入Promise队列保序 resize独立同步 隐写时doFit跳过 App层放行终端Ctrl组合与F3/F5/F7 FileManager的F5在事件源自.xterm时跳过 拖入单文件onDragDropEvent上传至终端当前目录(requestCwd 仅激活选项卡 多文件/文件夹经path_is_dir拒绝 同名走transferUpload的existNames弹AppDialog确认覆盖) Vite生产build.target保持es2021规避@xterm/xterm二次压缩缺陷(xterm.js#5800)
-
-终端留白 ⚠两处约定改动前须确认：留白padding必须挂在.xterm自身不能放外层容器(选区mousedown绑在.xterm上 且xterm换算坐标会扣自身padding并把越界值钳到最近行列 故留白区按下仍能从行首框选；放外层则留白属容器不触发选区)；.xterm-viewport与.xterm-scrollable-element须置transparent(xterm.css给了固定纯黑底 会在留白处露出与终端底色不一致的黑边)。doFit保持纯fit不额外调整留白：fit按可用高度向下取整算行数，不足一行的余高留在底部，拖底栏时最后一行到底边的距离会在0~1行间跳动，此为已知取舍——曾先后试过"余高补顶部留白"与"多渲染一行+负margin上移"，前者顶部空白过大、后者在缓冲区不足一屏时(如刚建连只有一行提示符)会裁掉仅有的正文，均按实际使用体验回退
-
-字体 @fontsource/cascadia-mono自托管 终端栈Consolas>Cascadia Mono UI中文系统栈
-
-文件管理 左侧树+右侧列表 树聚焦后上下切换/左右与回车展开收起 列表表头排序/多选/框选/拖拽移动 右键菜单精简为编辑/重命名/新建/压缩解压/上传/下载/删除，键入快速定位两侧统一橙色命中态，列表按粘性表头下方的实际可视区域滚动定位 地址栏↑cd当前终端 ↓printf OSC标记读PWD后切文件路径 压缩/解压/批量删除加载弹窗以operationId请求中断并二次确认，迟到响应按ID隔离，中断后刷新真实目录且不承诺回滚 目录浏览状态按sessionId缓存(普通选项卡切换不请求SFTP/编辑与上传等外部变更标脏后切回刷新/终端断开保留最后目录但丢弃内容快照/选项卡关闭清目录记录/视图版本丢弃跨会话异步结果) 文本编辑使用单例自绘标题栏独立Tauri工作区窗口(复用TitleBar/入口按窗口类型加载/可拖拽缩放最小化/重复打开聚焦标签/最后标签关闭销毁/ESC不关闭窗口)，跨窗口打开与会话关闭经请求确认避免初始化竞态；TextEditorWindow以单个monaco-editor实例切换多文档模型，模型随标签释放并保留各自光标滚动位置，会话关闭只强制移除所属标签，支持只读自动检测(sudo恒可写 普通exec test -w)/1MB与二进制确认；底栏按标签保存反馈状态并保持至再次修改或重新保存，保存期间仅锁定对应文档并以按钮加载态反馈，超过10秒可请求中断；WebView原生右键菜单禁用且Monaco加载内置简体中文NLS，标签右键支持关闭/关闭其他/关闭右侧/关闭已保存/关闭全部；关闭单个脏标签统一提示，关闭多文件窗口按多文件→未保存两层确认
-
-监控面板 纯视图读monitor store 系统信息/CPU/内存/网卡图/磁盘/进程 未连骨架占位 采集出错底部提示 网卡历史按名切换 默认自动选网卡(物理优先 取历史累计流量最高者 有流量后自动锁定不再跳动 消失重新选 手动选后固定) 图双柱上传橙下载绿
-
-连接管理器 ConnectionManager弹窗 文件夹树形分组(多级嵌套 folder/conn统一扁平行visibleRows 仅展开文件夹向下递归 同级按order显示/旧数据文件夹优先名称兜底)+主机/端口/用户名列 名称ellipsis+title悬停 行内单选 方向键导航 左右展开收起 回车连接或展开文件夹 双击文件夹展开/连接则连接 指针拖拽支持同父级前后排序写order与拖入文件夹/空白根目录移动 搜索态扁平化禁拖拽) 右键菜单连接/连接显示编辑/文件夹显示重命名/复制/悬停新建›[连接文件夹]/删除(新建位置按右键目标推断 复制仅连接 删除文件夹递归确认) ESC逐级关菜单→清选择→关窗 弹窗复用AppDialog 新建连接经editorParentId落入目标文件夹 后台FileManager经hasOpenModal避让方向键 ConnectionEditor左侧分组导航(连接配置含备注 代理/隧道/更多功能) 私钥路径支持手输或原生文件选择回填 代理配置页维护共享代理列表(搜索/新增/编辑/删除/上下移动排序/单选直连或代理 删除时清理连接引用) 隧道页维护当前连接独立隧道列表(本地拨出/远程传入/动态SOCKS4/5/动态HTTP 新增默认未启用 表格勾选启用且行点击仅选中 上下移动排序 localOnly控制监听端仅本机) 连接持久化proxyId/备注/tunnels 会话建连时解析最新代理快照并按会话配置尝试启动启用隧道，失败不阻断SSH，条目化结果交终端连接信息浮层展示
-
-终端连接信息 TerminalExtensions.vue在会话使用代理或隧道且status为connected时覆盖终端区域(inset:0 pointer-events:none 仅按钮与面板可交互 不影响xterm选中输入 exit或掉线后随连接隐藏) 按钮right:30px避开终端右侧滚动条(留白12+滚动条14)否则压在滚动条上点不到 默认右上角 指针自绘拖拽仅取垂直位移(水平恒贴右侧 位移<4px判为点击切换面板) 偏移存Session.extensionOffsetY按会话独立、切换选项卡与重连均保留 ResizeObserver在区域变小时回夹 面板贴按钮左侧展开并随其浮动、触底上移 条目取ConnectResult.extensions(代理在前+按配置顺序的已启用隧道 各带kind/name/category/detail/ok/error 未启用隧道不列出) 存在ok=false条目时按钮转警示色并闪烁，面板内切换extensionBlinkMuted关闭/恢复闪烁(仅本次连接 重连重置) 点浮层外或ESC关面板
+- 所有模态界面的 Escape 行为通过 `composables/useEscClose.ts` 协调，新增模态界面必须接入该栈。
+- 文件管理按会话保留浏览状态；异步结果必须确认仍属于当前会话与视图，外部文件变更后应标记并在切回时刷新。
+- 关闭 SSH 会话时必须同步关闭编辑器工作区中属于该会话的文档；编辑器中的同一会话和路径只应对应一个文档。
+- ⚠️ 陷阱：xterm 的搜索装饰依赖 proposed API，初始化终端时必须保持 `allowProposedApi`；Vite 构建目标不得低于 `es2021`，否则 xterm 生产构建会异常。
