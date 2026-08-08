@@ -3,6 +3,7 @@
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, State};
 
+use crate::ssh::host_keys::HostKeyStore;
 use crate::ssh::manager::SessionManager;
 use crate::ssh::monitor::{self, MonitorData};
 use crate::ssh::session::{wait_for_cancellation, OPERATION_CANCELLED_MESSAGE};
@@ -10,7 +11,7 @@ use crate::ssh::sftp::{self, RemoveEntryArg};
 use crate::ssh::transfer::{
     self, RemoteItemArg, TransferCreateResult, TransferManager, TransferTaskDto,
 };
-use crate::ssh::types::{ConnectResult, ConnectionConfig, FileEntry};
+use crate::ssh::types::{ConnectOutcome, ConnectionConfig, FileEntry, HostKeyApproval};
 
 /// 统一将内部错误转为字符串返回给前端
 type CmdResult<T> = Result<T, String>;
@@ -19,13 +20,19 @@ fn map_err<T>(r: anyhow::Result<T>) -> CmdResult<T> {
     r.map_err(|e| e.to_string())
 }
 
-/// 建立 SSH 连接，返回会话标识与隧道启动警告
+/// 建立 SSH 连接，未知或变化的主机密钥会先返回确认信息
 #[tauri::command]
 pub async fn ssh_connect(
     manager: State<'_, SessionManager>,
+    host_keys: State<'_, HostKeyStore>,
     config: ConnectionConfig,
-) -> CmdResult<ConnectResult> {
-    map_err(manager.connect(&config).await)
+    host_key_approval: Option<HostKeyApproval>,
+) -> CmdResult<ConnectOutcome> {
+    map_err(
+        manager
+            .connect(&config, &host_keys, host_key_approval.as_ref())
+            .await,
+    )
 }
 
 /// 断开并释放会话，同时清理该会话的全部传输任务

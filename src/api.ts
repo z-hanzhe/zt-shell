@@ -5,19 +5,21 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   ConnectionConfig,
-  ConnectResult,
+  ConnectOutcome,
   FileEntry,
+  HostKeyApproval,
   MonitorData,
   ProxyConfig,
   TransferCreateResult,
   TransferTask,
 } from "./types";
 
-/** 建立 SSH 连接，返回会话标识与隧道启动警告 */
+/** 建立 SSH 连接，未知或变化的主机密钥会先返回确认信息 */
 export function sshConnect(
-  config: ConnectionConfig & { proxy?: ProxyConfig }
-): Promise<ConnectResult> {
-  return invoke("ssh_connect", { config });
+  config: ConnectionConfig & { proxy?: ProxyConfig },
+  hostKeyApproval?: HostKeyApproval
+): Promise<ConnectOutcome> {
+  return invoke("ssh_connect", { config, hostKeyApproval: hostKeyApproval ?? null });
 }
 
 /** 断开会话 */

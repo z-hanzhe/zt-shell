@@ -1,5 +1,6 @@
 //! SSH 会话：建立连接、认证、终端通道读写、隧道通道与窗口变更
 
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,9 +13,10 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, watch, RwLock};
 use tokio::time::timeout;
 
+use super::host_keys::{HostKeyStore, HostKeyVerification};
 use super::proxy::connect_through_proxy;
 use super::tunnel::{forward_remote_tunnel_channel, RemoteTunnelRegistry, RemoteTunnelTarget};
-use super::types::{AuthType, ConnectionConfig};
+use super::types::{AuthType, ConnectionConfig, HostKeyApproval, HostKeyChallenge};
 
 /// 可中断文件操作主动结束时返回的统一错误文案
 pub const OPERATION_CANCELLED_MESSAGE: &str = "文件操作已中断";
@@ -22,21 +24,65 @@ pub const OPERATION_CANCELLED_MESSAGE: &str = "文件操作已中断";
 /// SSH 转发通道创建的最长等待时间
 const SSH_CHANNEL_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// russh 客户端事件回调处理器。终端数据通过主动 wait 循环读取，此处仅需接受服务端公钥
+/// russh 客户端事件回调处理器
 pub(crate) struct ClientHandler {
     /// 远程传入隧道映射，用于处理服务端打开的 forwarded-tcpip 通道
     remote_tunnels: RemoteTunnelRegistry,
+    /// 建连目标主机
+    host: String,
+    /// 建连目标端口
+    port: u16,
+    /// 应用私有的可信主机密钥存储
+    host_keys: HostKeyStore,
+    /// 用户对本次完整公钥的授权
+    host_key_approval: Option<HostKeyApproval>,
+}
+
+/// 建连在认证前等待用户确认主机密钥
+#[derive(Debug)]
+struct HostKeyConfirmationError {
+    challenge: HostKeyChallenge,
+}
+
+impl fmt::Display for HostKeyConfirmationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "需要确认服务器主机密钥")
+    }
+}
+
+impl std::error::Error for HostKeyConfirmationError {}
+
+/// SSH 传输层建连结果
+pub enum SessionConnectOutcome {
+    /// 主机密钥与用户认证均已通过
+    Connected(SshSession),
+    /// 已停止握手，等待用户确认主机密钥
+    HostKeyConfirmationRequired(HostKeyChallenge),
 }
 
 impl client::Handler for ClientHandler {
-    type Error = russh::Error;
+    type Error = anyhow::Error;
 
-    /// 校验服务端公钥。当前实现信任所有服务端（后续可扩展 known_hosts 校验）
+    /// 校验服务端公钥，未知或变化的密钥必须先交由前端确认
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        match self
+            .host_keys
+            .verify(
+                &self.host,
+                self.port,
+                server_public_key,
+                self.host_key_approval.as_ref(),
+            )
+            .await?
+        {
+            HostKeyVerification::Trusted => Ok(true),
+            HostKeyVerification::ConfirmationRequired(challenge) => {
+                Err(HostKeyConfirmationError { challenge }.into())
+            }
+        }
     }
 
     /// 处理远程传入隧道的新连接
@@ -83,22 +129,40 @@ pub struct SshSession {
 
 impl SshSession {
     /// 建立到远端的 SSH 连接并完成认证
-    pub async fn connect(config: &ConnectionConfig) -> Result<Self> {
+    pub async fn connect(
+        config: &ConnectionConfig,
+        host_keys: HostKeyStore,
+        host_key_approval: Option<&HostKeyApproval>,
+    ) -> Result<SessionConnectOutcome> {
         let ssh_config = Arc::new(client::Config::default());
         let remote_tunnels = RemoteTunnelRegistry::default();
         let handler = ClientHandler {
             remote_tunnels: remote_tunnels.clone(),
+            host: config.host.clone(),
+            port: config.port,
+            host_keys,
+            host_key_approval: host_key_approval.cloned(),
         };
-        let mut handle = if let Some(proxy) = &config.proxy {
+        let (connection_result, connection_error_prefix) = if let Some(proxy) = &config.proxy {
             let stream = connect_through_proxy(proxy, &config.host, config.port).await?;
-            client::connect_stream(ssh_config, stream, handler)
-                .await
-                .map_err(|e| anyhow!("通过代理建立 SSH 连接失败：{}", e))?
+            (
+                client::connect_stream(ssh_config, stream, handler).await,
+                "通过代理建立 SSH 连接失败",
+            )
         } else {
             let addr = format!("{}:{}", config.host, config.port);
-            client::connect(ssh_config, addr, handler)
-                .await
-                .map_err(|e| anyhow!("连接失败：{}", e))?
+            (client::connect(ssh_config, addr, handler).await, "连接失败")
+        };
+        let mut handle = match connection_result {
+            Ok(handle) => handle,
+            Err(error) => {
+                if let Some(confirmation) = error.downcast_ref::<HostKeyConfirmationError>() {
+                    return Ok(SessionConnectOutcome::HostKeyConfirmationRequired(
+                        confirmation.challenge.clone(),
+                    ));
+                }
+                return Err(anyhow!("{}：{}", connection_error_prefix, error));
+            }
         };
 
         // 根据认证方式完成认证
@@ -133,10 +197,10 @@ impl SshSession {
             return Err(anyhow!("认证失败，请检查用户名与凭据"));
         }
 
-        Ok(Self {
+        Ok(SessionConnectOutcome::Connected(Self {
             handle: RwLock::new(handle),
             remote_tunnels,
-        })
+        }))
     }
 
     /// 打开 direct-tcpip 通道，用于本地拨出与动态 SOCKS 隧道
@@ -231,7 +295,7 @@ impl SshSession {
         on_close: F,
     ) -> Result<mpsc::UnboundedSender<TerminalCommand>>
     where
-        F: FnOnce() + Send + 'static,
+        F: FnOnce() -> bool + Send + 'static,
     {
         let channel = self
             .handle
@@ -269,8 +333,9 @@ impl SshSession {
                 }
             }
             // 终端是会话核心，终端通道结束后先释放同代 SSH/SFTP 资源，再通知前端更新状态
-            on_close();
-            let _ = app.emit(&close_event, ());
+            if on_close() {
+                let _ = app.emit(&close_event, ());
+            }
         });
 
         // 写任务：处理用户输入与控制指令
@@ -470,4 +535,114 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+#[cfg(test)]
+mod tests {
+    use russh::server::{self, Auth};
+    use uuid::Uuid;
+
+    use super::*;
+
+    /// 测试 SSH 服务使用的 Ed25519 私钥，口令为 blabla
+    const TEST_SERVER_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jYmMAAAAGYmNyeXB0AAAAGAAAABDLGyfA39
+J2FcJygtYqi5ISAAAAEAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIN+Wjn4+4Fcvl2Jl
+KpggT+wCRxpSvtqqpVrQrKN1/A22AAAAkOHDLnYZvYS6H9Q3S3Nk4ri3R2jAZlQlBbUos5
+FkHpYgNw65KCWCTXtP7ye2czMC3zjn2r98pJLobsLYQgRiHIv/CUdAdsqbvMPECB+wl/UQ
+e+JpiSq66Z6GIt0801skPh20jxOO3F52SoX1IeO5D5PXfZrfSZlw6S8c7bwyp2FHxDewRx
+7/wNsnDM0T7nLv/Q==
+-----END OPENSSH PRIVATE KEY-----";
+
+    /// 接受测试密码认证的本地 SSH 服务处理器
+    struct TestServer;
+
+    impl server::Handler for TestServer {
+        type Error = russh::Error;
+
+        /// 测试服务接受任意密码，验证客户端能进入认证阶段
+        async fn auth_password(
+            &mut self,
+            _user: &str,
+            _password: &str,
+        ) -> Result<Auth, Self::Error> {
+            Ok(Auth::Accept)
+        }
+    }
+
+    /// 构造本地集成测试连接配置
+    fn test_connection(port: u16) -> ConnectionConfig {
+        ConnectionConfig {
+            id: Uuid::new_v4().to_string(),
+            name: "本地主机密钥测试".to_string(),
+            host: "127.0.0.1".to_string(),
+            port,
+            username: "tester".to_string(),
+            auth_type: AuthType::Password,
+            password: Some("password".to_string()),
+            private_key_path: None,
+            passphrase: None,
+            proxy: None,
+            remark: None,
+            tunnels: Vec::new(),
+        }
+    }
+
+    /// 真实 SSH 握手必须先返回确认，精确授权同一公钥后才能完成认证
+    #[tokio::test]
+    async fn requires_confirmation_before_authentication() {
+        let mut server_config = server::Config::default();
+        server_config.keys.push(
+            russh::keys::decode_secret_key(TEST_SERVER_KEY, Some("blabla"))
+                .expect("测试服务私钥应加载成功"),
+        );
+        let server_config = Arc::new(server_config);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("测试服务应监听成功");
+        let port = listener
+            .local_addr()
+            .expect("测试服务应取得监听地址")
+            .port();
+        let server_task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.expect("测试连接应接入");
+                let config = server_config.clone();
+                tokio::spawn(async move {
+                    let _ = server::run_stream(config, stream, TestServer).await;
+                });
+            }
+        });
+
+        let directory =
+            std::env::temp_dir().join(format!("zt-shell-session-host-key-{}", Uuid::new_v4()));
+        let store = HostKeyStore::new(directory.join("known_hosts.json"));
+        let config = test_connection(port);
+        let first = tokio::time::timeout(
+            Duration::from_secs(5),
+            SshSession::connect(&config, store.clone(), None),
+        )
+        .await
+        .expect("首次握手不应超时")
+        .expect("首次握手应返回确认结果");
+        let SessionConnectOutcome::HostKeyConfirmationRequired(challenge) = first else {
+            panic!("首次握手不得跳过主机密钥确认");
+        };
+
+        let approval = HostKeyApproval {
+            public_key: challenge.public_key,
+            replace_existing: false,
+        };
+        let second = tokio::time::timeout(
+            Duration::from_secs(5),
+            SshSession::connect(&config, store, Some(&approval)),
+        )
+        .await
+        .expect("授权后握手不应超时")
+        .expect("授权后握手与认证应成功");
+        assert!(matches!(second, SessionConnectOutcome::Connected(_)));
+
+        server_task.await.expect("测试服务任务应正常结束");
+        let _ = tokio::fs::remove_dir_all(directory).await;
+    }
 }

@@ -7,7 +7,13 @@
 
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import type { ConnectionConfig, ExtensionEntry } from "../types";
+import type {
+  ConnectionConfig,
+  ConnectOutcome,
+  ExtensionEntry,
+  HostKeyApproval,
+  HostKeyChallenge,
+} from "../types";
 import { sshConnect, sshDisconnect } from "../api";
 import { genId } from "../utils";
 import { useMonitorStore } from "./monitor";
@@ -16,9 +22,15 @@ import { closeTextEditorWindowsForSession } from "../editorWindows";
 
 /**
  * 会话连接状态：
- * connecting 连接中 / connected 已连接 / error 首次连接失败 / disconnected 连接后掉线或退出
+ * connecting 连接中 / verifying 等待主机密钥确认 / connected 已连接 /
+ * error 首次连接失败 / disconnected 连接后掉线或退出
  */
-export type SessionStatus = "connecting" | "connected" | "error" | "disconnected";
+export type SessionStatus =
+  | "connecting"
+  | "verifying"
+  | "connected"
+  | "error"
+  | "disconnected";
 
 /** 一个活动会话 */
 export interface Session {
@@ -40,6 +52,10 @@ export interface Session {
   extensionOffsetY?: number;
   /** 本次连接是否已手动关闭异常闪烁，重连后重置 */
   extensionBlinkMuted?: boolean;
+  /** 等待用户确认的服务端主机密钥 */
+  hostKeyChallenge?: HostKeyChallenge;
+  /** 主机密钥确认通过后是否需要在现有终端中重开通道 */
+  reopenAfterHostKeyApproval?: boolean;
 }
 
 /** 按连接配置解析当前最新的共享代理快照 */
@@ -71,6 +87,64 @@ export const useSessionsStore = defineStore("sessions", () => {
     }
   }
 
+  /** 按稳定标识取得当前未关闭的响应式会话对象 */
+  function currentSession(session: Session): Session | undefined {
+    return sessions.value.find((item) => item.id === session.id);
+  }
+
+  /** 应用后端建连结果，返回是否需要在已有终端中重开通道 */
+  async function applyConnectOutcome(
+    session: Session,
+    outcome: ConnectOutcome,
+    reopenInPlace: boolean
+  ): Promise<boolean> {
+    const current = currentSession(session);
+    if (!current) {
+      // 连接期间选项卡已关闭时，清理由迟到结果建立的后端会话
+      if (outcome.status === "connected") {
+        try {
+          await sshDisconnect(session.id);
+        } catch {
+          // 会话可能已由关闭动作清理
+        }
+      }
+      return false;
+    }
+
+    if (outcome.status === "hostKeyConfirmationRequired") {
+      current.hostKeyChallenge = outcome.challenge;
+      current.reopenAfterHostKeyApproval = reopenInPlace;
+      setStatus(current.id, "verifying");
+      return false;
+    }
+
+    current.hostKeyChallenge = undefined;
+    current.reopenAfterHostKeyApproval = false;
+    current.extensions = outcome.result.extensions;
+    setStatus(current.id, "connected");
+    current.activity = false;
+    // 连接成功后启动持续监控，与激活的选项卡无关
+    useMonitorStore().start(current.id);
+    return reopenInPlace;
+  }
+
+  /** 发起一次建连，并统一处理已连接或等待主机密钥确认两类结果 */
+  async function connectSession(
+    session: Session,
+    approval?: HostKeyApproval,
+    reopenInPlace = false
+  ): Promise<boolean> {
+    const outcome = await sshConnect(
+      {
+        ...session.config,
+        id: session.id,
+        proxy: resolveProxy(session.config),
+      },
+      approval
+    );
+    return applyConnectOutcome(session, outcome, reopenInPlace);
+  }
+
   /** 依据连接配置打开新会话并发起连接 */
   async function open(config: ConnectionConfig) {
     const id = genId();
@@ -88,14 +162,52 @@ export const useSessionsStore = defineStore("sessions", () => {
 
     try {
       // 后端以该会话 id 建立连接，前端与后端共用同一标识
-      const result = await sshConnect({ ...config, id, proxy: resolveProxy(config) });
-      session.extensions = result.extensions;
-      setStatus(id, "connected");
-      // 连接成功后启动持续监控，与激活的选项卡无关
-      useMonitorStore().start(id);
+      await connectSession(session);
     } catch (e) {
-      setStatus(id, "error", String(e));
+      if (currentSession(session)) setStatus(id, "error", String(e));
     }
+  }
+
+  /** 信任当前展示的主机密钥，并使用完整公钥约束下一次握手 */
+  async function approveHostKey(id: string): Promise<boolean> {
+    const session = sessions.value.find((item) => item.id === id);
+    const challenge = session?.hostKeyChallenge;
+    if (!session || !challenge) return false;
+    const reopenInPlace = session.reopenAfterHostKeyApproval === true;
+    let waitForTerminalReopen = false;
+    try {
+      waitForTerminalReopen = await connectSession(
+        session,
+        {
+          publicKey: challenge.publicKey,
+          replaceExisting: challenge.kind === "changed",
+        },
+        reopenInPlace
+      );
+      return waitForTerminalReopen;
+    } catch (error) {
+      const current = currentSession(session);
+      if (current) {
+        current.hostKeyChallenge = undefined;
+        current.reopenAfterHostKeyApproval = false;
+        setStatus(id, "error", String(error));
+      }
+      return false;
+    } finally {
+      if (!waitForTerminalReopen && session.status !== "verifying") {
+        reconnecting.delete(id);
+      }
+    }
+  }
+
+  /** 取消主机密钥确认并终止本次连接 */
+  function rejectHostKey(id: string) {
+    const session = sessions.value.find((item) => item.id === id);
+    if (!session?.hostKeyChallenge) return;
+    session.hostKeyChallenge = undefined;
+    session.reopenAfterHostKeyApproval = false;
+    reconnecting.delete(id);
+    setStatus(id, "error", "已取消连接：未信任服务器主机密钥");
   }
 
   /** 关闭并断开指定会话 */
@@ -108,6 +220,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     // 停止该会话监控
     useMonitorStore().stop(id);
     const [removed] = sessions.value.splice(idx, 1);
+    reconnecting.delete(id);
     try {
       await sshDisconnect(removed.id);
     } catch {
@@ -146,13 +259,15 @@ export const useSessionsStore = defineStore("sessions", () => {
    */
   async function reconnect(id: string): Promise<boolean> {
     const s = sessions.value.find((x) => x.id === id);
-    if (!s) return false;
+    if (!s || reconnecting.has(id)) return false;
     // connected/disconnected 时终端组件仍挂载，可原地重开通道保留历史
     const hadTerminal = s.status === "connected" || s.status === "disconnected";
     reconnecting.add(id);
     // 重连视为新一次连接，扩展条目与闪烁抑制一并重置，拖拽位置保留
     s.extensions = [];
     s.extensionBlinkMuted = false;
+    s.hostKeyChallenge = undefined;
+    s.reopenAfterHostKeyApproval = false;
     useMonitorStore().stop(id);
     // 全新连接（首次失败或连接中）先置连接中以显示进度并触发终端挂载
     if (!hadTerminal) setStatus(id, "connecting");
@@ -161,19 +276,23 @@ export const useSessionsStore = defineStore("sessions", () => {
     } catch {
       // 旧连接可能已断开，忽略
     }
+    let waitForTerminalReopen = false;
     try {
-      const result = await sshConnect({ ...s.config, id, proxy: resolveProxy(s.config) });
-      s.extensions = result.extensions;
-      setStatus(id, "connected");
-      s.activity = false;
-      useMonitorStore().start(id);
-      return hadTerminal;
+      waitForTerminalReopen = await connectSession(s, undefined, hadTerminal);
+      return waitForTerminalReopen;
     } catch (e) {
-      setStatus(id, "error", String(e));
+      if (currentSession(s)) setStatus(id, "error", String(e));
       return false;
     } finally {
-      reconnecting.delete(id);
+      if (!waitForTerminalReopen && s.status !== "verifying") {
+        reconnecting.delete(id);
+      }
     }
+  }
+
+  /** 终端通道完成重开后结束对应会话的重连保护 */
+  function finishReconnect(id: string) {
+    reconnecting.delete(id);
   }
 
   /**
@@ -204,6 +323,9 @@ export const useSessionsStore = defineStore("sessions", () => {
     activate,
     moveToIndex,
     reconnect,
+    finishReconnect,
+    approveHostKey,
+    rejectHostKey,
     markDisconnected,
     markActivity,
   };

@@ -99,6 +99,40 @@ export interface ConnectResult {
   extensions: ExtensionEntry[];
 }
 
+/** 主机密钥确认场景 */
+export type HostKeyConfirmationKind = "unknown" | "changed";
+
+/** 等待用户确认的服务端主机密钥 */
+export interface HostKeyChallenge {
+  /** 首次连接或已有密钥发生变化 */
+  kind: HostKeyConfirmationKind;
+  /** 建连使用的目标主机 */
+  host: string;
+  /** 建连使用的目标端口 */
+  port: number;
+  /** 服务端本次提供的密钥算法 */
+  algorithm: string;
+  /** 服务端本次提供的 SHA-256 指纹 */
+  fingerprint: string;
+  /** 已保存密钥的 SHA-256 指纹，首次连接时为空 */
+  knownFingerprint: string | null;
+  /** 完整服务端公钥，仅用于确认后的二次握手精确匹配 */
+  publicKey: string;
+}
+
+/** 用户对一次主机密钥确认的授权 */
+export interface HostKeyApproval {
+  /** 用户确认时看到的完整服务端公钥 */
+  publicKey: string;
+  /** 是否允许替换当前主机与端口的已有可信密钥 */
+  replaceExisting: boolean;
+}
+
+/** SSH 建连命令结果 */
+export type ConnectOutcome =
+  | { status: "connected"; result: ConnectResult }
+  | { status: "hostKeyConfirmationRequired"; challenge: HostKeyChallenge };
+
 /** 连接分组文件夹（支持多级嵌套） */
 export interface ConnectionFolder {
   /** 文件夹唯一标识 */

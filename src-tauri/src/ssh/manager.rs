@@ -1,6 +1,7 @@
 //! 会话管理器：集中管理所有活动 SSH 会话、终端通道与 SFTP 会话
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use dashmap::mapref::entry::Entry;
@@ -10,12 +11,17 @@ use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Manager};
 use tokio::sync::{mpsc::UnboundedSender, watch, Mutex};
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
-use super::session::{SshSession, TerminalCommand};
-use super::transfer::TransferManager;
+use super::host_keys::HostKeyStore;
 use super::proxy;
+use super::session::{SessionConnectOutcome, SshSession, TerminalCommand};
+use super::transfer::TransferManager;
 use super::tunnel;
-use super::types::{ConnectResult, ConnectionConfig};
+use super::types::{ConnectOutcome, ConnectResult, ConnectionConfig, HostKeyApproval};
+
+/// TCP、代理、SSH 握手与认证的整体等待上限
+const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 单个会话持有的运行时资源
 struct SessionEntry {
@@ -89,10 +95,26 @@ impl SessionManager {
         }
     }
 
-    /// 建立新会话并纳入管理，返回会话标识与本次连接的扩展功能条目
-    pub async fn connect(&self, config: &ConnectionConfig) -> Result<ConnectResult> {
+    /// 建立新会话并纳入管理，未知或变化的主机密钥先返回确认信息
+    pub async fn connect(
+        &self,
+        config: &ConnectionConfig,
+        host_keys: &HostKeyStore,
+        host_key_approval: Option<&HostKeyApproval>,
+    ) -> Result<ConnectOutcome> {
         let prepared_tunnels = tunnel::prepare_listeners(&config.tunnels).await;
-        let session = Arc::new(SshSession::connect(config).await?);
+        let connect_result = timeout(
+            SSH_CONNECT_TIMEOUT,
+            SshSession::connect(config, host_keys.clone(), host_key_approval),
+        )
+        .await
+        .map_err(|_| anyhow!("SSH 连接超时，请检查主机地址、网络或代理设置"))?;
+        let session = match connect_result? {
+            SessionConnectOutcome::Connected(session) => Arc::new(session),
+            SessionConnectOutcome::HostKeyConfirmationRequired(challenge) => {
+                return Ok(ConnectOutcome::HostKeyConfirmationRequired { challenge });
+            }
+        };
         let (tunnel_cancel_tx, tunnel_cancel_rx) = watch::channel(false);
         let tunnel_result = tunnel::start_tunnels(
             session.clone(),
@@ -118,9 +140,11 @@ impl SessionManager {
             extensions.push(proxy::proxy_entry(proxy));
         }
         extensions.extend(tunnel_result.entries);
-        Ok(ConnectResult {
-            session_id: config.id.clone(),
-            extensions,
+        Ok(ConnectOutcome::Connected {
+            result: ConnectResult {
+                session_id: config.id.clone(),
+                extensions,
+            },
         })
     }
 
@@ -179,11 +203,14 @@ impl SessionManager {
                 on_data,
                 move || {
                     let manager = close_app.state::<SessionManager>();
-                    if manager.disconnect_if_current(&close_session_id, &close_entry) {
+                    let disconnected =
+                        manager.disconnect_if_current(&close_session_id, &close_entry);
+                    if disconnected {
                         close_app
                             .state::<TransferManager>()
                             .remove_session(&close_app, &close_session_id);
                     }
+                    disconnected
                 },
             )
             .await?;

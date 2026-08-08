@@ -1,6 +1,7 @@
 mod commands;
 mod ssh;
 
+use ssh::host_keys::HostKeyStore;
 use ssh::manager::SessionManager;
 use ssh::transfer::TransferManager;
 use tauri::Manager;
@@ -24,6 +25,8 @@ pub fn run() {
         .manage(SessionManager::default())
         .manage(TransferManager::default())
         .setup(|app| {
+            let known_hosts_path = app.path().app_data_dir()?.join("known_hosts.json");
+            app.manage(HostKeyStore::new(known_hosts_path));
             // 启动传输进度节流推送循环
             ssh::transfer::start_progress_loop(app.handle().clone());
             Ok(())

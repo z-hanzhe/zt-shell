@@ -167,6 +167,62 @@ pub struct ConnectResult {
     pub extensions: Vec<ExtensionEntry>,
 }
 
+/// 主机密钥确认场景
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum HostKeyConfirmationKind {
+    /// 当前主机与端口尚无可信密钥记录
+    Unknown,
+    /// 服务端密钥与已有可信记录不一致
+    Changed,
+}
+
+/// 等待用户确认的服务端主机密钥
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostKeyChallenge {
+    /// 确认场景
+    pub kind: HostKeyConfirmationKind,
+    /// 建连使用的目标主机
+    pub host: String,
+    /// 建连使用的目标端口
+    pub port: u16,
+    /// 服务端本次提供的密钥算法
+    pub algorithm: String,
+    /// 服务端本次提供的 SHA-256 指纹
+    pub fingerprint: String,
+    /// 已保存密钥的 SHA-256 指纹，首次连接时为空
+    pub known_fingerprint: Option<String>,
+    /// 服务端公钥的 OpenSSH 表达，仅用于确认后精确匹配本次密钥
+    pub public_key: String,
+}
+
+/// 用户对一次主机密钥确认的授权
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostKeyApproval {
+    /// 用户确认时看到的完整服务端公钥
+    pub public_key: String,
+    /// 是否允许替换当前主机与端口的已有可信密钥
+    pub replace_existing: bool,
+}
+
+/// SSH 建连命令结果
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum ConnectOutcome {
+    /// 主机密钥校验与用户认证均已通过
+    Connected {
+        /// 已建立的会话信息
+        result: ConnectResult,
+    },
+    /// 建连已在认证前停止，等待用户确认服务端主机密钥
+    HostKeyConfirmationRequired {
+        /// 需要展示给用户的主机密钥信息
+        challenge: HostKeyChallenge,
+    },
+}
+
 /// 一条 SFTP 文件条目
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -189,4 +245,48 @@ pub struct FileEntry {
     pub owner: String,
     /// 属组
     pub group: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::*;
+
+    /// 主机密钥确认结果必须保持前端约定的驼峰字段与状态标签
+    #[test]
+    fn serializes_host_key_confirmation_outcome() {
+        let outcome = ConnectOutcome::HostKeyConfirmationRequired {
+            challenge: HostKeyChallenge {
+                kind: HostKeyConfirmationKind::Unknown,
+                host: "server".to_string(),
+                port: 22,
+                algorithm: "ssh-ed25519".to_string(),
+                fingerprint: "SHA256:new".to_string(),
+                known_fingerprint: None,
+                public_key: "ssh-ed25519 key".to_string(),
+            },
+        };
+        let value = serde_json::to_value(outcome).expect("建连结果应序列化成功");
+
+        assert_eq!(
+            value.get("status").and_then(Value::as_str),
+            Some("hostKeyConfirmationRequired")
+        );
+        assert_eq!(
+            value
+                .get("challenge")
+                .and_then(|challenge| challenge.get("kind"))
+                .and_then(Value::as_str),
+            Some("unknown")
+        );
+        assert!(value
+            .get("challenge")
+            .and_then(|challenge| challenge.get("knownFingerprint"))
+            .is_some_and(Value::is_null));
+        assert!(value
+            .get("challenge")
+            .and_then(|challenge| challenge.get("publicKey"))
+            .is_some());
+    }
 }

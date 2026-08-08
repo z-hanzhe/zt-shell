@@ -120,6 +120,11 @@ function requestActiveTerminalCwd() {
   return termRefs.value[store.activeId]?.requestCwd();
 }
 
+/** 在指定会话现有终端中重开通道，保留断线前的历史输出 */
+function reopenSession(id: string) {
+  return termRefs.value[id]?.reopen();
+}
+
 // 切换激活会话后，等 DOM 显示再重新适配终端尺寸并刷新视口
 watch(
   () => store.activeId,
@@ -257,7 +262,7 @@ function closeMenu() {
 async function closeTab(id: string) {
   const s = store.sessions.find((x) => x.id === id);
   if (!s) return;
-  if (s.status === "connecting" || s.status === "connected") {
+  if (s.status === "connecting" || s.status === "verifying" || s.status === "connected") {
     const ok = await showConfirm({
       title: "关闭会话",
       message: `会话 [ ${s.name} ] 仍处于连接中，确定要关闭吗？`,
@@ -274,7 +279,7 @@ async function closeOthers(id: string) {
   const others = store.sessions.filter((s) => s.id !== id);
   if (others.length === 0) return;
   const activeCount = others.filter(
-    (s) => s.status === "connecting" || s.status === "connected"
+    (s) => s.status === "connecting" || s.status === "verifying" || s.status === "connected"
   ).length;
   const ok = await showConfirm({
     title: "关闭其他会话",
@@ -292,7 +297,7 @@ async function closeOthers(id: string) {
 async function closeAll() {
   if (store.sessions.length === 0) return;
   const activeCount = store.sessions.filter(
-    (s) => s.status === "connecting" || s.status === "connected"
+    (s) => s.status === "connecting" || s.status === "verifying" || s.status === "connected"
   ).length;
   const ok = await showConfirm({
     title: "关闭全部会话",
@@ -309,8 +314,12 @@ async function closeAll() {
 /** 重连指定会话：复用同一会话原地重连以保留历史输出 */
 async function reconnect(id: string) {
   const reopenInPlace = await store.reconnect(id);
-  if (reopenInPlace) {
-    nextTick(() => termRefs.value[id]?.reopen());
+  if (!reopenInPlace) return;
+  try {
+    await nextTick();
+    await termRefs.value[id]?.reopen();
+  } finally {
+    store.finishReconnect(id);
   }
 }
 
@@ -339,6 +348,7 @@ async function onMenuAction(action: "close" | "closeOthers" | "closeAll" | "reco
 function statusTitle(status: string): string {
   if (status === "connected") return "已连接";
   if (status === "connecting") return "连接中";
+  if (status === "verifying") return "等待确认服务器身份";
   if (status === "error") return "连接失败";
   return "已断开";
 }
@@ -367,7 +377,7 @@ function onGlobalPointerDown(e: PointerEvent) {
  */
 function hasLiveSessions(): boolean {
   return store.sessions.some(
-    (s) => s.status === "connecting" || s.status === "connected"
+    (s) => s.status === "connecting" || s.status === "verifying" || s.status === "connected"
   );
 }
 
@@ -395,7 +405,7 @@ onBeforeUnmount(() => {
   tabsResizeObserver?.disconnect();
 });
 
-defineExpose({ cdActiveTerminal, requestActiveTerminalCwd, hasLiveSessions });
+defineExpose({ cdActiveTerminal, requestActiveTerminalCwd, reopenSession, hasLiveSessions });
 </script>
 
 <template>
@@ -473,7 +483,7 @@ defineExpose({ cdActiveTerminal, requestActiveTerminalCwd, hasLiveSessions });
       <div class="tcm-item" @click="onMenuAction('closeAll')">关闭全部</div>
       <div class="tcm-sep"></div>
       <div
-        :class="['tcm-item', { disabled: !menuSession || menuSession.status === 'connecting' }]"
+        :class="['tcm-item', { disabled: !menuSession || menuSession.status === 'connecting' || menuSession.status === 'verifying' }]"
         @click="onMenuAction('reconnect')"
       >
         重连
@@ -648,6 +658,9 @@ defineExpose({ cdActiveTerminal, requestActiveTerminalCwd, hasLiveSessions });
   background: #9aa2aa;
 }
 .ind-dot.connecting {
+  background: var(--warning);
+}
+.ind-dot.verifying {
   background: var(--warning);
 }
 .ind-dot.connected {

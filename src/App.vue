@@ -7,7 +7,7 @@
  * - 右下文件区固定像素高度，可拖拽调整
  * - 窗口缩放时仅右上终端区自适应，左宽与底高保持不变（满足需求）
  */
-import { computed, onMounted, onBeforeUnmount, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
@@ -18,6 +18,7 @@ import BottomPanel from "./components/BottomPanel.vue";
 import ConnectionManager from "./components/ConnectionManager.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import AppDialog from "./components/AppDialog.vue";
+import HostKeyDialog from "./components/HostKeyDialog.vue";
 
 import { useConnectionsStore } from "./stores/connections";
 import { useProxiesStore } from "./stores/proxies";
@@ -40,6 +41,8 @@ const showConnManager = ref(false);
 const showSettings = ref(false);
 /** 关闭软件前的确认弹窗可见性（存在连接中的会话时） */
 const showCloseConfirm = ref(false);
+/** 主机密钥确认后的二次握手是否正在进行 */
+const hostKeyBusy = ref(false);
 /** 终端面板引用，用于文件区与终端互相同步路径 */
 const terminalPanelRef = ref<InstanceType<typeof TerminalPanel>>();
 /** 底部面板引用，用于根据终端路径更新文件管理器 */
@@ -48,6 +51,10 @@ const bottomPanelRef = ref<InstanceType<typeof BottomPanel>>();
 /** 当前激活会话（用于状态栏与子面板） */
 const active = computed(() => sessionsStore.activeSession);
 const activeConnected = computed(() => active.value?.status === "connected");
+/** 当前最早等待确认主机密钥的会话，多个连接按会话顺序逐个处理 */
+const pendingHostKeySession = computed(() =>
+  sessionsStore.sessions.find((session) => session.hostKeyChallenge)
+);
 
 /** 面板尺寸（像素），左宽与底高固定，窗口缩放不改变 */
 const layout = reactive({ leftWidth: 258, bottomHeight: 300 });
@@ -155,6 +162,33 @@ function detachBrowserGuards() {
 /** 打开连接管理器发起的连接 */
 function onConnect(config: ConnectionConfig) {
   sessionsStore.open(config);
+}
+
+/** 信任当前展示的主机密钥，并在需要时恢复原终端通道 */
+async function onApproveHostKey() {
+  const session = pendingHostKeySession.value;
+  if (!session || hostKeyBusy.value) return;
+  hostKeyBusy.value = true;
+  try {
+    const reopenInPlace = await sessionsStore.approveHostKey(session.id);
+    if (reopenInPlace) {
+      try {
+        await nextTick();
+        await terminalPanelRef.value?.reopenSession(session.id);
+      } finally {
+        sessionsStore.finishReconnect(session.id);
+      }
+    }
+  } finally {
+    hostKeyBusy.value = false;
+  }
+}
+
+/** 取消当前主机密钥确认并终止对应连接 */
+function onRejectHostKey() {
+  const session = pendingHostKeySession.value;
+  if (!session || hostKeyBusy.value) return;
+  sessionsStore.rejectHostKey(session.id);
 }
 
 /** 保存设置 */
@@ -334,6 +368,15 @@ onBeforeUnmount(() => {
       :confirm-danger="true"
       @confirm="onConfirmClose"
       @cancel="onCancelClose"
+    />
+
+    <!-- SSH 主机身份确认始终位于其他业务弹窗之上 -->
+    <HostKeyDialog
+      :open="!!pendingHostKeySession"
+      :challenge="pendingHostKeySession?.hostKeyChallenge ?? null"
+      :busy="hostKeyBusy"
+      @confirm="onApproveHostKey"
+      @cancel="onRejectHostKey"
     />
   </div>
 </template>
