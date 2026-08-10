@@ -29,6 +29,7 @@ import { useTransfersStore } from "./stores/transfers";
 import type { ConnectionConfig } from "./types";
 import type { AppSettings } from "./stores/settings";
 import { closeAllTextEditorWindows } from "./editorWindows";
+import { isLiveSessionStatus } from "./sessionClose";
 
 const connectionsStore = useConnectionsStore();
 const proxiesStore = useProxiesStore();
@@ -46,6 +47,8 @@ const pendingConnectionManagerOpen = ref(false);
 const showSettings = ref(false);
 /** 关闭软件前的确认弹窗可见性（存在连接中的会话时） */
 const showCloseConfirm = ref(false);
+/** 打开退出确认时仍处于连接中的会话数量快照 */
+const closeConfirmSessionCount = ref(0);
 /** 本地凭据或持久化初始化错误 */
 const storageError = ref("");
 /** 主机密钥确认后的二次握手是否正在进行 */
@@ -168,6 +171,7 @@ function detachBrowserGuards() {
 
 /** 打开连接管理器发起的连接 */
 function onConnect(config: ConnectionConfig) {
+  if (checkingAppClose) return;
   sessionsStore.open(config);
 }
 
@@ -241,6 +245,18 @@ async function syncFilePath() {
 let unlistenCloseRequested: UnlistenFn | null = null;
 /** 是否正在执行受控窗口销毁，避免重复拦截关闭事件 */
 let destroyingWindow = false;
+/** 是否正在执行程序退出风险检查，期间禁止创建新会话 */
+let checkingAppClose = false;
+
+/** 程序退出失败时恢复窗口状态并释放资源关闭准备 */
+async function recoverFailedAppClose(): Promise<void> {
+  destroyingWindow = false;
+  try {
+    await terminalPanelRef.value?.releaseCloseRisks();
+  } catch (releaseError) {
+    console.warn("释放程序退出关闭准备失败", releaseError);
+  }
+}
 
 /** 关闭全部编辑窗口后销毁主窗口 */
 async function destroyAppWindows() {
@@ -249,17 +265,31 @@ async function destroyAppWindows() {
     await closeAllTextEditorWindows();
   } catch (e) {
     console.warn("关闭文本编辑窗口失败", e);
+    await recoverFailedAppClose();
+    throw e;
   }
-  await getCurrentWindow().destroy();
+  try {
+    await getCurrentWindow().destroy();
+  } catch (error) {
+    await recoverFailedAppClose();
+    throw error;
+  }
 }
 
 /** 确认关闭软件：销毁窗口退出 */
 async function onConfirmClose() {
+  if (checkingAppClose) return;
+  checkingAppClose = true;
   showCloseConfirm.value = false;
   try {
+    const targetIds = sessionsStore.sessions.map((session) => session.id);
+    const canClose = await terminalPanelRef.value?.confirmCloseRisks(targetIds);
+    if (canClose === false) return;
     await destroyAppWindows();
   } catch (e) {
     console.warn("关闭窗口失败", e);
+  } finally {
+    if (!destroyingWindow) checkingAppClose = false;
   }
 }
 
@@ -292,13 +322,19 @@ onMounted(async () => {
     unlistenCloseRequested = await getCurrentWindow().onCloseRequested(async (event) => {
       if (destroyingWindow) return;
       event.preventDefault();
+      if (checkingAppClose) return;
       if (terminalPanelRef.value?.hasLiveSessions()) {
+        closeConfirmSessionCount.value = sessionsStore.sessions.filter((session) =>
+          isLiveSessionStatus(session.status)
+        ).length;
         showCloseConfirm.value = true;
         return;
       }
+      checkingAppClose = true;
       try {
         await destroyAppWindows();
       } catch (e) {
+        checkingAppClose = false;
         console.warn("关闭窗口失败", e);
       }
     });
@@ -393,7 +429,7 @@ onBeforeUnmount(() => {
       :open="showCloseConfirm"
       type="confirm"
       title="退出程序"
-      message="仍有会话处于连接中，确定要退出吗？"
+      :message="`有 ${closeConfirmSessionCount} 个会话正处于连接中，确定要退出吗？`"
       confirm-text="退出"
       :confirm-danger="true"
       @confirm="onConfirmClose"

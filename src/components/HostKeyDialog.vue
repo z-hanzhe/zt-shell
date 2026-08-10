@@ -4,6 +4,7 @@
  */
 import { computed, nextTick, ref, watch } from "vue";
 import type { HostKeyChallenge } from "../types";
+import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 import Icon from "./Icon.vue";
 
@@ -26,6 +27,8 @@ const emit = defineEmits<{
 
 /** 取消按钮引用，安全操作默认获得焦点 */
 const cancelButton = ref<HTMLButtonElement | null>(null);
+/** 主机密钥弹窗拖动控制器，每次重新显示时恢复居中 */
+const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag(() => props.open);
 /** 当前是否属于已保存密钥发生变化 */
 const changed = computed(() => props.challenge?.kind === "changed");
 /** 弹窗标题 */
@@ -73,13 +76,14 @@ useEscClose(() => props.open, requestCancel);
 <template>
   <div v-if="open && challenge" class="modal-mask host-key-mask">
     <div
-      class="modal host-key-dialog"
+      ref="dialogRef"
+      class="modal dialog-draggable host-key-dialog"
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="host-key-title"
       aria-describedby="host-key-guidance"
     >
-      <div class="modal-header">
+      <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
         <span id="host-key-title">{{ title }}</span>
         <button
           class="modal-close"

@@ -18,6 +18,7 @@ import type {
   TransferCreateResult,
   TransferTask,
 } from "./types";
+import { runTransferCreation } from "./transferClose";
 
 /** 建立 SSH 连接，未知或变化的主机密钥会先返回确认信息 */
 export function sshConnect(
@@ -239,7 +240,9 @@ export function transferUpload(
   force: boolean,
   overwrite: boolean
 ): Promise<TransferCreateResult> {
-  return invoke("transfer_upload", { sessionId, localPaths, remoteDir, force, overwrite });
+  return runTransferCreation(sessionId, () =>
+    invoke("transfer_upload", { sessionId, localPaths, remoteDir, force, overwrite })
+  );
 }
 
 /** 创建下载任务，force 与 overwrite 含义同上传 */
@@ -250,7 +253,9 @@ export function transferDownload(
   force: boolean,
   overwrite: boolean
 ): Promise<TransferCreateResult> {
-  return invoke("transfer_download", { sessionId, items, localDir, force, overwrite });
+  return runTransferCreation(sessionId, () =>
+    invoke("transfer_download", { sessionId, items, localDir, force, overwrite })
+  );
 }
 
 /** 创建打包下载任务（远端 tar 打包后下载） */
@@ -260,7 +265,9 @@ export function transferPackDownload(
   names: string[],
   localPath: string
 ): Promise<void> {
-  return invoke("transfer_pack_download", { sessionId, remoteDir, names, localPath });
+  return runTransferCreation(sessionId, () =>
+    invoke("transfer_pack_download", { sessionId, remoteDir, names, localPath })
+  );
 }
 
 /** 列出全部传输任务 */

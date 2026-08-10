@@ -6,6 +6,7 @@ import { computed, reactive, ref } from "vue";
 import type { ProxyConfig, ProxyType, SecretChange } from "../types";
 import { useConnectionsStore } from "../stores/connections";
 import { useProxiesStore } from "../stores/proxies";
+import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
@@ -34,6 +35,8 @@ const proxyTypeLabels: Record<ProxyType, string> = {
 const keyword = ref("");
 /** 代理编辑弹窗状态：undefined 关闭，null 新增，对象为编辑 */
 const editing = ref<ProxyConfig | null | undefined>(undefined);
+/** 代理编辑弹窗拖动控制器 */
+const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag();
 /** 代理表单校验错误 */
 const editorError = ref("");
 /** 代理密码修改意图 */
@@ -319,8 +322,8 @@ useEscClose(
     </div>
 
     <div v-if="editing !== undefined" class="modal-mask proxy-editor-mask">
-      <div class="modal proxy-editor" role="dialog" aria-modal="true">
-        <div class="modal-header">
+      <div ref="dialogRef" class="modal dialog-draggable proxy-editor" role="dialog" aria-modal="true">
+        <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
           <span>{{ editing ? "编辑代理" : "新增代理" }}</span>
           <button class="modal-close" title="关闭" @click="closeEditor">×</button>
         </div>

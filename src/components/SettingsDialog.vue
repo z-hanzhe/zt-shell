@@ -4,6 +4,7 @@
  */
 import { reactive, watch } from "vue";
 import type { AppSettings } from "../stores/settings";
+import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 
 const props = defineProps<{
@@ -15,6 +16,9 @@ const emit = defineEmits<{
   (e: "save", settings: AppSettings): void;
   (e: "close"): void;
 }>();
+
+/** 设置弹窗拖动控制器 */
+const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag();
 
 const form = reactive<AppSettings>({ ...props.settings });
 
@@ -39,8 +43,8 @@ useEscClose(
 
 <template>
   <div class="modal-mask">
-    <div class="modal" style="width: 420px">
-      <div class="modal-header">
+    <div ref="dialogRef" class="modal dialog-draggable" style="width: 420px">
+      <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
         <span>设置</span>
         <button class="modal-close" title="关闭" @click="emit('close')">×</button>
       </div>

@@ -23,6 +23,7 @@ import {
 } from "../connectionTransfer";
 import { useConnectionsStore } from "../stores/connections";
 import { useProxiesStore } from "../stores/proxies";
+import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 import type {
   ConnectionConfig,
@@ -55,6 +56,8 @@ const editorParentId = ref<string | null>(null);
 const closeAfterConnect = ref(true);
 /** 列表滚动容器 */
 const listRef = ref<HTMLElement | null>(null);
+/** 连接管理器弹窗拖动控制器 */
+const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag();
 /** 是否正在执行连接导入或导出 */
 const transferBusy = ref(false);
 /** 是否正在保存连接编辑结果 */
@@ -957,8 +960,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="modal-mask">
-    <div class="modal conn-mgr">
-      <div class="modal-header">
+    <div ref="dialogRef" class="modal dialog-draggable conn-mgr">
+      <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
         <span>连接管理器</span>
         <button class="modal-close" title="关闭" @click="emit('close')">×</button>
       </div>

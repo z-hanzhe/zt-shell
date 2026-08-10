@@ -176,6 +176,9 @@ body {
   flex-direction: column;
   max-height: 85vh;
 }
+.modal.dialog-draggable {
+  position: relative;
+}
 .modal-header {
   display: flex;
   align-items: center;
@@ -186,6 +189,14 @@ body {
   font-weight: 600;
   color: var(--text);
   background: var(--bg-panel);
+}
+.modal-header.dialog-drag-handle {
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+.modal-header.dialog-drag-handle.dialog-header-dragging {
+  cursor: grabbing;
 }
 .modal-body {
   padding: 14px;

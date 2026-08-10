@@ -10,6 +10,16 @@ import Icon from "./Icon.vue";
 import Terminal from "./Terminal.vue";
 import AppDialog from "./AppDialog.vue";
 import TerminalExtensions from "./TerminalExtensions.vue";
+import { transferList } from "../api";
+import {
+  prepareTextEditorClose,
+  type TextEditorClosePreparation,
+} from "../editorWindows";
+import { confirmSessionClose, isLiveSessionStatus } from "../sessionClose";
+import {
+  prepareTransferClose,
+  type TransferClosePreparation,
+} from "../transferClose";
 import { useSessionsStore } from "../stores/sessions";
 
 const emit = defineEmits<{
@@ -56,18 +66,37 @@ function showConfirm(opts: {
   });
 }
 
-/** 确认弹窗 */
-function onDialogConfirm() {
+/** 显示提示弹窗，并在用户关闭后继续当前流程 */
+function showMessage(title: string, message: string): Promise<void> {
+  return new Promise((resolve) => {
+    Object.assign(dialog, {
+      open: true,
+      type: "info",
+      title,
+      message,
+      confirmText: "确定",
+      confirmDanger: false,
+      resolve: () => resolve(),
+    });
+  });
+}
+
+/** 结束当前通用弹窗并释放等待中的操作 */
+function settleDialog(value: boolean) {
   const resolve = dialog.resolve;
   dialog.open = false;
-  resolve?.(true);
+  dialog.resolve = undefined;
+  resolve?.(value);
+}
+
+/** 确认弹窗 */
+function onDialogConfirm() {
+  settleDialog(true);
 }
 
 /** 取消弹窗 */
 function onDialogCancel() {
-  const resolve = dialog.resolve;
-  dialog.open = false;
-  resolve?.(false);
+  settleDialog(false);
 }
 
 /** 各会话终端组件引用，用于切换选项卡后触发尺寸自适应 */
@@ -258,61 +287,219 @@ function closeMenu() {
   menu.open = false;
 }
 
-/** 关闭单个选项卡（连接中/连接后会二次确认） */
+/** 是否已有关闭流程正在等待用户处理 */
+let closeOperationRunning = false;
+/** 程序退出检查通过后暂存的资源关闭准备释放函数 */
+let appCloseRelease: (() => Promise<void>) | undefined;
+
+/** 会话关闭保护执行结果 */
+type CloseGuardResult = {
+  confirmed: boolean;
+  release?: () => Promise<void>;
+};
+
+/** 从目标快照中筛出当前仍在线且尚未关闭的会话标识 */
+function currentLiveSessionIds(targetIds: readonly string[]): string[] {
+  const targets = new Set(targetIds);
+  return store.sessions
+    .filter((session) => targets.has(session.id) && isLiveSessionStatus(session.status))
+    .map((session) => session.id);
+}
+
+/** 生成风险提示中的会话范围描述 */
+function riskSubject(sessionIds: readonly string[]): string {
+  if (sessionIds.length === 1) {
+    const session = store.sessions.find((item) => item.id === sessionIds[0]);
+    if (session) return `会话 [ ${session.name} ]`;
+  }
+  return `${sessionIds.length} 个仍处于连接中的会话`;
+}
+
+/**
+ * 在不清理资源的前提下依次确认未保存编辑和未完成传输。
+ * confirmLiveSessions 存在时会先执行原有的连接中会话确认。
+ */
+async function runCloseGuards(
+  targetIds: string[],
+  confirmLiveSessions?: (sessionIds: string[]) => Promise<boolean>,
+  closingApp = false
+): Promise<CloseGuardResult> {
+  let editorPreparation: TextEditorClosePreparation | undefined;
+  let transferPreparation: TransferClosePreparation | undefined;
+
+  /** 释放本次流程已取得的全部资源关闭准备 */
+  async function releasePreparations(): Promise<void> {
+    const results = await Promise.allSettled([
+      editorPreparation?.release(),
+      transferPreparation?.release(),
+    ]);
+    const failure = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected"
+    );
+    if (failure) throw failure.reason;
+  }
+
+  try {
+    const confirmed = await confirmSessionClose({
+      getLiveSessionIds: () => currentLiveSessionIds(targetIds),
+      confirmLiveSessions,
+      queryUnsavedDocuments: async (sessionIds) => {
+        editorPreparation = await prepareTextEditorClose(sessionIds);
+        return editorPreparation.dirtyCount;
+      },
+      confirmUnsavedDocuments: (count, sessionIds) =>
+        showConfirm({
+          title: "未保存的文本编辑",
+          message: closingApp
+            ? `有 ${count} 个文本文件尚未保存，继续关闭将丢失这些修改，确定要退出吗？`
+            : `${riskSubject(sessionIds)} 有 ${count} 个文本文件尚未保存，继续关闭将丢失这些修改。确定要继续吗？`,
+          confirmText: "继续关闭",
+          confirmDanger: true,
+        }),
+      queryTransfers: async () => {
+        transferPreparation = await prepareTransferClose(targetIds);
+        return transferList();
+      },
+      confirmUnfinishedTransfers: (count, sessionIds) =>
+        showConfirm({
+          title: "未完成的传输任务",
+          message: closingApp
+            ? `有 ${count} 个传输任务尚未完成，关闭会话将终止这些任务，确定要退出吗？`
+            : `${riskSubject(sessionIds)} 有 ${count} 个传输任务尚未完成，关闭会话将终止这些任务。确定要继续吗？`,
+          confirmText: "继续关闭",
+          confirmDanger: true,
+        }),
+    });
+    // 目标会话若在前序确认期间断线，只跳过风险提示，关闭前仍需排空在途创建请求。
+    if (confirmed && !transferPreparation) {
+      transferPreparation = await prepareTransferClose(targetIds);
+    }
+    if (!confirmed) {
+      await releasePreparations();
+      return { confirmed: false };
+    }
+    return { confirmed: true, release: releasePreparations };
+  } catch (error) {
+    await releasePreparations().catch((releaseError) =>
+      console.warn("释放会话关闭准备失败", releaseError)
+    );
+    throw error;
+  }
+}
+
+/** 显示关闭流程失败信息并停止后续操作 */
+async function reportCloseFailure(error: unknown): Promise<void> {
+  console.warn("会话关闭失败", error);
+  await showMessage(
+    "无法关闭会话",
+    `关闭操作已停止，请检查当前会话状态后重试。\n${String(error)}`
+  );
+}
+
+/** 按统一保护流程关闭一组会话 */
+async function requestCloseSessions(
+  targetIds: string[],
+  confirmLiveSessions: (sessionIds: string[]) => Promise<boolean>
+): Promise<void> {
+  if (closeOperationRunning) return;
+  const ids = [...new Set(targetIds)].filter((id) =>
+    store.sessions.some((session) => session.id === id)
+  );
+  if (ids.length === 0) return;
+
+  closeOperationRunning = true;
+  let release: (() => Promise<void>) | undefined;
+  let failure: unknown;
+  try {
+    const result = await runCloseGuards(ids, confirmLiveSessions);
+    if (!result.confirmed) return;
+    release = result.release;
+    for (const id of ids) await store.close(id);
+  } catch (error) {
+    failure = error;
+  } finally {
+    try {
+      await release?.();
+    } catch (error) {
+      failure ??= error;
+    }
+    if (failure) await reportCloseFailure(failure);
+    closeOperationRunning = false;
+  }
+}
+
+/**
+ * 供程序退出流程复用资源风险检查；原有退出确认已由 App 层完成。
+ */
+async function confirmCloseRisks(targetIds: string[]): Promise<boolean> {
+  if (closeOperationRunning) return false;
+  closeOperationRunning = true;
+  try {
+    if (appCloseRelease) await releaseCloseRisks();
+    const result = await runCloseGuards([...new Set(targetIds)], undefined, true);
+    if (result.confirmed) appCloseRelease = result.release;
+    return result.confirmed;
+  } catch (error) {
+    await reportCloseFailure(error);
+    return false;
+  } finally {
+    closeOperationRunning = false;
+  }
+}
+
+/** 释放程序退出检查持有的全部资源关闭准备 */
+async function releaseCloseRisks(): Promise<void> {
+  const release = appCloseRelease;
+  if (!release) return;
+  await release();
+  if (appCloseRelease === release) appCloseRelease = undefined;
+}
+
+/** 关闭单个选项卡 */
 async function closeTab(id: string) {
-  const s = store.sessions.find((x) => x.id === id);
-  if (!s) return;
-  if (s.status === "connecting" || s.status === "verifying" || s.status === "connected") {
-    const ok = await showConfirm({
+  const session = store.sessions.find((item) => item.id === id);
+  if (!session) return;
+  await requestCloseSessions([id], () =>
+    showConfirm({
       title: "关闭会话",
-      message: `会话 [ ${s.name} ] 仍处于连接中，确定要关闭吗？`,
+      message: `会话 [ ${session.name} ] 仍处于连接中，确定要关闭吗？`,
       confirmText: "关闭",
       confirmDanger: true,
-    });
-    if (!ok) return;
-  }
-  await store.close(id);
+    })
+  );
 }
 
 /** 关闭其他选项卡 */
 async function closeOthers(id: string) {
-  const others = store.sessions.filter((s) => s.id !== id);
-  if (others.length === 0) return;
-  const activeCount = others.filter(
-    (s) => s.status === "connecting" || s.status === "verifying" || s.status === "connected"
-  ).length;
-  const ok = await showConfirm({
-    title: "关闭其他会话",
-    message: activeCount
-      ? `将关闭其他 ${others.length} 个会话，其中 ${activeCount} 个仍在连接中，确定吗？`
-      : `将关闭其他 ${others.length} 个会话，确定吗？`,
-    confirmText: "关闭",
-    confirmDanger: true,
-  });
-  if (!ok) return;
-  for (const s of others) await store.close(s.id);
+  const targetIds = store.sessions
+    .filter((session) => session.id !== id)
+    .map((session) => session.id);
+  await requestCloseSessions(targetIds, (liveIds) =>
+    showConfirm({
+      title: "关闭其他会话",
+      message: `将关闭其他 ${targetIds.length} 个会话，其中 ${liveIds.length} 个仍在连接中，确定吗？`,
+      confirmText: "关闭",
+      confirmDanger: true,
+    })
+  );
 }
 
 /** 关闭全部选项卡 */
 async function closeAll() {
-  if (store.sessions.length === 0) return;
-  const activeCount = store.sessions.filter(
-    (s) => s.status === "connecting" || s.status === "verifying" || s.status === "connected"
-  ).length;
-  const ok = await showConfirm({
-    title: "关闭全部会话",
-    message: activeCount
-      ? `将关闭全部 ${store.sessions.length} 个会话，其中 ${activeCount} 个仍在连接中，确定吗？`
-      : `将关闭全部 ${store.sessions.length} 个会话，确定吗？`,
-    confirmText: "关闭",
-    confirmDanger: true,
-  });
-  if (!ok) return;
-  for (const s of [...store.sessions]) await store.close(s.id);
+  const targetIds = store.sessions.map((session) => session.id);
+  await requestCloseSessions(targetIds, (liveIds) =>
+    showConfirm({
+      title: "关闭全部会话",
+      message: `将关闭全部 ${targetIds.length} 个会话，其中 ${liveIds.length} 个仍在连接中，确定吗？`,
+      confirmText: "关闭",
+      confirmDanger: true,
+    })
+  );
 }
 
 /** 重连指定会话：复用同一会话原地重连以保留历史输出 */
 async function reconnect(id: string) {
+  if (closeOperationRunning) return;
   const reopenInPlace = await store.reconnect(id);
   if (!reopenInPlace) return;
   try {
@@ -376,9 +563,7 @@ function onGlobalPointerDown(e: PointerEvent) {
  * 供 App 层通过 ref 调用
  */
 function hasLiveSessions(): boolean {
-  return store.sessions.some(
-    (s) => s.status === "connecting" || s.status === "verifying" || s.status === "connected"
-  );
+  return store.sessions.some((session) => isLiveSessionStatus(session.status));
 }
 
 /** 监听选项卡栏尺寸变化，动态更新滚动按钮状态 */
@@ -405,7 +590,14 @@ onBeforeUnmount(() => {
   tabsResizeObserver?.disconnect();
 });
 
-defineExpose({ cdActiveTerminal, requestActiveTerminalCwd, reopenSession, hasLiveSessions });
+defineExpose({
+  cdActiveTerminal,
+  requestActiveTerminalCwd,
+  reopenSession,
+  hasLiveSessions,
+  confirmCloseRisks,
+  releaseCloseRisks,
+});
 </script>
 
 <template>

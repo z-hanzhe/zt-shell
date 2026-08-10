@@ -5,6 +5,7 @@
 import { computed, reactive, ref } from "vue";
 import type { TunnelConfig, TunnelType } from "../types";
 import { genId } from "../utils";
+import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
@@ -29,6 +30,8 @@ const tunnelTypeLabels: Record<TunnelType, string> = {
 const selectedId = ref("");
 /** 隧道编辑弹窗状态：undefined 关闭，null 新增，对象为编辑 */
 const editing = ref<TunnelConfig | null | undefined>(undefined);
+/** 隧道编辑弹窗拖动控制器 */
+const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag();
 /** 隧道表单校验错误 */
 const editorError = ref("");
 /** 待删除隧道 */
@@ -276,8 +279,8 @@ useEscClose(
     </div>
 
     <div v-if="editing !== undefined" class="modal-mask tunnel-editor-mask">
-      <div class="modal tunnel-editor" role="dialog" aria-modal="true">
-        <div class="modal-header">
+      <div ref="dialogRef" class="modal dialog-draggable tunnel-editor" role="dialog" aria-modal="true">
+        <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
           <span>{{ editing ? "编辑隧道" : "新增隧道" }}</span>
           <button class="modal-close" title="关闭" @click="closeEditor">×</button>
         </div>

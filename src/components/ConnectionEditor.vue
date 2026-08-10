@@ -11,6 +11,7 @@ import type {
   TunnelConfig,
 } from "../types";
 import { genId } from "../utils";
+import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 import Icon from "./Icon.vue";
 import ProxySettings from "./ProxySettings.vue";
@@ -43,6 +44,8 @@ const settingSections: Array<{ id: SettingsSectionId; label: string }> = [
 
 /** 当前编辑分组 */
 const activeSection = ref<SettingsSectionId>("connection");
+/** 连接编辑弹窗拖动控制器 */
+const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag();
 /** 登录密码修改意图 */
 const passwordChange = ref<SecretChange>({ mode: "keep" });
 /** 私钥口令修改意图 */
@@ -147,8 +150,8 @@ useEscClose(
 
 <template>
   <div class="modal-mask">
-    <div class="modal connection-editor">
-      <div class="modal-header">
+    <div ref="dialogRef" class="modal dialog-draggable connection-editor">
+      <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
         <span>{{ model ? "编辑连接" : "新建连接" }}</span>
         <button class="modal-close" title="关闭" @click="emit('cancel')">×</button>
       </div>

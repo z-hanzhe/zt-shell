@@ -3,6 +3,7 @@
  * 通用轻量弹窗：支持提示、确认与单输入，避免使用浏览器内置弹窗行为
  */
 import { computed, nextTick, ref, watch } from "vue";
+import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 
 const props = withDefaults(
@@ -54,6 +55,8 @@ const emit = defineEmits<{
 
 const inputValue = ref("");
 const inputRef = ref<HTMLInputElement | null>(null);
+/** 弹窗拖动控制器，每次重新显示时恢复居中 */
+const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag(() => props.open);
 
 /** 根据当前输入内容生成提示文案 */
 const hintText = computed(() => {
@@ -91,8 +94,8 @@ useEscClose(
 
 <template>
   <div v-if="open" class="modal-mask">
-    <div class="modal app-dialog" role="dialog" aria-modal="true">
-      <div class="modal-header">
+    <div ref="dialogRef" class="modal dialog-draggable app-dialog" role="dialog" aria-modal="true">
+      <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
         <span>{{ title }}</span>
         <button v-if="type !== 'loading'" class="modal-close" title="关闭" @click="requestCancel">×</button>
       </div>

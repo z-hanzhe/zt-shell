@@ -26,16 +26,25 @@ import { sftpCancelOperation, sftpCheckWritable, sftpRead, sftpWrite } from "../
 import { useEscClose } from "../composables/useEscClose";
 import type {
   EditorCloseSessionRequestPayload,
+  EditorClosePreparedPayload,
   EditorOpenRequestPayload,
+  EditorPrepareCloseRequestPayload,
+  EditorReleaseClosePreparationPayload,
   EditorRequestCompletedPayload,
   TextEditorWindowOptions,
 } from "../editorProtocol";
 import {
+  EDITOR_CANCEL_CLOSE_SESSION_EVENT,
   EDITOR_CLOSE_SESSION_EVENT,
+  EDITOR_CLOSE_PREPARED_EVENT,
+  EDITOR_COMMIT_CLOSE_SESSION_EVENT,
   EDITOR_OPENED_EVENT,
   EDITOR_OPEN_EVENT,
+  EDITOR_PREPARE_CLOSE_EVENT,
   EDITOR_READY_EVENT,
+  EDITOR_RELEASE_CLOSE_PREPARATION_EVENT,
   EDITOR_SAVED_EVENT,
+  EDITOR_SESSION_CLOSE_READY_EVENT,
   EDITOR_SESSION_CLOSED_EVENT,
 } from "../editorProtocol";
 import { genId } from "../utils";
@@ -146,6 +155,12 @@ const tabMenu = reactive({
   y: 0,
   documentKey: "",
 });
+/** 主窗口关闭流程持有的会话编辑锁，按准备请求区分 */
+const closePreparations = reactive(new Map<string, Set<string>>());
+/** 已确认提交、正在移除文档的会话 */
+const committingSessionIds = reactive(new Set<string>());
+/** 已接收并等待主窗口提交的会话关闭请求 */
+const pendingSessionCloseRequests = new Map<string, string>();
 
 /** 是否由组件主动销毁窗口，避免再次触发关闭确认 */
 let destroying = false;
@@ -155,6 +170,11 @@ let documentLoadQueue = Promise.resolve();
 let unlistenCloseRequested: UnlistenFn | undefined;
 let unlistenOpenDocument: UnlistenFn | undefined;
 let unlistenCloseSession: UnlistenFn | undefined;
+let unlistenCommitCloseSession: UnlistenFn | undefined;
+let unlistenCancelCloseSession: UnlistenFn | undefined;
+let unlistenPrepareClose: UnlistenFn | undefined;
+let unlistenReleaseClosePreparation: UnlistenFn | undefined;
+let sessionCloseQueue = Promise.resolve();
 let tabsResizeObserver: ResizeObserver | undefined;
 
 useEscClose(() => confirmDialog.open, () => confirmAction(false));
@@ -301,11 +321,47 @@ function applyActiveDocument(): void {
   editor.value?.focus();
 }
 
+/** 判断指定会话的编辑文档是否已被主窗口关闭流程锁定 */
+function isSessionCloseLocked(sessionId: string): boolean {
+  if (committingSessionIds.has(sessionId)) return true;
+  for (const sessionIds of closePreparations.values()) {
+    if (sessionIds.has(sessionId)) return true;
+  }
+  return false;
+}
+
 /** 根据文档权限和全局弹窗状态同步 Monaco 只读设置 */
 function syncEditorReadOnly(): void {
   const document = activeDocument.value;
-  const blocked = !!document?.saving || confirmDialog.open;
+  const blocked =
+    !!document?.saving ||
+    confirmDialog.open ||
+    (!!document && isSessionCloseLocked(document.sessionId));
   editor.value?.updateOptions({ readOnly: !document || document.readOnly || blocked });
+}
+
+/** 串行执行会话文档移除，避免批量关闭时多个事件并发修改文档数组 */
+function enqueueSessionClose(operation: () => Promise<void>): Promise<void> {
+  const pending = sessionCloseQueue.then(operation, operation);
+  sessionCloseQueue = pending.then(
+    () => undefined,
+    () => undefined
+  );
+  return pending;
+}
+
+/** 释放指定主窗口关闭准备并刷新当前文档只读状态 */
+function releaseClosePreparation(requestId: string): void {
+  closePreparations.delete(requestId);
+  syncEditorReadOnly();
+}
+
+/** 从全部关闭准备中移除已提交关闭的会话 */
+function removeSessionFromClosePreparations(sessionId: string): void {
+  for (const [requestId, sessionIds] of closePreparations) {
+    sessionIds.delete(sessionId);
+    if (sessionIds.size === 0) closePreparations.delete(requestId);
+  }
 }
 
 /** 更新选项卡栏左右滚动按钮状态 */
@@ -434,6 +490,7 @@ function confirmAction(value: boolean): void {
 async function requestCloseDocuments(targets: EditorDocument[]): Promise<void> {
   if (
     targets.some((document) => document.saving) ||
+    targets.some((document) => isSessionCloseLocked(document.sessionId)) ||
     confirmDialog.open ||
     closingWorkspace
   ) {
@@ -700,7 +757,13 @@ async function performSave(document: EditorDocument, operationId: string): Promi
 
 /** 保存指定文档，并复用尚未结束的保存任务 */
 function saveDocument(document: EditorDocument): Promise<void> {
-  if (document.readOnly || document.loading || document.loadError || document.closed) {
+  if (
+    document.readOnly ||
+    document.loading ||
+    document.loadError ||
+    document.closed ||
+    isSessionCloseLocked(document.sessionId)
+  ) {
     return Promise.resolve();
   }
   if (document.saveTask) return document.saveTask;
@@ -790,7 +853,15 @@ async function destroyWindow(): Promise<void> {
 
 /** 请求关闭整个编辑器工作区 */
 async function requestCloseWorkspace(): Promise<void> {
-  if (hasSavingDocument.value || confirmDialog.open || closingWorkspace) return;
+  if (
+    hasSavingDocument.value ||
+    closePreparations.size > 0 ||
+    committingSessionIds.size > 0 ||
+    confirmDialog.open ||
+    closingWorkspace
+  ) {
+    return;
+  }
   closingWorkspace = true;
   closeTabMenu();
   try {
@@ -815,15 +886,13 @@ async function requestCloseWorkspace(): Promise<void> {
   }
 }
 
-/** 等待保存结束后强制移除指定会话的全部文档 */
+/** 强制移除指定会话的全部文档 */
 async function closeSessionDocuments(sessionId: string): Promise<boolean> {
   const targets = documents.value.filter((document) => document.sessionId === sessionId);
-  await Promise.allSettled(
-    targets.map((document) => document.saveTask).filter((task): task is Promise<void> => !!task)
-  );
   for (const document of targets) {
     await removeDocument(document.key, false);
   }
+  removeSessionFromClosePreparations(sessionId);
   return documents.value.length === 0;
 }
 
@@ -861,19 +930,69 @@ onMounted(async () => {
     unlistenOpenDocument = await listen<EditorOpenRequestPayload>(
       EDITOR_OPEN_EVENT,
       async (event) => {
-        openDocument(event.payload.document);
+        if (!isSessionCloseLocked(event.payload.document.sessionId)) {
+          openDocument(event.payload.document);
+        }
         await emit(EDITOR_OPENED_EVENT, { requestId: event.payload.requestId });
       }
+    );
+    unlistenPrepareClose = await listen<EditorPrepareCloseRequestPayload>(
+      EDITOR_PREPARE_CLOSE_EVENT,
+      async (event) => {
+        const sessionIds = new Set(event.payload.sessionIds.filter(Boolean));
+        closePreparations.set(event.payload.requestId, sessionIds);
+        syncEditorReadOnly();
+        const response: EditorClosePreparedPayload = {
+          requestId: event.payload.requestId,
+          dirtyCount: documents.value.filter(
+            (document) => sessionIds.has(document.sessionId) && document.dirty
+          ).length,
+        };
+        await emit(EDITOR_CLOSE_PREPARED_EVENT, response);
+      }
+    );
+    unlistenReleaseClosePreparation = await listen<EditorReleaseClosePreparationPayload>(
+      EDITOR_RELEASE_CLOSE_PREPARATION_EVENT,
+      (event) => releaseClosePreparation(event.payload.requestId)
     );
     unlistenCloseSession = await listen<EditorCloseSessionRequestPayload>(
       EDITOR_CLOSE_SESSION_EVENT,
       async (event) => {
-        const shouldDestroy = await closeSessionDocuments(event.payload.sessionId);
+        pendingSessionCloseRequests.set(
+          event.payload.requestId,
+          event.payload.sessionId
+        );
         const response: EditorRequestCompletedPayload = {
           requestId: event.payload.requestId,
         };
-        await emit(EDITOR_SESSION_CLOSED_EVENT, response);
-        if (shouldDestroy) await destroyWindow();
+        await emit(EDITOR_SESSION_CLOSE_READY_EVENT, response);
+      }
+    );
+    unlistenCancelCloseSession = await listen<EditorCloseSessionRequestPayload>(
+      EDITOR_CANCEL_CLOSE_SESSION_EVENT,
+      (event) => pendingSessionCloseRequests.delete(event.payload.requestId)
+    );
+    unlistenCommitCloseSession = await listen<EditorCloseSessionRequestPayload>(
+      EDITOR_COMMIT_CLOSE_SESSION_EVENT,
+      (event) => {
+        const { requestId, sessionId } = event.payload;
+        if (pendingSessionCloseRequests.get(requestId) !== sessionId) return;
+        pendingSessionCloseRequests.delete(requestId);
+        committingSessionIds.add(sessionId);
+        syncEditorReadOnly();
+        void enqueueSessionClose(async () => {
+          try {
+            const shouldDestroy = await closeSessionDocuments(sessionId);
+            const response: EditorRequestCompletedPayload = { requestId };
+            await emit(EDITOR_SESSION_CLOSED_EVENT, response).catch((error) =>
+              console.warn("通知主窗口文本编辑标签已关闭失败", error)
+            );
+            if (shouldDestroy) await destroyWindow();
+          } finally {
+            committingSessionIds.delete(sessionId);
+            syncEditorReadOnly();
+          }
+        }).catch((error) => console.warn("关闭会话所属文本编辑标签失败", error));
       }
     );
   } catch (error) {
@@ -914,7 +1033,11 @@ onBeforeUnmount(() => {
   disposeWorkspace();
   tabsResizeObserver?.disconnect();
   unlistenOpenDocument?.();
+  unlistenPrepareClose?.();
+  unlistenReleaseClosePreparation?.();
   unlistenCloseSession?.();
+  unlistenCommitCloseSession?.();
+  unlistenCancelCloseSession?.();
   unlistenCloseRequested?.();
   window.removeEventListener("keydown", preventBrowserShortcut, true);
   window.removeEventListener("contextmenu", preventNativeContextMenu);
@@ -1069,9 +1192,15 @@ onBeforeUnmount(() => {
       </transition>
       <button
         class="btn btn-primary editor-save-button"
-        :disabled="activeDocument.readOnly || activeDocument.saving"
+        :disabled="
+          activeDocument.readOnly ||
+          activeDocument.saving ||
+          isSessionCloseLocked(activeDocument.sessionId)
+        "
         :title="
-          activeDocument.readOnly
+          isSessionCloseLocked(activeDocument.sessionId)
+            ? '会话正在关闭'
+            : activeDocument.readOnly
             ? '只读文件，无写入权限'
             : activeDocument.saving
               ? '正在保存'
