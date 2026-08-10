@@ -978,10 +978,10 @@ onBeforeUnmount(() => {
           <Icon name="trash" :size="15" />
         </button>
         <button class="tool-btn" title="全部展开" :disabled="transferBusy || store.folders.length === 0" @click="expandAllFolders">
-          <Icon name="chevronsDown" :size="15" />
+          <Icon name="unfoldVertical" :size="15" />
         </button>
         <button class="tool-btn" title="全部收起" :disabled="transferBusy || store.folders.length === 0" @click="collapseAllFolders">
-          <Icon name="chevronsUp" :size="15" />
+          <Icon name="foldVertical" :size="15" />
         </button>
         <div class="toolbar-spacer"></div>
         <button class="tool-btn" title="导入连接" :disabled="transferBusy" @click="onImportConnections">
