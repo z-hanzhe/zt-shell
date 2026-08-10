@@ -49,3 +49,5 @@ uuid = { version = "1", features = ["v4"] }
 tauri-plugin-clipboard-manager = "2.3.2"
 # 单实例运行：禁止程序多开，再次启动时聚焦并显示已存在窗口
 tauri-plugin-single-instance = "2"
+# 使用系统原生凭据库保存连接密码、私钥口令和代理密码
+keyring = "4.1.6"

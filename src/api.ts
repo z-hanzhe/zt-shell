@@ -5,7 +5,12 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   ConnectionConfig,
+  ConnectionExportCredentialSources,
   ConnectOutcome,
+  CredentialCopy,
+  CredentialKey,
+  CredentialMatch,
+  CredentialWrite,
   FileEntry,
   HostKeyApproval,
   MonitorData,
@@ -17,9 +22,59 @@ import type {
 /** 建立 SSH 连接，未知或变化的主机密钥会先返回确认信息 */
 export function sshConnect(
   config: ConnectionConfig & { proxy?: ProxyConfig },
+  savedConnectionId: string,
+  savedProxyId: string | null,
   hostKeyApproval?: HostKeyApproval
 ): Promise<ConnectOutcome> {
-  return invoke("ssh_connect", { config, hostKeyApproval: hostKeyApproval ?? null });
+  return invoke("ssh_connect", {
+    config,
+    savedConnectionId,
+    savedProxyId,
+    hostKeyApproval: hostKeyApproval ?? null,
+  });
+}
+
+/** 批量写入系统凭据库 */
+export function credentialsSetMany(changes: CredentialWrite[]): Promise<void> {
+  return invoke("credentials_set_many", { changes });
+}
+
+/** 批量检查系统凭据是否存在，结果顺序与输入一致 */
+export function credentialsCheckMany(keys: CredentialKey[]): Promise<boolean[]> {
+  return invoke("credentials_check_many", { keys });
+}
+
+/** 批量比较代理密码，结果顺序与输入一致且不返回已存明文 */
+export function credentialsMatchMany(changes: CredentialMatch[]): Promise<boolean[]> {
+  return invoke("credentials_match_many", { changes });
+}
+
+/** 批量删除系统凭据 */
+export function credentialsDeleteMany(keys: CredentialKey[]): Promise<void> {
+  return invoke("credentials_delete_many", { keys });
+}
+
+/** 批量复制系统凭据 */
+export function credentialsCopyMany(changes: CredentialCopy[]): Promise<void> {
+  return invoke("credentials_copy_many", { changes });
+}
+
+/** 选择并读取一个连接导入文件，取消时返回 null */
+export function pickConnectionImportFile(): Promise<string | null> {
+  return invoke("pick_connection_import_file");
+}
+
+/** 选择保存位置并由原生层注入系统凭据后写入连接导出文件 */
+export function saveConnectionExportFile(
+  content: string,
+  defaultFileName: string,
+  credentialSources: ConnectionExportCredentialSources
+): Promise<boolean> {
+  return invoke("save_connection_export_file", {
+    content,
+    defaultFileName,
+    credentialSources,
+  });
 }
 
 /** 断开会话 */

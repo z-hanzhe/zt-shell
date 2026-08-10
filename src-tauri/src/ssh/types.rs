@@ -60,6 +60,9 @@ pub struct ProxyConfig {
     /// SOCKS5 密码或 HTTP Basic 密码
     #[serde(default)]
     pub password: Option<String>,
+    /// 系统凭据库中是否已有代理密码
+    #[serde(default)]
+    pub has_password: bool,
 }
 
 fn default_true() -> bool {
@@ -112,12 +115,18 @@ pub struct ConnectionConfig {
     /// 密码（密码认证时使用）
     #[serde(default)]
     pub password: Option<String>,
+    /// 系统凭据库中是否已有登录密码
+    #[serde(default)]
+    pub has_password: bool,
     /// 私钥文件路径（私钥认证时使用）
     #[serde(default)]
     pub private_key_path: Option<String>,
     /// 私钥口令（私钥有加密时使用）
     #[serde(default)]
     pub passphrase: Option<String>,
+    /// 系统凭据库中是否已有私钥口令
+    #[serde(default)]
+    pub has_passphrase: bool,
     /// 当前连接使用的代理配置快照，空表示直连
     #[serde(default)]
     pub proxy: Option<ProxyConfig>,

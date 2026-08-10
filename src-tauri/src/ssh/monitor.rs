@@ -244,8 +244,11 @@ pub async fn collect(manager: &SessionManager, session_id: &str) -> Result<Monit
     let net1 = parse_net(&get("NET1"));
     let net2 = parse_net(&get("NET2"));
     // 物理网卡名集合
-    let phys: std::collections::HashSet<String> =
-        get("PHYS").lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    let phys: std::collections::HashSet<String> = get("PHYS")
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
     let interval = 0.5_f64;
     for (name, (rx2, tx2)) in &net2 {
         let (rx1, tx1) = net1.get(name).copied().unwrap_or((*rx2, *tx2));

@@ -3,12 +3,13 @@
  * 连接代理配置：管理共享代理列表并为当前连接选择代理
  */
 import { computed, reactive, ref } from "vue";
-import type { ProxyConfig, ProxyType } from "../types";
+import type { ProxyConfig, ProxyType, SecretChange } from "../types";
 import { useConnectionsStore } from "../stores/connections";
 import { useProxiesStore } from "../stores/proxies";
 import { useEscClose } from "../composables/useEscClose";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
+import SecretInput from "./SecretInput.vue";
 
 const props = defineProps<{
   /** 当前连接选择的代理 id */
@@ -35,6 +36,10 @@ const keyword = ref("");
 const editing = ref<ProxyConfig | null | undefined>(undefined);
 /** 代理表单校验错误 */
 const editorError = ref("");
+/** 代理密码修改意图 */
+const passwordChange = ref<SecretChange>({ mode: "keep" });
+/** 是否正在保存代理及其系统凭据 */
+const savingProxy = ref(false);
 /** 待删除代理 */
 const deleteTarget = ref<ProxyConfig | null>(null);
 
@@ -47,7 +52,6 @@ function proxyDefaults(): ProxyConfig {
     host: "",
     port: 1080,
     username: "",
-    password: "",
   };
 }
 
@@ -109,6 +113,8 @@ async function moveSelectedProxy(direction: "up" | "down") {
 /** 打开新增代理弹窗 */
 function openCreate() {
   Object.assign(draft, proxyDefaults());
+  delete draft.password;
+  passwordChange.value = { mode: "keep" };
   editorError.value = "";
   editing.value = null;
 }
@@ -117,8 +123,19 @@ function openCreate() {
 function openEdit() {
   if (!selectedProxy.value) return;
   Object.assign(draft, proxyDefaults(), selectedProxy.value);
+  delete draft.password;
+  passwordChange.value = { mode: "keep" };
   editorError.value = "";
   editing.value = { ...selectedProxy.value };
+}
+
+/** 接收固定掩码输入框的代理密码修改 */
+function onPasswordChange(action: SecretChange["mode"], value?: string) {
+  if (action === "set") {
+    passwordChange.value = value !== undefined ? { mode: "set", value } : { mode: "keep" };
+    return;
+  }
+  passwordChange.value = { mode: action };
 }
 
 /** 关闭代理编辑弹窗 */
@@ -129,10 +146,18 @@ function closeEditor() {
 
 /** 保存代理表单 */
 async function saveProxy() {
+  if (savingProxy.value) return;
   const name = draft.name.trim();
   const host = draft.host.trim();
   const username = draft.username?.trim() ?? "";
-  const password = draft.password ?? "";
+  const supportsPassword = draft.proxyType === "socks5" || draft.proxyType === "http";
+  const willHavePassword = supportsPassword && (
+    passwordChange.value.mode === "set"
+      ? Boolean(passwordChange.value.value)
+      : passwordChange.value.mode === "clear"
+        ? false
+        : draft.hasPassword === true
+  );
   if (!name) {
     editorError.value = "请填写代理名称";
     return;
@@ -146,15 +171,17 @@ async function saveProxy() {
     return;
   }
   if (
-    (draft.proxyType === "socks5" || draft.proxyType === "http") &&
-    Boolean(username) !== Boolean(password)
+    supportsPassword &&
+    Boolean(username) !== willHavePassword
   ) {
     editorError.value = "代理用户名和密码必须同时填写或同时留空";
     return;
   }
 
   editorError.value = "";
+  savingProxy.value = true;
   try {
+    const secretChange: SecretChange = supportsPassword ? passwordChange.value : { mode: "clear" };
     const id = await proxiesStore.upsert({
       id: draft.id,
       name,
@@ -162,15 +189,14 @@ async function saveProxy() {
       host,
       port: draft.port,
       username: username || undefined,
-      password:
-        draft.proxyType === "socks5" || draft.proxyType === "http"
-          ? password || undefined
-          : undefined,
-    });
+      hasPassword: draft.hasPassword,
+    }, secretChange);
     selectProxy(id);
     closeEditor();
   } catch (error) {
     editorError.value = `保存代理失败：${String(error)}`;
+  } finally {
+    savingProxy.value = false;
   }
 }
 
@@ -196,7 +222,9 @@ async function confirmDelete() {
 // 代理编辑弹窗位于连接编辑器之上，ESC 仅关闭最上层弹窗
 useEscClose(
   () => editing.value !== undefined,
-  closeEditor
+  () => {
+    if (!savingProxy.value) closeEditor();
+  }
 );
 </script>
 
@@ -323,14 +351,21 @@ useEscClose(
             <input class="input" v-model="draft.username" placeholder="选填" />
 
             <label>密码</label>
-            <input class="input" type="password" v-model="draft.password" placeholder="选填" />
+            <SecretInput
+              :has-secret="draft.hasPassword === true"
+              :reset-key="`${draft.id}:proxy-password`"
+              placeholder="选填"
+              @change="onPasswordChange"
+            />
           </template>
 
           <div v-if="editorError" class="proxy-error">{{ editorError }}</div>
         </div>
         <div class="modal-footer">
-          <button class="btn" @click="closeEditor">取消</button>
-          <button class="btn btn-primary" @click="saveProxy">保存</button>
+          <button class="btn" :disabled="savingProxy" @click="closeEditor">取消</button>
+          <button class="btn btn-primary" :disabled="savingProxy" @click="saveProxy">
+            {{ savingProxy ? "保存中" : "保存" }}
+          </button>
         </div>
       </div>
     </div>

@@ -7,9 +7,31 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "v
 import Icon from "./Icon.vue";
 import AppDialog from "./AppDialog.vue";
 import ConnectionEditor from "./ConnectionEditor.vue";
+import {
+  credentialsMatchMany,
+  pickConnectionImportFile,
+  saveConnectionExportFile,
+} from "../api";
+import {
+  buildConnectionExport,
+  parseConnectionExport,
+  planConnectionImport,
+  serializeConnectionExport,
+  type ConnectionExportFileV1,
+  type ConnectionExportProxyV1,
+  type ConnectionExportScope,
+} from "../connectionTransfer";
 import { useConnectionsStore } from "../stores/connections";
+import { useProxiesStore } from "../stores/proxies";
 import { useEscClose } from "../composables/useEscClose";
-import type { ConnectionConfig, ConnectionFolder } from "../types";
+import type {
+  ConnectionConfig,
+  ConnectionExportCredentialSources,
+  ConnectionFolder,
+  ConnectionSecretChanges,
+  ProxyConfig,
+} from "../types";
+import { genId } from "../utils";
 
 const emit = defineEmits<{
   (e: "connect", config: ConnectionConfig): void;
@@ -17,13 +39,14 @@ const emit = defineEmits<{
 }>();
 
 const store = useConnectionsStore();
+const proxiesStore = useProxiesStore();
 
 /** 搜索关键字 */
 const keyword = ref("");
 /** 当前选中项 id（文件夹与连接共用 id 空间） */
 const selectedId = ref("");
 /** 已展开的文件夹 id 集合 */
-const expandedFolders = ref<Set<string>>(new Set());
+const expandedFolders = ref<Set<string>>(new Set(store.expandedFolderIds));
 /** 编辑弹窗状态：undefined 关闭，null 新增，对象为编辑 */
 const editing = ref<ConnectionConfig | null | undefined>(undefined);
 /** 新建连接时预设的所属文件夹 id */
@@ -32,6 +55,10 @@ const editorParentId = ref<string | null>(null);
 const closeAfterConnect = ref(true);
 /** 列表滚动容器 */
 const listRef = ref<HTMLElement | null>(null);
+/** 是否正在执行连接导入或导出 */
+const transferBusy = ref(false);
+/** 是否正在保存连接编辑结果 */
+const savingConnection = ref(false);
 
 /** 通用弹窗状态 */
 const dialog = reactive<DialogState>({
@@ -78,7 +105,7 @@ type DropTarget =
   | { mode: "sort"; targetId: string; position: DropPosition }
   | { mode: "move"; targetId: string | null };
 
-type MenuAction = "connect" | "edit" | "rename" | "duplicate" | "newConn" | "newFolder" | "delete";
+type MenuAction = "connect" | "edit" | "rename" | "duplicate" | "newConn" | "newFolder" | "export" | "delete";
 type MenuItem = { key: string; label: string; disabled: boolean; action?: MenuAction; children?: MenuItem[] };
 type DialogState = {
   open: boolean;
@@ -94,7 +121,7 @@ type DialogState = {
 
 const CONTEXT_MENU_WIDTH = 152;
 const CONTEXT_SUBMENU_WIDTH = 132;
-const CONTEXT_MENU_HEIGHT = 128;
+const CONTEXT_MENU_HEIGHT = 154;
 const CONTEXT_MENU_MARGIN = 8;
 /** PageUp/PageDown 一次移动的行数 */
 const PAGE_STEP = 10;
@@ -210,22 +237,24 @@ const contextMenuItems = computed<MenuItem[]>(() => {
   const single = selectedId.value;
   const singleConn = selectedConn.value;
   const singleFolder = selectedFolder.value;
+  const blocked = transferBusy.value;
   return [
-    { key: "connect", action: "connect", label: "连接", disabled: !hasConnSelected.value },
+    { key: "connect", action: "connect", label: "连接", disabled: blocked || !hasConnSelected.value },
     singleFolder
-      ? { key: "rename", action: "rename", label: "重命名", disabled: false }
-      : { key: "edit", action: "edit", label: "编辑", disabled: !singleConn },
-    { key: "duplicate", action: "duplicate", label: "复制", disabled: !singleConn },
+      ? { key: "rename", action: "rename", label: "重命名", disabled: blocked }
+      : { key: "edit", action: "edit", label: "编辑", disabled: blocked || !singleConn },
+    { key: "duplicate", action: "duplicate", label: "复制", disabled: blocked || !singleConn },
     {
       key: "new",
       label: "新建",
-      disabled: false,
+      disabled: blocked,
       children: [
-        { key: "newConn", action: "newConn", label: "连接", disabled: false },
-        { key: "newFolder", action: "newFolder", label: "文件夹", disabled: false },
+        { key: "newConn", action: "newConn", label: "连接", disabled: blocked },
+        { key: "newFolder", action: "newFolder", label: "文件夹", disabled: blocked },
       ],
     },
-    { key: "delete", action: "delete", label: "删除", disabled: !single },
+    { key: "export", action: "export", label: "导出", disabled: blocked || !single },
+    { key: "delete", action: "delete", label: "删除", disabled: blocked || !single },
   ];
 });
 
@@ -275,6 +304,7 @@ function hitRow(x: number, y: number): HTMLElement | undefined {
 
 /** 行指针按下：单选并准备拖拽排序或移动 */
 function onRowPointerDown(row: Row, event: PointerEvent) {
+  if (transferBusy.value) return;
   if (event.button !== 0) return;
   const target = event.target as HTMLElement;
   if (target.closest("button")) return;
@@ -392,20 +422,211 @@ async function moveByDrop(sourceId: string, targetParentId: string | null) {
   const source = rowMap.value.get(sourceId);
   if (!source || !canMoveToParent(source, targetParentId)) return;
   await store.moveItems([sourceId], targetParentId);
-  if (targetParentId) expandedFolders.value = new Set(expandedFolders.value).add(targetParentId);
+  if (targetParentId) setFolderExpanded(targetParentId, true);
   scrollIntoView(sourceId);
+}
+
+/** 更新并持久化一个文件夹的展开状态 */
+function setFolderExpanded(id: string, expanded: boolean) {
+  const next = new Set(expandedFolders.value);
+  if (expanded) next.add(id);
+  else next.delete(id);
+  expandedFolders.value = next;
+  void store.setExpandedFolderIds([...next]).catch((error: unknown) => {
+    console.warn("保存文件夹展开状态失败", error);
+  });
 }
 
 /** 展开或收起文件夹 */
 function toggleFolder(id: string) {
-  const next = new Set(expandedFolders.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
+  setFolderExpanded(id, !expandedFolders.value.has(id));
+}
+
+/** 展开全部文件夹 */
+function expandAllFolders() {
+  const next = new Set(store.folders.map((folder) => folder.id));
   expandedFolders.value = next;
+  void store.setExpandedFolderIds([...next]).catch((error: unknown) => {
+    console.warn("保存文件夹展开状态失败", error);
+  });
+}
+
+/** 收起全部文件夹 */
+function collapseAllFolders() {
+  expandedFolders.value = new Set();
+  void store.setExpandedFolderIds([]).catch((error: unknown) => {
+    console.warn("保存文件夹展开状态失败", error);
+  });
+}
+
+/** 判断导入代理与本地代理除密码外的有效配置是否一致 */
+function proxyConfigWithoutPasswordMatches(
+  imported: ConnectionExportProxyV1,
+  existing: ProxyConfig
+): boolean {
+  return imported.proxyType === existing.proxyType
+    && imported.host.trim().toLowerCase() === existing.host.trim().toLowerCase()
+    && imported.port === existing.port
+    && (imported.username?.trim() ?? "") === (existing.username?.trim() ?? "");
+}
+
+/** 通过 Rust 比较系统凭据，为含密码的导入代理查找可复用本地代理 */
+async function findMatchedProxyIds(
+  file: ConnectionExportFileV1
+): Promise<Map<string, string>> {
+  const comparisons: Array<{ exportRef: string; sourceId: string; value: string }> = [];
+  for (const imported of file.proxies) {
+    if (
+      (imported.proxyType !== "socks5" && imported.proxyType !== "http")
+      || !imported.password
+    ) continue;
+    for (const existing of proxiesStore.proxies) {
+      if (!existing.hasPassword || !proxyConfigWithoutPasswordMatches(imported, existing)) continue;
+      comparisons.push({ exportRef: imported.ref, sourceId: existing.id, value: imported.password });
+    }
+  }
+  if (comparisons.length === 0) return new Map();
+
+  const results = await credentialsMatchMany(
+    comparisons.map((item) => ({ kind: "proxyPassword", id: item.sourceId, value: item.value }))
+  );
+  const matched = new Map<string, string>();
+  comparisons.forEach((item, index) => {
+    if (results[index] && !matched.has(item.exportRef)) matched.set(item.exportRef, item.sourceId);
+  });
+  return matched;
+}
+
+/** 生成不含路径分隔符的连接导出默认文件名 */
+function defaultExportFileName(scope: ConnectionExportScope): string {
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  if (scope.kind === "all") return `ztshell-connections-${date}.json`;
+  const sourceName = scope.kind === "connection"
+    ? connMap.value.get(scope.id)?.name
+    : store.folders.find((folder) => folder.id === scope.id)?.name;
+  const safeName = (sourceName ?? scope.kind)
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/[. ]+$/g, "")
+    .slice(0, 48) || scope.kind;
+  return `ztshell-${safeName}-${date}.json`;
+}
+
+/** 导出指定范围，并由 Rust 在写文件前从系统凭据库注入明文凭据 */
+async function exportConnections(scope: ConnectionExportScope) {
+  if (transferBusy.value) return;
+  const confirmed = await showConfirm(
+    "导出安全提示",
+    "导出文件将以明文包含连接密码、私钥口令及所用代理密码。文件不会包含私钥文件，但会保留私钥路径。请仅保存到可信位置并妥善保管。是否继续？",
+    "继续导出",
+    true
+  );
+  if (!confirmed) return;
+
+  transferBusy.value = true;
+  try {
+    const file = buildConnectionExport(scope, {
+      connections: store.connections,
+      folders: store.folders,
+      proxies: proxiesStore.proxies,
+    });
+    const credentialSources: ConnectionExportCredentialSources = {
+      connections: file.connections.map((connection) => ({
+        exportRef: connection.ref,
+        sourceId: connection.ref,
+      })),
+      proxies: file.proxies.map((proxy) => ({
+        exportRef: proxy.ref,
+        sourceId: proxy.ref,
+      })),
+    };
+    const saved = await saveConnectionExportFile(
+      serializeConnectionExport(file),
+      defaultExportFileName(scope),
+      credentialSources
+    );
+    if (saved) {
+      await showInfo(
+        "导出完成",
+        `已导出 ${file.connections.length} 个连接、${file.folders.length} 个文件夹和 ${file.proxies.length} 个使用中的代理。`
+      );
+    }
+  } catch (error) {
+    await showInfo("导出失败", error instanceof Error ? error.message : String(error));
+  } finally {
+    transferBusy.value = false;
+  }
+}
+
+/** 导出右键选中的单个连接或文件夹子树 */
+async function onExportSelected() {
+  const connection = selectedConn.value;
+  if (connection) {
+    await exportConnections({ kind: "connection", id: connection.id });
+    return;
+  }
+  const folder = selectedFolder.value;
+  if (folder) await exportConnections({ kind: "folder", id: folder.id });
+}
+
+/** 导入连接文件，并在连接批次失败时撤销已新增代理 */
+async function onImportConnections() {
+  if (transferBusy.value) return;
+  transferBusy.value = true;
+  try {
+    const content = await pickConnectionImportFile();
+    if (content === null) return;
+    const file = parseConnectionExport(content);
+    const matchedProxyIds = await findMatchedProxyIds(file);
+    const plan = planConnectionImport(
+      file,
+      {
+        connections: store.connections,
+        folders: store.folders,
+        proxies: proxiesStore.proxies,
+      },
+      { idFactory: genId, matchedProxyIds }
+    );
+
+    const importedProxyIds = await proxiesStore.importBatch(plan.proxies);
+    try {
+      await store.importBatch(plan.connections, plan.folders, plan.rootOrderIds);
+    } catch (error) {
+      try {
+        await proxiesStore.rollbackImported(importedProxyIds);
+      } catch (rollbackError) {
+        throw new Error(
+          `导入连接失败：${String(error)}；撤销新增代理失败：${String(rollbackError)}`
+        );
+      }
+      throw error;
+    }
+
+    const details = [
+      `已导入 ${plan.summary.connectionCount} 个连接和 ${plan.summary.folderCount} 个文件夹。`,
+      `新增代理 ${plan.summary.addedProxyCount} 个，复用已有代理 ${plan.summary.reusedProxyCount} 个。`,
+    ];
+    if (plan.summary.renamedConnectionCount > 0) {
+      details.push(`${plan.summary.renamedConnectionCount} 个同名连接已自动追加序号。`);
+    }
+    if (plan.summary.reusedFolderCount > 0) {
+      details.push(`${plan.summary.reusedFolderCount} 个同名文件夹已复用。`);
+    }
+    if (plan.summary.privateKeyConnectionCount > 0) {
+      details.push(
+        `${plan.summary.privateKeyConnectionCount} 个私钥连接仅导入了私钥路径，请确认当前设备上的私钥文件可用。`
+      );
+    }
+    await showInfo("导入完成", details.join("\n"));
+  } catch (error) {
+    await showInfo("导入失败", error instanceof Error ? error.message : String(error));
+  } finally {
+    transferBusy.value = false;
+  }
 }
 
 /** 行双击：文件夹展开收起，连接发起连接 */
 function onRowDblClick(row: Row) {
+  if (transferBusy.value) return;
   if (row.kind === "folder") toggleFolder(row.id);
   else connectConns([row.config]);
 }
@@ -433,11 +654,24 @@ function onEdit() {
   if (selectedConn.value) editing.value = { ...selectedConn.value };
 }
 
+/** 保存进行中不得关闭连接编辑器 */
+function onEditorCancel() {
+  if (!savingConnection.value) editing.value = undefined;
+}
+
 /** 保存编辑结果：新建连接落入预设文件夹 */
-async function onSave(config: ConnectionConfig) {
-  if (editing.value === null) config.parentId = editorParentId.value;
-  await store.upsert(config);
-  editing.value = undefined;
+async function onSave(config: ConnectionConfig, secretChanges: ConnectionSecretChanges) {
+  if (savingConnection.value) return;
+  savingConnection.value = true;
+  try {
+    if (editing.value === null) config.parentId = editorParentId.value;
+    await store.upsert(config, secretChanges);
+    editing.value = undefined;
+  } catch (error) {
+    await showInfo("保存失败", `无法保存连接：${String(error)}`);
+  } finally {
+    savingConnection.value = false;
+  }
 }
 
 /** 新建文件夹 */
@@ -446,7 +680,7 @@ async function onNewFolder(parentId: string | null) {
   if (!name?.trim()) return;
   const id = await store.upsertFolder({ id: "", name: name.trim(), parentId } as ConnectionFolder);
   // 新建后展开其父文件夹以便可见
-  if (parentId) expandedFolders.value = new Set(expandedFolders.value).add(parentId);
+  if (parentId) setFolderExpanded(parentId, true);
   selectSingle(id);
 }
 
@@ -463,8 +697,12 @@ async function onRenameFolder() {
 async function onDuplicate() {
   const id = selectedId.value;
   if (!id || !connMap.value.has(id)) return;
-  const newId = await store.duplicateConnection(id);
-  if (newId) selectSingle(newId);
+  try {
+    const newId = await store.duplicateConnection(id);
+    if (newId) selectSingle(newId);
+  } catch (error) {
+    await showInfo("复制失败", `无法复制连接：${String(error)}`);
+  }
 }
 
 /** 删除选中项：文件夹递归删除其全部内容 */
@@ -484,9 +722,19 @@ async function onDelete() {
     : `是否删除连接 [ ${conn?.name} ] ？`;
   const confirmed = await showConfirm("删除确认", message, "删除", true);
   if (!confirmed) return;
-  if (folder) await store.removeFolderRecursive(folder.id);
-  else if (conn) await store.remove(conn.id);
-  clearSelection();
+  try {
+    if (folder) {
+      const removedFolderIds = descendantFolderIds(folder.id);
+      await store.removeFolderRecursive(folder.id);
+      expandedFolders.value = new Set(
+        [...expandedFolders.value].filter((folderId) => !removedFolderIds.has(folderId))
+      );
+    }
+    else if (conn) await store.remove(conn.id);
+    clearSelection();
+  } catch (error) {
+    await showInfo("删除失败", `无法删除所选项目：${String(error)}`);
+  }
 }
 
 /** 右键行：未选中则先单选右键目标，记录新建目标文件夹 */
@@ -544,6 +792,9 @@ function runMenuAction(item: MenuItem) {
     case "newFolder":
       onNewFolder(parentId);
       break;
+    case "export":
+      void onExportSelected();
+      break;
     case "delete":
       onDelete();
       break;
@@ -564,7 +815,7 @@ function onGlobalPointerDown(event: PointerEvent) {
 
 /** 全局键盘：方向键导航、回车连接、左右展开收起 */
 function onKeyDown(event: KeyboardEvent) {
-  if (editing.value !== undefined || dialog.open || contextMenu.open) return;
+  if (transferBusy.value || editing.value !== undefined || dialog.open || contextMenu.open) return;
   const target = event.target as HTMLElement;
   if (target.closest?.("input, textarea, select")) return;
   const key = event.key;
@@ -645,6 +896,21 @@ function showConfirm(title: string, message: string, confirmText = "确定", dan
   });
 }
 
+/** 信息提示弹窗 */
+function showInfo(title: string, message: string): Promise<void> {
+  return new Promise((resolve) => {
+    Object.assign(dialog, {
+      open: true,
+      type: "info",
+      title,
+      message,
+      confirmText: "确定",
+      confirmDanger: false,
+      resolve: () => resolve(),
+    });
+  });
+}
+
 /** 输入弹窗 */
 function showPrompt(title: string, message: string, placeholder: string, defaultValue = ""): Promise<string | null> {
   return new Promise((resolve) => {
@@ -699,22 +965,39 @@ onBeforeUnmount(() => {
 
       <!-- 工具栏 -->
       <div class="toolbar">
-        <button class="tool-btn" title="新建连接" @click="onNewConnection(null)">
+        <button class="tool-btn" title="新建连接" :disabled="transferBusy" @click="onNewConnection(null)">
           <Icon name="plus" :size="16" />
         </button>
-        <button class="tool-btn" title="新建文件夹" @click="onNewFolder(null)">
+        <button class="tool-btn" title="新建文件夹" :disabled="transferBusy" @click="onNewFolder(null)">
           <Icon name="folder" :size="15" />
         </button>
-        <button class="tool-btn" title="编辑" :disabled="!selectedConn" @click="onEdit">
+        <button class="tool-btn" title="编辑" :disabled="transferBusy || !selectedConn" @click="onEdit">
           <Icon name="edit" :size="15" />
         </button>
-        <button class="tool-btn" title="删除" :disabled="!selectedId" @click="onDelete">
+        <button class="tool-btn" title="删除" :disabled="transferBusy || !selectedId" @click="onDelete">
           <Icon name="trash" :size="15" />
         </button>
+        <button class="tool-btn" title="全部展开" :disabled="transferBusy || store.folders.length === 0" @click="expandAllFolders">
+          <Icon name="chevronsDown" :size="15" />
+        </button>
+        <button class="tool-btn" title="全部收起" :disabled="transferBusy || store.folders.length === 0" @click="collapseAllFolders">
+          <Icon name="chevronsUp" :size="15" />
+        </button>
         <div class="toolbar-spacer"></div>
+        <button class="tool-btn" title="导入连接" :disabled="transferBusy" @click="onImportConnections">
+          <Icon name="download" :size="15" />
+        </button>
+        <button
+          class="tool-btn"
+          title="导出全部连接"
+          :disabled="transferBusy || (store.connections.length === 0 && store.folders.length === 0)"
+          @click="exportConnections({ kind: 'all' })"
+        >
+          <Icon name="upload" :size="15" />
+        </button>
         <div class="search-box">
           <Icon name="search" :size="14" />
-          <input v-model="keyword" placeholder="搜索" />
+          <input v-model="keyword" placeholder="搜索" :disabled="transferBusy" />
         </div>
       </div>
 
@@ -823,15 +1106,16 @@ onBeforeUnmount(() => {
           <input type="checkbox" v-model="closeAfterConnect" />
           连接后关闭窗口
         </label>
-        <button class="btn btn-primary" :disabled="!hasConnSelected" @click="onConnectSelected">连接</button>
+        <button class="btn btn-primary" :disabled="transferBusy || !hasConnSelected" @click="onConnectSelected">连接</button>
       </div>
     </div>
 
     <ConnectionEditor
       v-if="editing !== undefined"
       :model="editing"
+      :saving="savingConnection"
       @save="onSave"
-      @cancel="editing = undefined"
+      @cancel="onEditorCancel"
     />
 
     <AppDialog

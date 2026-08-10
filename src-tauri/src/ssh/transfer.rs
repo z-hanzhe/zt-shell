@@ -208,7 +208,12 @@ pub struct TransferCreateResult {
 impl TransferCreateResult {
     /// 任务已创建的正常返回
     fn created(file_count: u64) -> Self {
-        Self { need_confirm: false, file_count, active_count: 0, exist_names: Vec::new() }
+        Self {
+            need_confirm: false,
+            file_count,
+            active_count: 0,
+            exist_names: Vec::new(),
+        }
     }
 }
 
@@ -287,7 +292,10 @@ impl TransferManager {
     /// 注册一个任务并纳入展示顺序
     fn register(&self, task: Arc<TaskState>) {
         if let Some(parent) = task.parent_id.clone() {
-            self.children.entry(parent).or_default().push(task.id.clone());
+            self.children
+                .entry(parent)
+                .or_default()
+                .push(task.id.clone());
         }
         self.order.lock().unwrap().push(task.id.clone());
         self.tasks.insert(task.id.clone(), task);
@@ -384,7 +392,8 @@ impl TransferManager {
             }
             return Err(anyhow!(
                 "本次共 {} 个文件，超过最大 {} 个文件限制，推荐打包压缩后传输",
-                file_count, MAX_TOTAL_FILES
+                file_count,
+                MAX_TOTAL_FILES
             ));
         }
         if !force && total > CONFIRM_THRESHOLD {
@@ -491,8 +500,16 @@ impl TransferManager {
                     Some(idx) => entry.rel[..idx].to_string(),
                     None => String::new(),
                 };
-                let parent_id = dir_ids.get(&parent_rel).cloned().unwrap_or_else(|| root_id.clone());
-                let name = entry.rel.rsplit('/').next().unwrap_or(&entry.rel).to_string();
+                let parent_id = dir_ids
+                    .get(&parent_rel)
+                    .cloned()
+                    .unwrap_or_else(|| root_id.clone());
+                let name = entry
+                    .rel
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&entry.rel)
+                    .to_string();
                 let local = root_path.join(entry.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
                 let remote = format!("{}/{}", remote_root.trim_end_matches('/'), entry.rel);
                 let task = self.new_task(
@@ -517,7 +534,12 @@ impl TransferManager {
             }
             // 空目录没有子任务，需要单独创建远端目录
             for id in dir_ids.values() {
-                if self.children.get(id).map(|c| !c.is_empty()).unwrap_or(false) {
+                if self
+                    .children
+                    .get(id)
+                    .map(|c| !c.is_empty())
+                    .unwrap_or(false)
+                {
                     continue;
                 }
                 if let Some(task) = self.tasks.get(id).map(|t| t.clone()) {
@@ -637,8 +659,16 @@ impl TransferManager {
                     Some(idx) => entry.rel[..idx].to_string(),
                     None => String::new(),
                 };
-                let parent_id = dir_ids.get(&parent_rel).cloned().unwrap_or_else(|| root_id.clone());
-                let entry_name = entry.rel.rsplit('/').next().unwrap_or(&entry.rel).to_string();
+                let parent_id = dir_ids
+                    .get(&parent_rel)
+                    .cloned()
+                    .unwrap_or_else(|| root_id.clone());
+                let entry_name = entry
+                    .rel
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&entry.rel)
+                    .to_string();
                 let local = local_root.join(entry.rel.replace('/', std::path::MAIN_SEPARATOR_STR));
                 let remote = format!("{}/{}", item.path.trim_end_matches('/'), entry.rel);
                 let task = self.new_task(
@@ -663,7 +693,12 @@ impl TransferManager {
             }
             // 空目录在本地直接创建
             for id in dir_ids.values() {
-                if self.children.get(id).map(|c| !c.is_empty()).unwrap_or(false) {
+                if self
+                    .children
+                    .get(id)
+                    .map(|c| !c.is_empty())
+                    .unwrap_or(false)
+                {
                     continue;
                 }
                 if let Some(task) = self.tasks.get(id).map(|t| t.clone()) {
@@ -690,7 +725,10 @@ impl TransferManager {
         let manager = app.state::<SessionManager>();
         // 先探测远端 tar 命令是否可用，失败时立刻反馈
         let probe = manager
-            .exec(session_id, "command -v tar >/dev/null 2>&1 && printf __ZTOK__ || printf __ZTNO__")
+            .exec(
+                session_id,
+                "command -v tar >/dev/null 2>&1 && printf __ZTOK__ || printf __ZTNO__",
+            )
             .await?;
         if !probe.contains("__ZTOK__") {
             return Err(anyhow!("远端未找到 tar 命令，无法打包下载"));
@@ -709,7 +747,11 @@ impl TransferManager {
             local_path,
             remote_dir.clone(),
             0,
-            Some(ArchiveJob { remote_dir, names, remote_tmp }),
+            Some(ArchiveJob {
+                remote_dir,
+                names,
+                remote_tmp,
+            }),
         );
         self.register(task.clone());
         spawn_file_runner(app.clone(), task);
@@ -847,7 +889,10 @@ impl TransferManager {
             }
         }
         // 维护展示顺序与父子索引
-        self.order.lock().unwrap().retain(|id| !removed.contains(id));
+        self.order
+            .lock()
+            .unwrap()
+            .retain(|id| !removed.contains(id));
         for mut entry in self.children.iter_mut() {
             entry.value_mut().retain(|id| !removed.contains(id));
         }
@@ -920,8 +965,14 @@ impl TransferManager {
         {
             let mut track = self.speed_track.lock().unwrap();
             for id in &order {
-                let Some(task) = self.tasks.get(id) else { continue };
-                let has_children = self.children.get(id).map(|c| !c.is_empty()).unwrap_or(false);
+                let Some(task) = self.tasks.get(id) else {
+                    continue;
+                };
+                let has_children = self
+                    .children
+                    .get(id)
+                    .map(|c| !c.is_empty())
+                    .unwrap_or(false);
                 if task.is_dir && has_children {
                     continue;
                 }
@@ -940,7 +991,9 @@ impl TransferManager {
 
         // 第二步：自底向上聚合目录节点（order 保证父先于子，反向遍历即自底向上）
         for id in order.iter().rev() {
-            let Some(task) = self.tasks.get(id).map(|t| t.clone()) else { continue };
+            let Some(task) = self.tasks.get(id).map(|t| t.clone()) else {
+                continue;
+            };
             let kids = self.children.get(id).map(|c| c.clone()).unwrap_or_default();
             if !task.is_dir || kids.is_empty() {
                 continue;
@@ -950,7 +1003,9 @@ impl TransferManager {
             let mut speed = 0u64;
             let mut has = [false; 7];
             for kid in &kids {
-                let Some(child) = self.tasks.get(kid) else { continue };
+                let Some(child) = self.tasks.get(kid) else {
+                    continue;
+                };
                 transferred += child.transferred.load(Ordering::SeqCst);
                 total += child.total.load(Ordering::SeqCst);
                 speed += child.speed.load(Ordering::SeqCst);
@@ -980,7 +1035,9 @@ impl TransferManager {
         let mut updates = Vec::new();
         let mut snapshot = self.snapshot.lock().unwrap();
         for id in &order {
-            let Some(task) = self.tasks.get(id) else { continue };
+            let Some(task) = self.tasks.get(id) else {
+                continue;
+            };
             let status = task.status();
             if status == ST_RUNNING || status == ST_PACKING {
                 task.elapsed_ms.fetch_add(dt_ms, Ordering::SeqCst);
@@ -1034,11 +1091,14 @@ pub fn start_progress_loop(app: AppHandle) {
 
 /// 枚举本地顶层路径，目录时递归收集相对条目（父目录先于子内容）
 #[allow(clippy::type_complexity)]
-fn scan_local_roots(paths: &[String]) -> Result<Vec<(PathBuf, String, bool, Option<Vec<ScanEntry>>)>> {
+fn scan_local_roots(
+    paths: &[String],
+) -> Result<Vec<(PathBuf, String, bool, Option<Vec<ScanEntry>>)>> {
     let mut out = Vec::new();
     for raw in paths {
         let path = PathBuf::from(raw);
-        let meta = std::fs::metadata(&path).map_err(|e| anyhow!("读取本地路径失败（{}）：{}", raw, e))?;
+        let meta =
+            std::fs::metadata(&path).map_err(|e| anyhow!("读取本地路径失败（{}）：{}", raw, e))?;
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1065,13 +1125,23 @@ fn scan_local_dir(root: &Path) -> Result<Vec<ScanEntry>> {
             let entry = entry.map_err(|e| anyhow!("读取本地目录项失败：{}", e))?;
             let child_rel = rel.join(entry.file_name());
             let rel_str = child_rel.to_string_lossy().replace('\\', "/");
-            let file_type = entry.file_type().map_err(|e| anyhow!("读取文件类型失败：{}", e))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|e| anyhow!("读取文件类型失败：{}", e))?;
             if file_type.is_dir() {
-                out.push(ScanEntry { rel: rel_str, is_dir: true, size: 0 });
+                out.push(ScanEntry {
+                    rel: rel_str,
+                    is_dir: true,
+                    size: 0,
+                });
                 stack.push(child_rel);
             } else {
                 let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                out.push(ScanEntry { rel: rel_str, is_dir: false, size });
+                out.push(ScanEntry {
+                    rel: rel_str,
+                    is_dir: false,
+                    size,
+                });
             }
         }
     }
@@ -1094,10 +1164,18 @@ async fn scan_remote_dir(sftp: &SftpSession, root: &str) -> Result<Vec<ScanEntry
             .map_err(|e| anyhow!("读取远端目录失败（{}）：{}", abs, format_sftp_error(&e)))?;
         for item in read {
             let name = item.file_name();
-            let child_rel = if rel.is_empty() { name.clone() } else { format!("{}/{}", rel, name) };
+            let child_rel = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", rel, name)
+            };
             let meta = item.metadata();
             if matches!(meta.file_type(), russh_sftp::protocol::FileType::Dir) {
-                out.push(ScanEntry { rel: child_rel.clone(), is_dir: true, size: 0 });
+                out.push(ScanEntry {
+                    rel: child_rel.clone(),
+                    is_dir: true,
+                    size: 0,
+                });
                 stack.push(child_rel);
             } else {
                 out.push(ScanEntry {
@@ -1136,7 +1214,11 @@ async fn ensure_remote_dir(
         if let Err(e) = sftp.create_dir(&prefix).await {
             // 并发场景下可能已被其他任务创建，再确认一次
             if sftp.metadata(&prefix).await.is_err() {
-                return Err(anyhow!("创建远端目录失败（{}）：{}", prefix, format_sftp_error(&e)));
+                return Err(anyhow!(
+                    "创建远端目录失败（{}）：{}",
+                    prefix,
+                    format_sftp_error(&e)
+                ));
             }
         }
         tm.dir_cache.insert(key);
@@ -1259,7 +1341,13 @@ async fn run_upload_once(app: &AppHandle, task: &Arc<TaskState>) -> Result<bool>
     let manager = app.state::<SessionManager>();
     let sftp = manager.sftp(&task.session_id).await?;
     let tm = app.state::<TransferManager>();
-    ensure_remote_dir(&tm, &sftp, &task.session_id, &remote_parent(&task.remote_path)).await?;
+    ensure_remote_dir(
+        &tm,
+        &sftp,
+        &task.session_id,
+        &remote_parent(&task.remote_path),
+    )
+    .await?;
 
     let total = tokio::fs::metadata(&task.local_path)
         .await
@@ -1326,7 +1414,10 @@ async fn run_upload_once(app: &AppHandle, task: &Arc<TaskState>) -> Result<bool>
             .map_err(|e| anyhow!("写入远端文件失败：{}", e))?;
         task.transferred.fetch_add(n as u64, Ordering::SeqCst);
     }
-    remote.flush().await.map_err(|e| anyhow!("刷新远端文件失败：{}", e))?;
+    remote
+        .flush()
+        .await
+        .map_err(|e| anyhow!("刷新远端文件失败：{}", e))?;
     let _ = remote.shutdown().await;
     Ok(true)
 }
@@ -1339,7 +1430,11 @@ async fn run_download_once(app: &AppHandle, task: &Arc<TaskState>) -> Result<boo
 }
 
 /// 下载核心：远端文件流式写入本地，任务曾运行过时按本地已落盘字节续传
-async fn stream_download(sftp: &SftpSession, task: &Arc<TaskState>, remote_path: &str) -> Result<bool> {
+async fn stream_download(
+    sftp: &SftpSession,
+    task: &Arc<TaskState>,
+    remote_path: &str,
+) -> Result<bool> {
     let total = sftp
         .metadata(remote_path)
         .await
@@ -1418,7 +1513,10 @@ async fn stream_download(sftp: &SftpSession, task: &Arc<TaskState>, remote_path:
             .map_err(|e| anyhow!("写入本地文件失败：{}", e))?;
         task.transferred.fetch_add(n as u64, Ordering::SeqCst);
     }
-    local.flush().await.map_err(|e| anyhow!("刷新本地文件失败：{}", e))?;
+    local
+        .flush()
+        .await
+        .map_err(|e| anyhow!("刷新本地文件失败：{}", e))?;
     let _ = remote.shutdown().await;
     // 远端提前收到 EOF 说明连接异常中断，交给重试按断点续传
     if task.transferred.load(Ordering::SeqCst) < total {

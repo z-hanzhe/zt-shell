@@ -134,12 +134,15 @@ export const useSessionsStore = defineStore("sessions", () => {
     approval?: HostKeyApproval,
     reopenInPlace = false
   ): Promise<boolean> {
+    const proxy = resolveProxy(session.config);
     const outcome = await sshConnect(
       {
         ...session.config,
         id: session.id,
-        proxy: resolveProxy(session.config),
+        proxy,
       },
+      session.config.id,
+      proxy?.id ?? null,
       approval
     );
     return applyConnectOutcome(session, outcome, reopenInPlace);

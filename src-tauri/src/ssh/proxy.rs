@@ -192,6 +192,7 @@ mod tests {
             port,
             username: None,
             password: None,
+            has_password: false,
         }
     }
 

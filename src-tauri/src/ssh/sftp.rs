@@ -452,9 +452,7 @@ pub async fn extract_archive(
 /// 校验压缩命令只能在普通文件管理模式下执行
 async fn ensure_normal_exec_mode(manager: &SessionManager, session_id: &str) -> Result<()> {
     if manager.is_sudo(session_id).await? {
-        return Err(anyhow!(
-            "sudo 文件管理模式暂不支持压缩和解压"
-        ));
+        return Err(anyhow!("sudo 文件管理模式暂不支持压缩和解压"));
     }
     Ok(())
 }

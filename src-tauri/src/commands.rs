@@ -3,6 +3,9 @@
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, State};
 
+use crate::credentials::{
+    CredentialCopy, CredentialKey, CredentialManager, CredentialMatch, CredentialWrite,
+};
 use crate::ssh::host_keys::HostKeyStore;
 use crate::ssh::manager::SessionManager;
 use crate::ssh::monitor::{self, MonitorData};
@@ -20,14 +23,67 @@ fn map_err<T>(r: anyhow::Result<T>) -> CmdResult<T> {
     r.map_err(|e| e.to_string())
 }
 
+/// 批量写入系统凭据库
+#[tauri::command]
+pub async fn credentials_set_many(
+    credentials: State<'_, CredentialManager>,
+    changes: Vec<CredentialWrite>,
+) -> CmdResult<()> {
+    map_err(credentials.set_many(changes).await)
+}
+
+/// 批量检查系统凭据是否存在，结果顺序与输入一致
+#[tauri::command]
+pub async fn credentials_check_many(
+    credentials: State<'_, CredentialManager>,
+    keys: Vec<CredentialKey>,
+) -> CmdResult<Vec<bool>> {
+    map_err(credentials.check_many(keys).await)
+}
+
+/// 批量比较代理密码，结果顺序与输入一致且不返回已存明文
+#[tauri::command]
+pub async fn credentials_match_many(
+    credentials: State<'_, CredentialManager>,
+    changes: Vec<CredentialMatch>,
+) -> CmdResult<Vec<bool>> {
+    map_err(credentials.match_many(changes).await)
+}
+
+/// 批量删除系统凭据，不存在的凭据按幂等成功处理
+#[tauri::command]
+pub async fn credentials_delete_many(
+    credentials: State<'_, CredentialManager>,
+    keys: Vec<CredentialKey>,
+) -> CmdResult<()> {
+    map_err(credentials.delete_many(keys).await)
+}
+
+/// 批量复制系统凭据
+#[tauri::command]
+pub async fn credentials_copy_many(
+    credentials: State<'_, CredentialManager>,
+    changes: Vec<CredentialCopy>,
+) -> CmdResult<()> {
+    map_err(credentials.copy_many(changes).await)
+}
+
 /// 建立 SSH 连接，未知或变化的主机密钥会先返回确认信息
 #[tauri::command]
 pub async fn ssh_connect(
+    credentials: State<'_, CredentialManager>,
     manager: State<'_, SessionManager>,
     host_keys: State<'_, HostKeyStore>,
-    config: ConnectionConfig,
+    mut config: ConnectionConfig,
+    saved_connection_id: String,
+    saved_proxy_id: Option<String>,
     host_key_approval: Option<HostKeyApproval>,
 ) -> CmdResult<ConnectOutcome> {
+    map_err(
+        credentials
+            .inject_connection_credentials(&mut config, saved_connection_id, saved_proxy_id)
+            .await,
+    )?;
     map_err(
         manager
             .connect(&config, &host_keys, host_key_approval.as_ref())
@@ -402,7 +458,9 @@ pub async fn transfer_pack_download(
 
 /// 列出全部传输任务
 #[tauri::command]
-pub async fn transfer_list(transfers: State<'_, TransferManager>) -> CmdResult<Vec<TransferTaskDto>> {
+pub async fn transfer_list(
+    transfers: State<'_, TransferManager>,
+) -> CmdResult<Vec<TransferTaskDto>> {
     Ok(transfers.list())
 }
 

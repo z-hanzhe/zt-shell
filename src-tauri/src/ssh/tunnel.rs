@@ -104,7 +104,9 @@ pub async fn prepare_listeners(tunnels: &[TunnelConfig]) -> PreparedTunnelListen
                 prepared.listeners.insert(tunnel.id.clone(), listener);
             }
             Err(error) => {
-                prepared.failures.insert(tunnel.id.clone(), error.to_string());
+                prepared
+                    .failures
+                    .insert(tunnel.id.clone(), error.to_string());
             }
         }
     }
@@ -316,9 +318,7 @@ fn target(tunnel: &TunnelConfig) -> Result<(String, u16)> {
     if host.is_empty() {
         return Err(anyhow!("缺少目标主机"));
     }
-    let port = tunnel
-        .target_port
-        .ok_or_else(|| anyhow!("缺少目标端口"))?;
+    let port = tunnel.target_port.ok_or_else(|| anyhow!("缺少目标端口"))?;
     if port == 0 {
         return Err(anyhow!("目标端口必须在 1 到 65535 之间"));
     }

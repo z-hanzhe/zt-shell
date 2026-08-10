@@ -27,6 +27,8 @@ export interface ProxyConfig {
   username?: string;
   /** SOCKS5 密码或 HTTP Basic 密码 */
   password?: string;
+  /** 系统凭据库中是否已有代理密码 */
+  hasPassword?: boolean;
 }
 
 /** SSH 隧道配置 */
@@ -58,8 +60,12 @@ export interface ConnectionConfig {
   username: string;
   authType: AuthType;
   password?: string;
+  /** 系统凭据库中是否已有登录密码 */
+  hasPassword?: boolean;
   privateKeyPath?: string;
   passphrase?: string;
+  /** 系统凭据库中是否已有私钥口令 */
+  hasPassphrase?: boolean;
   /** 使用的共享代理 id，空或 null 表示直连 */
   proxyId?: string | null;
   /** 用户备注 */
@@ -97,6 +103,72 @@ export interface ConnectResult {
   sessionId: string;
   /** 本次连接的代理与隧道条目，存在 ok 为 false 的条目表示部分功能未启用 */
   extensions: ExtensionEntry[];
+}
+
+/** 系统凭据类别 */
+export type CredentialKind =
+  | "connectionPassword"
+  | "connectionPassphrase"
+  | "proxyPassword";
+
+/** 系统凭据定位键 */
+export interface CredentialKey {
+  /** 凭据类别 */
+  kind: CredentialKind;
+  /** 连接或代理的稳定标识 */
+  id: string;
+}
+
+/** 写入系统凭据库的凭据 */
+export interface CredentialWrite extends CredentialKey {
+  /** 凭据明文，仅在写入调用期间存在 */
+  value: string;
+}
+
+/** 与系统凭据库中已存代理密码进行比较的参数 */
+export interface CredentialMatch extends CredentialKey {
+  /** 候选明文，仅在比较调用期间存在 */
+  value: string;
+}
+
+/** 复制系统凭据库中的凭据 */
+export interface CredentialCopy {
+  /** 凭据类别 */
+  kind: CredentialKind;
+  /** 来源连接或代理标识 */
+  sourceId: string;
+  /** 目标连接或代理标识 */
+  targetId: string;
+}
+
+/** 编辑器对一项凭据的修改意图 */
+export type SecretChange =
+  | { mode: "keep" }
+  | { mode: "set"; value: string }
+  | { mode: "clear" };
+
+/** 连接编辑器提交的凭据修改 */
+export interface ConnectionSecretChanges {
+  /** 登录密码修改 */
+  password: SecretChange;
+  /** 私钥口令修改 */
+  passphrase: SecretChange;
+}
+
+/** 导出记录与本地稳定标识的凭据来源映射 */
+export interface ConnectionExportCredentialSource {
+  /** 导出 JSON 中连接或代理的文件内引用 */
+  exportRef: string;
+  /** 系统凭据库使用的本地连接或代理稳定标识 */
+  sourceId: string;
+}
+
+/** 导出内容使用的连接与代理凭据来源 */
+export interface ConnectionExportCredentialSources {
+  /** 导出连接的凭据来源 */
+  connections: ConnectionExportCredentialSource[];
+  /** 导出代理的凭据来源 */
+  proxies: ConnectionExportCredentialSource[];
 }
 
 /** 主机密钥确认场景 */

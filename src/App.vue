@@ -10,6 +10,7 @@
 import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { isTauri } from "@tauri-apps/api/core";
 
 import TitleBar from "./components/TitleBar.vue";
 import MonitorPanel from "./components/MonitorPanel.vue";
@@ -37,10 +38,16 @@ const transfersStore = useTransfersStore();
 
 /** 连接管理器弹窗可见性 */
 const showConnManager = ref(false);
+/** 连接、代理和系统凭据是否已完成初始化 */
+const connectionDataReady = ref(false);
+/** 初始化期间是否收到打开连接管理器的请求 */
+const pendingConnectionManagerOpen = ref(false);
 /** 设置弹窗可见性 */
 const showSettings = ref(false);
 /** 关闭软件前的确认弹窗可见性（存在连接中的会话时） */
 const showCloseConfirm = ref(false);
+/** 本地凭据或持久化初始化错误 */
+const storageError = ref("");
 /** 主机密钥确认后的二次握手是否正在进行 */
 const hostKeyBusy = ref(false);
 /** 终端面板引用，用于文件区与终端互相同步路径 */
@@ -164,6 +171,23 @@ function onConnect(config: ConnectionConfig) {
   sessionsStore.open(config);
 }
 
+/** 在连接数据就绪后打开管理器，启动期间的点击会延迟执行 */
+function openConnectionManager() {
+  if (!connectionDataReady.value) {
+    pendingConnectionManagerOpen.value = true;
+    return;
+  }
+  showConnManager.value = true;
+}
+
+/** 标记连接数据可用并执行启动期间排队的打开请求 */
+function markConnectionDataReady() {
+  connectionDataReady.value = true;
+  if (!pendingConnectionManagerOpen.value) return;
+  pendingConnectionManagerOpen.value = false;
+  showConnManager.value = true;
+}
+
 /** 信任当前展示的主机密钥，并在需要时恢复原终端通道 */
 async function onApproveHostKey() {
   const session = pendingHostKeySession.value;
@@ -249,13 +273,19 @@ onMounted(async () => {
   // 加载本地持久化的连接与设置、初始化传输事件监听（浏览器预览环境下会失败，忽略即可）
   try {
     await Promise.all([
-      connectionsStore.init(),
-      proxiesStore.init(),
+      (async () => {
+        // 凭据迁移串行执行，避免多个系统凭据库操作互相争用
+        await connectionsStore.init();
+        await proxiesStore.init();
+        markConnectionDataReady();
+      })(),
       settingsStore.init(),
       transfersStore.init(),
     ]);
   } catch (e) {
     console.warn("本地存储不可用（可能非 Tauri 环境）", e);
+    if (isTauri()) storageError.value = `无法加载本地连接数据：${String(e)}`;
+    else markConnectionDataReady();
   }
   // 拦截窗口关闭：存在连接中的会话时先二次确认（非 Tauri 环境忽略）
   try {
@@ -308,7 +338,7 @@ onBeforeUnmount(() => {
         <div class="terminal-region">
           <TerminalPanel
             ref="terminalPanelRef"
-            @open-conn-manager="showConnManager = true"
+            @open-conn-manager="openConnectionManager"
           />
         </div>
 
@@ -368,6 +398,15 @@ onBeforeUnmount(() => {
       :confirm-danger="true"
       @confirm="onConfirmClose"
       @cancel="onCancelClose"
+    />
+
+    <AppDialog
+      :open="Boolean(storageError)"
+      type="info"
+      title="连接数据加载失败"
+      :message="storageError"
+      @confirm="storageError = ''"
+      @cancel="storageError = ''"
     />
 
     <!-- SSH 主机身份确认始终位于其他业务弹窗之上 -->

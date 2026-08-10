@@ -5,38 +5,250 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { load, type Store } from "@tauri-apps/plugin-store";
-import type { ConnectionConfig, ConnectionFolder } from "../types";
+import {
+  credentialsCheckMany,
+  credentialsCopyMany,
+  credentialsDeleteMany,
+  credentialsSetMany,
+} from "../api";
+import type {
+  ConnectionConfig,
+  ConnectionFolder,
+  ConnectionSecretChanges,
+  CredentialKey,
+  CredentialWrite,
+  SecretChange,
+} from "../types";
 import { genId } from "../utils";
 
 /** 持久化文件名与键名 */
 const STORE_FILE = "connections.json";
 const STORE_KEY = "connections";
 const FOLDER_KEY = "folders";
+const EXPANDED_FOLDERS_KEY = "expandedFolderIds";
 
 export const useConnectionsStore = defineStore("connections", () => {
   /** 已保存的连接列表 */
   const connections = ref<ConnectionConfig[]>([]);
   /** 已保存的分组文件夹列表 */
   const folders = ref<ConnectionFolder[]>([]);
+  /** 连接管理器中已展开的文件夹标识 */
+  const expandedFolderIds = ref<string[]>([]);
 
   let store: Store | null = null;
+  /** 串行持久化队列，单次失败会被队列吸收但仍返回给原调用方 */
+  let persistQueue: Promise<void> = Promise.resolve();
 
   /** 从本地加载连接与文件夹列表 */
   async function init() {
-    store = await load(STORE_FILE, { defaults: {}, autoSave: true });
+    store = await load(STORE_FILE, { defaults: {}, autoSave: false });
     const savedConns = await store.get<ConnectionConfig[]>(STORE_KEY);
     const savedFolders = await store.get<ConnectionFolder[]>(FOLDER_KEY);
     connections.value = savedConns ?? [];
     folders.value = savedFolders ?? [];
+    expandedFolderIds.value = (await store.get<string[]>(EXPANDED_FOLDERS_KEY)) ?? [];
+    await migrateLegacyCredentials();
+    await refreshCredentialAvailability();
+    const folderIds = new Set(folders.value.map((folder) => folder.id));
+    const validExpandedIds = expandedFolderIds.value.filter((id) => folderIds.has(id));
+    if (validExpandedIds.length !== expandedFolderIds.value.length) {
+      expandedFolderIds.value = validExpandedIds;
+      await persist();
+    }
   }
 
   /** 将当前连接与文件夹列表写回本地 */
   async function persist() {
-    if (store) {
-      await store.set(STORE_KEY, connections.value);
-      await store.set(FOLDER_KEY, folders.value);
-      await store.save();
+    const currentStore = store;
+    if (!currentStore) return;
+    const connectionSnapshot = connections.value.map((connection) => ({
+      ...stripConnectionSecrets(connection),
+      tunnels: connection.tunnels?.map((tunnel) => ({ ...tunnel })),
+    }));
+    const folderSnapshot = folders.value.map((folder) => ({ ...folder }));
+    const expandedFolderSnapshot = [...expandedFolderIds.value];
+    const operation = persistQueue.then(async () => {
+      await currentStore.set(STORE_KEY, connectionSnapshot);
+      await currentStore.set(FOLDER_KEY, folderSnapshot);
+      await currentStore.set(EXPANDED_FOLDERS_KEY, expandedFolderSnapshot);
+      await currentStore.save();
+    });
+    persistQueue = operation.catch(() => undefined);
+    await operation;
+  }
+
+  /** 从连接配置中移除仅允许短暂存在于内存中的凭据明文 */
+  function stripConnectionSecrets(config: ConnectionConfig): ConnectionConfig {
+    const sanitized = { ...config };
+    delete sanitized.password;
+    delete sanitized.passphrase;
+    return sanitized;
+  }
+
+  /** 将未知异常转换为可展示的错误文本 */
+  function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  /** 尽力删除批量导入期间可能写入的系统凭据，返回清理失败信息 */
+  async function cleanupImportedCredentials(keys: CredentialKey[]): Promise<string | null> {
+    if (keys.length === 0) return null;
+    try {
+      await credentialsDeleteMany(keys);
+      return null;
+    } catch (error) {
+      return `清理本批系统凭据失败：${errorMessage(error)}`;
     }
+  }
+
+  /** 校验批量导入只能追加新项目，且全部父文件夹引用有效、无循环 */
+  function validateImportItems(
+    importedConnections: ConnectionConfig[],
+    importedFolders: ConnectionFolder[]
+  ): void {
+    const existingItemIds = new Set([
+      ...connections.value.map((connection) => connection.id),
+      ...folders.value.map((folder) => folder.id),
+    ]);
+    const importedItemIds = new Set<string>();
+    for (const folder of importedFolders) {
+      if (!folder.id.trim()) throw new Error("导入文件夹标识不能为空");
+      if (existingItemIds.has(folder.id) || importedItemIds.has(folder.id)) {
+        throw new Error(`导入文件夹标识 [ ${folder.id} ] 已存在`);
+      }
+      importedItemIds.add(folder.id);
+    }
+    for (const connection of importedConnections) {
+      if (!connection.id.trim()) throw new Error("导入连接标识不能为空");
+      if (existingItemIds.has(connection.id) || importedItemIds.has(connection.id)) {
+        throw new Error(`导入连接标识 [ ${connection.id} ] 已存在`);
+      }
+      importedItemIds.add(connection.id);
+    }
+
+    const availableFolderIds = new Set([
+      ...folders.value.map((folder) => folder.id),
+      ...importedFolders.map((folder) => folder.id),
+    ]);
+    const importedParentById = new Map(
+      importedFolders.map((folder) => [folder.id, normalizeParentId(folder.parentId)])
+    );
+    for (const folder of importedFolders) {
+      const parentId = normalizeParentId(folder.parentId);
+      if (parentId !== null && !availableFolderIds.has(parentId)) {
+        throw new Error(`导入文件夹 [ ${folder.name} ] 引用了不存在的父文件夹`);
+      }
+      const visited = new Set<string>([folder.id]);
+      let currentParentId = parentId;
+      while (currentParentId !== null && importedParentById.has(currentParentId)) {
+        if (visited.has(currentParentId)) throw new Error("导入文件夹层级存在循环引用");
+        visited.add(currentParentId);
+        currentParentId = importedParentById.get(currentParentId) ?? null;
+      }
+    }
+    for (const connection of importedConnections) {
+      const parentId = normalizeParentId(connection.parentId);
+      if (parentId !== null && !availableFolderIds.has(parentId)) {
+        throw new Error(`导入连接 [ ${connection.name} ] 引用了不存在的父文件夹`);
+      }
+    }
+  }
+
+  /** 校验完整根层顺序并生成从零开始的致密排序映射 */
+  function buildDenseRootOrder(
+    nextConnections: ConnectionConfig[],
+    nextFolders: ConnectionFolder[],
+    rootOrderIds: string[]
+  ): Map<string, number> {
+    const rootIds = new Set<string>();
+    for (const folder of nextFolders) {
+      if (normalizeParentId(folder.parentId) === null) rootIds.add(folder.id);
+    }
+    for (const connection of nextConnections) {
+      if (normalizeParentId(connection.parentId) === null) rootIds.add(connection.id);
+    }
+    const seen = new Set<string>();
+    for (const id of rootOrderIds) {
+      if (!rootIds.has(id)) throw new Error(`根层排序包含不存在或非根层的项目 [ ${id} ]`);
+      if (seen.has(id)) throw new Error(`根层排序包含重复项目 [ ${id} ]`);
+      seen.add(id);
+    }
+    if (seen.size !== rootIds.size) throw new Error("根层排序未覆盖全部连接和文件夹");
+    return new Map(rootOrderIds.map((id, index) => [id, index]));
+  }
+
+  /** 将编辑器的凭据修改转换为系统凭据库写入或删除操作 */
+  function collectSecretChange(
+    id: string,
+    kind: CredentialKey["kind"],
+    change: SecretChange,
+    writes: CredentialWrite[],
+    deletes: CredentialKey[]
+  ): boolean | undefined {
+    if (change.mode === "keep") return undefined;
+    if (change.mode === "set" && change.value) {
+      writes.push({ kind, id, value: change.value });
+      return true;
+    }
+    deletes.push({ kind, id });
+    return false;
+  }
+
+  /** 将旧版 JSON 中的明文凭据迁移到系统凭据库，成功后再清除明文 */
+  async function migrateLegacyCredentials() {
+    const writes: CredentialWrite[] = [];
+    const deletes: CredentialKey[] = [];
+    const legacyPasswordIds = new Set<string>();
+    const legacyPassphraseIds = new Set<string>();
+    for (const connection of connections.value) {
+      if (typeof connection.password === "string") {
+        legacyPasswordIds.add(connection.id);
+        if (connection.password) {
+          writes.push({ kind: "connectionPassword", id: connection.id, value: connection.password });
+        } else deletes.push({ kind: "connectionPassword", id: connection.id });
+      }
+      if (typeof connection.passphrase === "string") {
+        legacyPassphraseIds.add(connection.id);
+        if (connection.passphrase) {
+          writes.push({ kind: "connectionPassphrase", id: connection.id, value: connection.passphrase });
+        } else deletes.push({ kind: "connectionPassphrase", id: connection.id });
+      }
+    }
+    if (writes.length > 0) await credentialsSetMany(writes);
+    if (deletes.length > 0) await credentialsDeleteMany(deletes);
+    if (legacyPasswordIds.size === 0 && legacyPassphraseIds.size === 0) return;
+    for (const connection of connections.value) {
+      if (legacyPasswordIds.has(connection.id)) {
+        connection.hasPassword = Boolean(connection.password);
+        delete connection.password;
+      }
+      if (legacyPassphraseIds.has(connection.id)) {
+        connection.hasPassphrase = Boolean(connection.passphrase);
+        delete connection.passphrase;
+      }
+    }
+    await persist();
+  }
+
+  /** 检查系统凭据库中的凭据是否仍可用，并清理复制数据后失效的标记 */
+  async function refreshCredentialAvailability() {
+    const keys: CredentialKey[] = [];
+    for (const connection of connections.value) {
+      if (connection.hasPassword) keys.push({ kind: "connectionPassword", id: connection.id });
+      if (connection.hasPassphrase) keys.push({ kind: "connectionPassphrase", id: connection.id });
+    }
+    if (keys.length === 0) return;
+    const available = await credentialsCheckMany(keys);
+    let changed = false;
+    keys.forEach((key, index) => {
+      if (available[index]) return;
+      const connection = connections.value.find((item) => item.id === key.id);
+      if (!connection) return;
+      if (key.kind === "connectionPassword") connection.hasPassword = false;
+      else connection.hasPassphrase = false;
+      changed = true;
+    });
+    if (changed) await persist();
   }
 
   /** 统一父级 id 表达 */
@@ -79,30 +291,162 @@ export const useConnectionsStore = defineStore("connections", () => {
     return true;
   }
 
-  /** 新增或更新连接，返回其 id */
-  async function upsert(config: ConnectionConfig): Promise<string> {
+  /** 新增或更新连接及其系统凭据，返回连接标识 */
+  async function upsert(
+    config: ConnectionConfig,
+    secretChanges?: ConnectionSecretChanges
+  ): Promise<string> {
     if (!config.id) config.id = genId();
     const idx = connections.value.findIndex((c) => c.id === config.id);
+    const current = idx >= 0 ? connections.value[idx] : undefined;
+    const inferredChanges: ConnectionSecretChanges = secretChanges ?? {
+      password:
+        typeof config.password === "string"
+          ? config.password
+            ? { mode: "set", value: config.password }
+            : { mode: "clear" }
+          : { mode: "keep" },
+      passphrase:
+        typeof config.passphrase === "string"
+          ? config.passphrase
+            ? { mode: "set", value: config.passphrase }
+            : { mode: "clear" }
+          : { mode: "keep" },
+    };
+    const writes: CredentialWrite[] = [];
+    const deletes: CredentialKey[] = [];
+    const passwordAvailable = collectSecretChange(
+      config.id,
+      "connectionPassword",
+      inferredChanges.password,
+      writes,
+      deletes
+    );
+    const passphraseAvailable = collectSecretChange(
+      config.id,
+      "connectionPassphrase",
+      inferredChanges.passphrase,
+      writes,
+      deletes
+    );
+    if (writes.length > 0) await credentialsSetMany(writes);
+    if (deletes.length > 0) await credentialsDeleteMany(deletes);
+
+    const sanitized = stripConnectionSecrets({
+      ...config,
+      hasPassword: passwordAvailable ?? current?.hasPassword ?? config.hasPassword ?? false,
+      hasPassphrase: passphraseAvailable ?? current?.hasPassphrase ?? config.hasPassphrase ?? false,
+    });
     const parentId = normalizeParentId(config.parentId);
-    config.parentId = parentId;
+    sanitized.parentId = parentId;
     if (idx >= 0) {
-      const current = connections.value[idx];
-      const parentChanged = normalizeParentId(current.parentId) !== parentId;
-      if (parentChanged) config.order = nextOrder(parentId);
-      else config.order = config.order ?? current.order;
-      connections.value[idx] = config;
+      const parentChanged = normalizeParentId(current?.parentId) !== parentId;
+      if (parentChanged) sanitized.order = nextOrder(parentId);
+      else sanitized.order = sanitized.order ?? current?.order;
+      connections.value[idx] = sanitized;
     } else {
-      config.order = config.order ?? nextOrder(parentId);
-      connections.value.push(config);
+      sanitized.order = sanitized.order ?? nextOrder(parentId);
+      connections.value.push(sanitized);
     }
     await persist();
-    return config.id;
+    return sanitized.id;
   }
 
-  /** 删除连接 */
+  /**
+   * 原子追加一批导入连接和文件夹，并按完整根层标识顺序致密化排序。
+   * 系统凭据先于连接记录写入；任一步失败都会恢复原数组并尽力清理本批凭据。
+   */
+  async function importBatch(
+    importedConnections: ConnectionConfig[],
+    importedFolders: ConnectionFolder[],
+    rootOrderIds: string[]
+  ): Promise<void> {
+    if (!store) throw new Error("连接存储尚未初始化，无法导入连接");
+    validateImportItems(importedConnections, importedFolders);
+
+    const credentialWrites: CredentialWrite[] = [];
+    const credentialKeys: CredentialKey[] = [];
+    const sanitizedConnections = importedConnections.map((connection) => {
+      const hasPassword = typeof connection.password === "string" && connection.password.length > 0;
+      const hasPassphrase = typeof connection.passphrase === "string" && connection.passphrase.length > 0;
+      if (hasPassword) {
+        credentialWrites.push({
+          kind: "connectionPassword",
+          id: connection.id,
+          value: connection.password as string,
+        });
+        credentialKeys.push({ kind: "connectionPassword", id: connection.id });
+      }
+      if (hasPassphrase) {
+        credentialWrites.push({
+          kind: "connectionPassphrase",
+          id: connection.id,
+          value: connection.passphrase as string,
+        });
+        credentialKeys.push({ kind: "connectionPassphrase", id: connection.id });
+      }
+      return stripConnectionSecrets({
+        ...connection,
+        tunnels: connection.tunnels?.map((tunnel) => ({ ...tunnel })),
+        parentId: normalizeParentId(connection.parentId),
+        hasPassword,
+        hasPassphrase,
+      });
+    });
+    const sanitizedFolders = importedFolders.map((folder) => ({
+      ...folder,
+      parentId: normalizeParentId(folder.parentId),
+    }));
+    const appendedConnections = [...connections.value, ...sanitizedConnections];
+    const appendedFolders = [...folders.value, ...sanitizedFolders];
+    const rootOrder = buildDenseRootOrder(appendedConnections, appendedFolders, rootOrderIds);
+    const nextConnections = appendedConnections.map((connection) => {
+      const order = rootOrder.get(connection.id);
+      return order === undefined ? connection : { ...connection, order };
+    });
+    const nextFolders = appendedFolders.map((folder) => {
+      const order = rootOrder.get(folder.id);
+      return order === undefined ? folder : { ...folder, order };
+    });
+
+    try {
+      if (credentialWrites.length > 0) await credentialsSetMany(credentialWrites);
+    } catch (error) {
+      const cleanupError = await cleanupImportedCredentials(credentialKeys);
+      const suffix = cleanupError ? `；${cleanupError}` : "";
+      throw new Error(`写入导入连接凭据失败：${errorMessage(error)}${suffix}`);
+    }
+
+    const previousConnections = connections.value;
+    const previousFolders = folders.value;
+    connections.value = nextConnections;
+    folders.value = nextFolders;
+    try {
+      await persist();
+    } catch (error) {
+      connections.value = previousConnections;
+      folders.value = previousFolders;
+      let restoreError: string | null = null;
+      try {
+        await persist();
+      } catch (restoreFailure) {
+        restoreError = `恢复原连接数据失败：${errorMessage(restoreFailure)}`;
+      }
+      const cleanupError = await cleanupImportedCredentials(credentialKeys);
+      const extraErrors = [restoreError, cleanupError].filter((message): message is string => Boolean(message));
+      const suffix = extraErrors.length > 0 ? `；${extraErrors.join("；")}` : "";
+      throw new Error(`持久化导入连接失败：${errorMessage(error)}${suffix}`);
+    }
+  }
+
+  /** 删除连接及其系统凭据 */
   async function remove(id: string) {
     connections.value = connections.value.filter((c) => c.id !== id);
     await persist();
+    await credentialsDeleteMany([
+      { kind: "connectionPassword", id },
+      { kind: "connectionPassphrase", id },
+    ]);
   }
 
   /** 统计引用指定代理的连接数量 */
@@ -186,11 +530,20 @@ export const useConnectionsStore = defineStore("connections", () => {
   /** 递归删除文件夹，连同其下全部子文件夹与连接一并移除 */
   async function removeFolderRecursive(id: string) {
     const ids = collectFolderIds(id);
+    const removedConnectionIds = connections.value
+      .filter((connection) => connection.parentId && ids.has(connection.parentId))
+      .map((connection) => connection.id);
     folders.value = folders.value.filter((f) => !ids.has(f.id));
     connections.value = connections.value.filter(
       (c) => !(c.parentId && ids.has(c.parentId))
     );
+    expandedFolderIds.value = expandedFolderIds.value.filter((folderId) => !ids.has(folderId));
     await persist();
+    const credentialKeys = removedConnectionIds.flatMap<CredentialKey>((connectionId) => [
+      { kind: "connectionPassword", id: connectionId },
+      { kind: "connectionPassphrase", id: connectionId },
+    ]);
+    if (credentialKeys.length > 0) await credentialsDeleteMany(credentialKeys);
   }
 
   /** 统计文件夹内含的连接数与子文件夹数（递归） */
@@ -256,16 +609,33 @@ export const useConnectionsStore = defineStore("connections", () => {
       name = `${source.name} - 复制 ${seq++}`;
     }
     const copy: ConnectionConfig = { ...source, id: genId(), name, parentId, order: nextOrder(parentId) };
+    const credentialCopies = [];
+    if (source.hasPassword) {
+      credentialCopies.push({ kind: "connectionPassword" as const, sourceId: source.id, targetId: copy.id });
+    }
+    if (source.hasPassphrase) {
+      credentialCopies.push({ kind: "connectionPassphrase" as const, sourceId: source.id, targetId: copy.id });
+    }
+    if (credentialCopies.length > 0) await credentialsCopyMany(credentialCopies);
     connections.value.push(copy);
     await persist();
     return copy.id;
   }
 
+  /** 持久化连接管理器的文件夹展开状态 */
+  async function setExpandedFolderIds(ids: string[]) {
+    const existingIds = new Set(folders.value.map((folder) => folder.id));
+    expandedFolderIds.value = Array.from(new Set(ids.filter((id) => existingIds.has(id))));
+    await persist();
+  }
+
   return {
     connections,
     folders,
+    expandedFolderIds,
     init,
     upsert,
+    importBatch,
     remove,
     countProxyReferences,
     clearProxyReferences,
@@ -275,5 +645,6 @@ export const useConnectionsStore = defineStore("connections", () => {
     countFolderContents,
     moveItems,
     duplicateConnection,
+    setExpandedFolderIds,
   };
 });

@@ -4,20 +4,31 @@
  */
 import { reactive, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { ConnectionConfig, TunnelConfig } from "../types";
+import type {
+  ConnectionConfig,
+  ConnectionSecretChanges,
+  SecretChange,
+  TunnelConfig,
+} from "../types";
 import { genId } from "../utils";
 import { useEscClose } from "../composables/useEscClose";
 import Icon from "./Icon.vue";
 import ProxySettings from "./ProxySettings.vue";
+import SecretInput from "./SecretInput.vue";
 import TunnelSettings from "./TunnelSettings.vue";
 
-const props = defineProps<{
-  /** 待编辑的连接，null 表示新增 */
-  model: ConnectionConfig | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** 待编辑的连接，null 表示新增 */
+    model: ConnectionConfig | null;
+    /** 是否正在写入连接与系统凭据 */
+    saving?: boolean;
+  }>(),
+  { saving: false }
+);
 
 const emit = defineEmits<{
-  (e: "save", config: ConnectionConfig): void;
+  (e: "save", config: ConnectionConfig, secretChanges: ConnectionSecretChanges): void;
   (e: "cancel"): void;
 }>();
 
@@ -32,6 +43,10 @@ const settingSections: Array<{ id: SettingsSectionId; label: string }> = [
 
 /** 当前编辑分组 */
 const activeSection = ref<SettingsSectionId>("connection");
+/** 登录密码修改意图 */
+const passwordChange = ref<SecretChange>({ mode: "keep" });
+/** 私钥口令修改意图 */
+const passphraseChange = ref<SecretChange>({ mode: "keep" });
 
 /** 表单默认值 */
 function defaults(): ConnectionConfig {
@@ -42,9 +57,7 @@ function defaults(): ConnectionConfig {
     port: 22,
     username: "root",
     authType: "password",
-    password: "",
     privateKeyPath: "",
-    passphrase: "",
     proxyId: null,
     remark: "",
     tunnels: [],
@@ -65,6 +78,10 @@ watch(
   () => props.model,
   (m) => {
     Object.assign(form, defaults(), m ?? {}, { tunnels: cloneTunnels(m?.tunnels) });
+    delete form.password;
+    delete form.passphrase;
+    passwordChange.value = { mode: "keep" };
+    passphraseChange.value = { mode: "keep" };
     activeSection.value = "connection";
   },
   { immediate: true }
@@ -83,21 +100,48 @@ async function selectPrivateKey() {
   }
 }
 
+/** 接收固定掩码输入框的登录密码修改 */
+function onPasswordChange(action: SecretChange["mode"], value?: string) {
+  if (action === "set") {
+    passwordChange.value = value !== undefined ? { mode: "set", value } : { mode: "keep" };
+    return;
+  }
+  passwordChange.value = { mode: action };
+}
+
+/** 接收固定掩码输入框的私钥口令修改 */
+function onPassphraseChange(action: SecretChange["mode"], value?: string) {
+  if (action === "set") {
+    passphraseChange.value = value !== undefined ? { mode: "set", value } : { mode: "keep" };
+    return;
+  }
+  passphraseChange.value = { mode: action };
+}
+
 /** 提交保存 */
 function submit() {
+  if (props.saving) return;
   if (!form.host.trim()) {
     alert("请填写主机地址");
     return;
   }
   if (!form.id) form.id = genId();
   if (!form.name.trim()) form.name = form.host;
-  emit("save", { ...form, tunnels: cloneTunnels(form.tunnels) });
+  const config = { ...form, tunnels: cloneTunnels(form.tunnels) };
+  delete config.password;
+  delete config.passphrase;
+  emit("save", config, {
+    password: passwordChange.value,
+    passphrase: passphraseChange.value,
+  });
 }
 
 // ESC 关闭：始终随组件挂载而生效（嵌套于连接管理器之上，栈顶优先关闭本弹窗）
 useEscClose(
   () => true,
-  () => emit("cancel")
+  () => {
+    if (!props.saving) emit("cancel");
+  }
 );
 </script>
 
@@ -158,7 +202,12 @@ useEscClose(
 
               <template v-if="form.authType === 'password'">
                 <label>密码</label>
-                <input class="input" type="password" v-model="form.password" />
+                <SecretInput
+                  :has-secret="form.hasPassword === true"
+                  :reset-key="`${form.id}:password`"
+                  placeholder="请输入密码"
+                  @change="onPasswordChange"
+                />
               </template>
 
               <template v-else>
@@ -180,11 +229,11 @@ useEscClose(
                   </button>
                 </div>
                 <label>私钥口令</label>
-                <input
-                  class="input"
-                  type="password"
-                  v-model="form.passphrase"
+                <SecretInput
+                  :has-secret="form.hasPassphrase === true"
+                  :reset-key="`${form.id}:passphrase`"
                   placeholder="无口令可留空"
+                  @change="onPassphraseChange"
                 />
               </template>
 
@@ -214,8 +263,10 @@ useEscClose(
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn" @click="emit('cancel')">取消</button>
-        <button class="btn btn-primary" @click="submit">保存</button>
+        <button class="btn" :disabled="saving" @click="emit('cancel')">取消</button>
+        <button class="btn btn-primary" :disabled="saving" @click="submit">
+          {{ saving ? "保存中" : "保存" }}
+        </button>
       </div>
     </div>
   </div>
