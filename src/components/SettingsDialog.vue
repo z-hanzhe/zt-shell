@@ -35,15 +35,25 @@ function submit() {
 }
 
 // 组件挂载即为打开状态，ESC 关闭
-useEscClose(
+const { isTop: isTopModal } = useEscClose(
   () => true,
   () => emit("close")
 );
 </script>
 
 <template>
-  <div class="modal-mask">
-    <div ref="dialogRef" class="modal dialog-draggable" style="width: 420px">
+  <div
+    :class="['modal-mask', { 'modal-top-mask': isTopModal }]"
+    :inert="!isTopModal"
+    :aria-hidden="isTopModal ? undefined : 'true'"
+  >
+    <div
+      ref="dialogRef"
+      class="modal dialog-draggable"
+      style="width: 420px"
+      role="dialog"
+      :aria-modal="isTopModal ? 'true' : 'false'"
+    >
       <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
         <span>设置</span>
         <button class="modal-close" title="关闭" @click="emit('close')">×</button>

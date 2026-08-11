@@ -34,6 +34,7 @@
   --progress-danger: #e57373;
 
   /* 尺寸 */
+  --titlebar-height: 34px;
   --tab-height: 32px;
   --radius: 3px;
 
@@ -160,12 +161,23 @@ body {
 /* 弹窗遮罩与容器 */
 .modal-mask {
   position: fixed;
-  inset: 0;
+  inset: var(--titlebar-height) 0 0;
   background: rgba(0, 0, 0, 0.35);
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
   z-index: 1000;
+}
+.modal-mask.window-modal-mask {
+  top: 0;
+  z-index: 2000;
+}
+.modal-mask.modal-top-mask:not(.window-modal-mask) {
+  z-index: 1700;
+}
+.modal-mask.window-modal-mask.modal-top-mask {
+  z-index: 2100;
 }
 .modal {
   background: var(--bg-window);

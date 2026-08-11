@@ -36,6 +36,7 @@ const dialog = reactive<{
   message: string;
   confirmText: string;
   confirmDanger: boolean;
+  windowModal: boolean;
   resolve?: (value: boolean) => void;
 }>({
   open: false,
@@ -44,6 +45,7 @@ const dialog = reactive<{
   message: "",
   confirmText: "确定",
   confirmDanger: false,
+  windowModal: false,
 });
 
 /** 显示确认弹窗，返回用户是否确认 */
@@ -52,7 +54,9 @@ function showConfirm(opts: {
   message: string;
   confirmText?: string;
   confirmDanger?: boolean;
+  windowModal?: boolean;
 }): Promise<boolean> {
+  if (appCloseWaiting && !opts.windowModal) return Promise.resolve(false);
   return new Promise((resolve) => {
     Object.assign(dialog, {
       open: true,
@@ -61,13 +65,15 @@ function showConfirm(opts: {
       message: opts.message,
       confirmText: opts.confirmText ?? "确定",
       confirmDanger: opts.confirmDanger ?? false,
+      windowModal: opts.windowModal ?? false,
       resolve,
     });
   });
 }
 
 /** 显示提示弹窗，并在用户关闭后继续当前流程 */
-function showMessage(title: string, message: string): Promise<void> {
+function showMessage(title: string, message: string, windowModal = false): Promise<void> {
+  const useWindowModal = windowModal || appCloseWaiting;
   return new Promise((resolve) => {
     Object.assign(dialog, {
       open: true,
@@ -76,6 +82,7 @@ function showMessage(title: string, message: string): Promise<void> {
       message,
       confirmText: "确定",
       confirmDanger: false,
+      windowModal: useWindowModal,
       resolve: () => resolve(),
     });
   });
@@ -85,6 +92,7 @@ function showMessage(title: string, message: string): Promise<void> {
 function settleDialog(value: boolean) {
   const resolve = dialog.resolve;
   dialog.open = false;
+  dialog.windowModal = false;
   dialog.resolve = undefined;
   resolve?.(value);
 }
@@ -289,8 +297,44 @@ function closeMenu() {
 
 /** 是否已有关闭流程正在等待用户处理 */
 let closeOperationRunning = false;
+/** 当前关闭流程结束信号，供窗口级退出流程等待业务关闭释放 */
+let closeOperationIdle: Promise<void> = Promise.resolve();
+/** 标记当前关闭流程已经结束 */
+let resolveCloseOperationIdle: (() => void) | undefined;
+/** 程序退出是否正在等待并接管已有业务关闭流程 */
+let appCloseWaiting = false;
 /** 程序退出检查通过后暂存的资源关闭准备释放函数 */
 let appCloseRelease: (() => Promise<void>) | undefined;
+
+/** 尝试占用关闭流程执行权 */
+function beginCloseOperation(): boolean {
+  if (closeOperationRunning) return false;
+  closeOperationRunning = true;
+  closeOperationIdle = new Promise((resolve) => {
+    resolveCloseOperationIdle = resolve;
+  });
+  return true;
+}
+
+/** 释放关闭流程执行权并唤醒等待中的窗口级退出流程 */
+function finishCloseOperation(): void {
+  closeOperationRunning = false;
+  const resolve = resolveCloseOperationIdle;
+  resolveCloseOperationIdle = undefined;
+  resolve?.();
+}
+
+/** 取消正在等待确认的业务关闭，并等待其资源准备完整释放 */
+async function waitForBusinessCloseOperation(): Promise<void> {
+  if (!closeOperationRunning) return;
+  appCloseWaiting = true;
+  try {
+    if (dialog.open && !dialog.windowModal) settleDialog(false);
+    await closeOperationIdle;
+  } finally {
+    appCloseWaiting = false;
+  }
+}
 
 /** 会话关闭保护执行结果 */
 type CloseGuardResult = {
@@ -355,6 +399,7 @@ async function runCloseGuards(
             : `${riskSubject(sessionIds)} 有 ${count} 个文本文件尚未保存，继续关闭将丢失这些修改。确定要继续吗？`,
           confirmText: "继续关闭",
           confirmDanger: true,
+          windowModal: closingApp,
         }),
       queryTransfers: async () => {
         transferPreparation = await prepareTransferClose(targetIds);
@@ -368,6 +413,7 @@ async function runCloseGuards(
             : `${riskSubject(sessionIds)} 有 ${count} 个传输任务尚未完成，关闭会话将终止这些任务。确定要继续吗？`,
           confirmText: "继续关闭",
           confirmDanger: true,
+          windowModal: closingApp,
         }),
     });
     // 目标会话若在前序确认期间断线，只跳过风险提示，关闭前仍需排空在途创建请求。
@@ -388,11 +434,12 @@ async function runCloseGuards(
 }
 
 /** 显示关闭流程失败信息并停止后续操作 */
-async function reportCloseFailure(error: unknown): Promise<void> {
+async function reportCloseFailure(error: unknown, windowModal = false): Promise<void> {
   console.warn("会话关闭失败", error);
   await showMessage(
     "无法关闭会话",
-    `关闭操作已停止，请检查当前会话状态后重试。\n${String(error)}`
+    `关闭操作已停止，请检查当前会话状态后重试。\n${String(error)}`,
+    windowModal
   );
 }
 
@@ -401,13 +448,12 @@ async function requestCloseSessions(
   targetIds: string[],
   confirmLiveSessions: (sessionIds: string[]) => Promise<boolean>
 ): Promise<void> {
-  if (closeOperationRunning) return;
   const ids = [...new Set(targetIds)].filter((id) =>
     store.sessions.some((session) => session.id === id)
   );
   if (ids.length === 0) return;
+  if (!beginCloseOperation()) return;
 
-  closeOperationRunning = true;
   let release: (() => Promise<void>) | undefined;
   let failure: unknown;
   try {
@@ -419,12 +465,15 @@ async function requestCloseSessions(
     failure = error;
   } finally {
     try {
-      await release?.();
-    } catch (error) {
-      failure ??= error;
+      try {
+        await release?.();
+      } catch (error) {
+        failure ??= error;
+      }
+      if (failure) await reportCloseFailure(failure);
+    } finally {
+      finishCloseOperation();
     }
-    if (failure) await reportCloseFailure(failure);
-    closeOperationRunning = false;
   }
 }
 
@@ -432,18 +481,18 @@ async function requestCloseSessions(
  * 供程序退出流程复用资源风险检查；原有退出确认已由 App 层完成。
  */
 async function confirmCloseRisks(targetIds: string[]): Promise<boolean> {
-  if (closeOperationRunning) return false;
-  closeOperationRunning = true;
+  await waitForBusinessCloseOperation();
+  if (!beginCloseOperation()) return false;
   try {
     if (appCloseRelease) await releaseCloseRisks();
     const result = await runCloseGuards([...new Set(targetIds)], undefined, true);
     if (result.confirmed) appCloseRelease = result.release;
     return result.confirmed;
   } catch (error) {
-    await reportCloseFailure(error);
+    await reportCloseFailure(error, true);
     return false;
   } finally {
-    closeOperationRunning = false;
+    finishCloseOperation();
   }
 }
 
@@ -729,6 +778,7 @@ defineExpose({
       :message="dialog.message"
       :confirm-text="dialog.confirmText"
       :confirm-danger="dialog.confirmDanger"
+      :window-modal="dialog.windowModal"
       @confirm="onDialogConfirm"
       @cancel="onDialogCancel"
     />

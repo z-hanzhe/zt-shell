@@ -104,7 +104,7 @@ onBeforeUnmount(() => {
 .titlebar {
   display: flex;
   align-items: center;
-  height: 34px;
+  height: var(--titlebar-height);
   padding: 0 0 0 10px;
   background: var(--bg-window);
   border-bottom: 1px solid var(--border-light);
@@ -145,7 +145,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   width: 44px;
-  height: 34px;
+  height: var(--titlebar-height);
   border: none;
   background: transparent;
   color: #555;

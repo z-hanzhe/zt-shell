@@ -191,7 +191,7 @@ function confirmDelete() {
 }
 
 // 隧道编辑弹窗位于连接编辑器之上，ESC 仅关闭最上层弹窗
-useEscClose(
+const { isTop: isTopModal } = useEscClose(
   () => editing.value !== undefined,
   closeEditor
 );
@@ -278,8 +278,18 @@ useEscClose(
       </div>
     </div>
 
-    <div v-if="editing !== undefined" class="modal-mask tunnel-editor-mask">
-      <div ref="dialogRef" class="modal dialog-draggable tunnel-editor" role="dialog" aria-modal="true">
+    <div
+      v-if="editing !== undefined"
+      :class="['modal-mask', 'tunnel-editor-mask', { 'modal-top-mask': isTopModal }]"
+      :inert="!isTopModal"
+      :aria-hidden="isTopModal ? undefined : 'true'"
+    >
+      <div
+        ref="dialogRef"
+        class="modal dialog-draggable tunnel-editor"
+        role="dialog"
+        :aria-modal="isTopModal ? 'true' : 'false'"
+      >
         <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
           <span>{{ editing ? "编辑隧道" : "新增隧道" }}</span>
           <button class="modal-close" title="关闭" @click="closeEditor">×</button>

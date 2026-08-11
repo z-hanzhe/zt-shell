@@ -2,9 +2,13 @@
 /**
  * 通用轻量弹窗：支持提示、确认与单输入，避免使用浏览器内置弹窗行为
  */
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { tryBeginModalAction } from "../composables/modalActionGuard";
 import { useDialogDrag } from "../composables/useDialogDrag";
-import { useEscClose } from "../composables/useEscClose";
+import { ESC_MODAL_PRIORITY, useEscClose } from "../composables/useEscClose";
+
+const FOCUSABLE_SELECTOR =
+  "button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
 
 const props = withDefaults(
   defineProps<{
@@ -32,6 +36,8 @@ const props = withDefaults(
     loadingActionText?: string;
     /** 进行中弹窗附加操作按钮是否禁用 */
     loadingActionDisabled?: boolean;
+    /** 是否为窗口关闭确认，允许遮罩覆盖自绘标题栏 */
+    windowModal?: boolean;
   }>(),
   {
     message: "",
@@ -44,6 +50,7 @@ const props = withDefaults(
     hintTemplate: "",
     loadingActionText: "",
     loadingActionDisabled: false,
+    windowModal: false,
   }
 );
 
@@ -55,8 +62,16 @@ const emit = defineEmits<{
 
 const inputValue = ref("");
 const inputRef = ref<HTMLInputElement | null>(null);
+const confirmButtonRef = ref<HTMLButtonElement | null>(null);
+/** 弹窗打开前拥有焦点的控件，用于关闭后恢复 */
+let previousFocus: HTMLElement | null = null;
+/** 焦点切换序号，避免快速开关时执行过期任务 */
+let focusChangeSequence = 0;
 /** 弹窗拖动控制器，每次重新显示时恢复居中 */
-const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag(() => props.open);
+const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag(
+  () => props.open,
+  () => props.windowModal
+);
 
 /** 根据当前输入内容生成提示文案 */
 const hintText = computed(() => {
@@ -64,37 +79,119 @@ const hintText = computed(() => {
   return props.hintTemplate.replace("{value}", inputValue.value || props.placeholder);
 });
 
-watch(
+const { isTop: isTopModal } = useEscClose(
   () => props.open,
-  async (open) => {
-    if (!open) return;
-    inputValue.value = props.defaultValue;
-    await nextTick();
-    if (props.type === "prompt") inputRef.value?.focus();
-  }
+  () => requestCancel(),
+  () =>
+    props.windowModal ? ESC_MODAL_PRIORITY.WINDOW : ESC_MODAL_PRIORITY.BUSINESS
 );
 
-/** 确认当前弹窗 */
-function submit() {
+/** 获取弹窗内当前可通过键盘聚焦的控件 */
+function focusableControls(): HTMLElement[] {
+  const dialog = dialogRef.value;
+  if (!dialog) return [];
+  return Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+}
+
+/** 将焦点放到当前弹窗的默认操作控件 */
+function focusDefaultControl(): void {
+  if (!props.open || !isTopModal.value) return;
+  const target =
+    (props.type === "prompt" ? inputRef.value : confirmButtonRef.value) ??
+    focusableControls()[0] ??
+    dialogRef.value;
+  target?.focus();
+}
+
+/** 在当前弹窗关闭前仍持有焦点时，恢复弹窗打开前的键盘焦点 */
+function restorePreviousFocus(ownedFocus: boolean): void {
+  const target = previousFocus;
+  previousFocus = null;
+  if (ownedFocus && target?.isConnected) target.focus();
+}
+
+/** 同步弹窗开关对应的初始值和焦点 */
+async function onOpenChange(open: boolean): Promise<void> {
+  const sequence = ++focusChangeSequence;
+  if (!open) {
+    const ownedFocus = dialogRef.value?.contains(document.activeElement) ?? false;
+    await nextTick();
+    if (sequence === focusChangeSequence && !props.open) {
+      restorePreviousFocus(ownedFocus);
+    }
+    return;
+  }
+  previousFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
+  inputValue.value = props.defaultValue;
+  await nextTick();
+  if (sequence === focusChangeSequence) focusDefaultControl();
+}
+
+/** 将 Tab 导航限制在当前最上层弹窗中 */
+function trapModalFocus(event: KeyboardEvent): void {
+  if (event.key !== "Tab" || !isTopModal.value) return;
+  const controls = focusableControls();
+  if (controls.length === 0) {
+    event.preventDefault();
+    dialogRef.value?.focus();
+    return;
+  }
+  const currentIndex = controls.indexOf(document.activeElement as HTMLElement);
+  const shouldWrapBackward = event.shiftKey && currentIndex <= 0;
+  const shouldWrapForward = !event.shiftKey && currentIndex === controls.length - 1;
+  if (!shouldWrapBackward && !shouldWrapForward && currentIndex >= 0) return;
+  event.preventDefault();
+  controls[event.shiftKey ? controls.length - 1 : 0].focus();
+}
+
+watch(() => props.open, onOpenChange, { immediate: true });
+watch(isTopModal, async (isTop) => {
+  if (!isTop || !props.open) return;
+  await nextTick();
+  await nextTick();
+  focusDefaultControl();
+});
+onBeforeUnmount(() => {
+  focusChangeSequence += 1;
+  const ownedFocus = dialogRef.value?.contains(document.activeElement) ?? false;
+  restorePreviousFocus(ownedFocus);
+});
+
+/** 确认当前弹窗，并拦截跨层重复操作 */
+function submit(event?: Event) {
+  if (!tryBeginModalAction(props.windowModal, event)) return;
   emit("confirm", inputValue.value);
 }
 
 /** 请求取消：进行中弹窗不可关闭 */
-function requestCancel() {
+function requestCancel(event?: Event) {
   if (props.type === "loading") return;
+  if (!tryBeginModalAction(props.windowModal, event)) return;
   emit("cancel");
 }
 
-// ESC 关闭（loading 类型不可关闭，由 requestCancel 内部拦截）
-useEscClose(
-  () => props.open,
-  () => requestCancel()
-);
 </script>
 
 <template>
-  <div v-if="open" class="modal-mask">
-    <div ref="dialogRef" class="modal dialog-draggable app-dialog" role="dialog" aria-modal="true">
+  <div
+    v-if="open"
+    :class="[
+      'modal-mask',
+      { 'window-modal-mask': windowModal, 'modal-top-mask': isTopModal },
+    ]"
+    :inert="!isTopModal"
+    :aria-hidden="isTopModal ? undefined : 'true'"
+  >
+    <div
+      ref="dialogRef"
+      class="modal dialog-draggable app-dialog"
+      role="dialog"
+      :aria-modal="isTopModal ? 'true' : 'false'"
+      tabindex="-1"
+      @keydown="trapModalFocus"
+    >
       <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
         <span>{{ title }}</span>
         <button v-if="type !== 'loading'" class="modal-close" title="关闭" @click="requestCancel">×</button>
@@ -124,9 +221,12 @@ useEscClose(
         >
           {{ loadingActionText }}
         </button>
-        <button v-if="type === 'confirm' || type === 'prompt'" class="btn" @click="emit('cancel')">{{ cancelText }}</button>
+        <button v-if="type === 'confirm' || type === 'prompt'" class="btn" @click="requestCancel">
+          {{ cancelText }}
+        </button>
         <button
           v-if="type !== 'loading'"
+          ref="confirmButtonRef"
           :class="['btn', confirmDanger ? 'btn-danger' : 'btn-primary']"
           @click="submit"
         >

@@ -38,6 +38,8 @@ export interface MonitorState {
   netAutoLocked: boolean;
   /** 已采集样本数 */
   sampleCount: number;
+  /** 当前是否正在采集，防止慢请求并发覆盖新结果 */
+  polling: boolean;
   /** 采集定时器句柄 */
   timer: number | null;
 }
@@ -57,6 +59,7 @@ export const useMonitorStore = defineStore("monitor", () => {
         netPinned: false,
         netAutoLocked: false,
         sampleCount: 0,
+        polling: false,
         timer: null,
       };
     }
@@ -77,7 +80,8 @@ export const useMonitorStore = defineStore("monitor", () => {
   ): { name: string; lock: boolean } {
     if (!nics.length) return { name: "", lock: false };
     const phys = nics.filter((n) => n.isPhysical);
-    const pool = phys.length ? phys : nics;
+    const nonLoopback = nics.filter((n) => n.name !== "lo");
+    const pool = phys.length ? phys : nonLoopback.length ? nonLoopback : nics;
     const score = (n: NetInterface) =>
       (histories[n.name] ?? []).reduce((a, s) => a + s.rx + s.tx, 0);
     // 按累计流量降序（稳定排序，都为 0 时保持原顺序即取第一个）
@@ -91,7 +95,8 @@ export const useMonitorStore = defineStore("monitor", () => {
   /** 采集一次并写入状态 */
   async function poll(id: string) {
     const s = states[id];
-    if (!s) return;
+    if (!s || s.polling) return;
+    s.polling = true;
     try {
       const d = await monitorCollect(id);
       s.data = d;
@@ -119,6 +124,8 @@ export const useMonitorStore = defineStore("monitor", () => {
       }
     } catch (e) {
       s.error = String(e);
+    } finally {
+      if (states[id] === s) s.polling = false;
     }
   }
 

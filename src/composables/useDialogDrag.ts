@@ -12,6 +12,7 @@ import {
 } from "vue";
 
 const VIEWPORT_MARGIN = 8;
+const DEFAULT_TITLEBAR_HEIGHT = 34;
 const INTERACTIVE_SELECTOR =
   "button, a, input, select, textarea, label, [contenteditable='true'], [role='button'], [data-dialog-no-drag]";
 
@@ -37,18 +38,35 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /** 计算弹窗单轴位置，正常尺寸完整留在视口内，超大尺寸允许在两侧边界间移动 */
-function clampAxisPosition(position: number, size: number, viewportSize: number): number {
+function clampAxisPosition(
+  position: number,
+  size: number,
+  viewportSize: number,
+  startMargin = VIEWPORT_MARGIN
+): number {
   const oppositeEdge = viewportSize - VIEWPORT_MARGIN - size;
-  const min = Math.min(VIEWPORT_MARGIN, oppositeEdge);
-  const max = Math.max(VIEWPORT_MARGIN, oppositeEdge);
+  const min = Math.min(startMargin, oppositeEdge);
+  const max = Math.max(startMargin, oppositeEdge);
   return clamp(position, min, max);
+}
+
+/** 读取当前窗口自绘标题栏高度 */
+function getTitleBarHeight(): number {
+  const value = Number.parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue("--titlebar-height")
+  );
+  return Number.isFinite(value) ? value : DEFAULT_TITLEBAR_HEIGHT;
 }
 
 /**
  * 创建弹窗拖动控制器
  * @param isOpen 可选的弹窗显示状态，用于每次重新打开时恢复居中
+ * @param coverTitleBar 当前弹窗是否属于允许覆盖标题栏的窗口级确认
  */
-export function useDialogDrag(isOpen?: WatchSource<boolean>): DialogDragController {
+export function useDialogDrag(
+  isOpen?: WatchSource<boolean>,
+  coverTitleBar: () => boolean = () => false
+): DialogDragController {
   const dialogRef = ref<HTMLElement | null>(null);
   let offsetX = 0;
   let offsetY = 0;
@@ -56,6 +74,11 @@ export function useDialogDrag(isOpen?: WatchSource<boolean>): DialogDragControll
   let dragHeader: HTMLElement | null = null;
   let dragStart: DragStart | null = null;
   let resizeObserver: ResizeObserver | null = null;
+
+  /** 获取弹窗顶部边界，普通业务弹窗需要避让自绘标题栏 */
+  function getTopMargin(): number {
+    return VIEWPORT_MARGIN + (coverTitleBar() ? 0 : getTitleBarHeight());
+  }
 
   /** 将当前偏移写入弹窗定位样式 */
   function applyDialogOffset() {
@@ -78,7 +101,12 @@ export function useDialogDrag(isOpen?: WatchSource<boolean>): DialogDragControll
     if (!dialog) return;
     const rect = dialog.getBoundingClientRect();
     const nextLeft = clampAxisPosition(rect.left, rect.width, window.innerWidth);
-    const nextTop = clampAxisPosition(rect.top, rect.height, window.innerHeight);
+    const nextTop = clampAxisPosition(
+      rect.top,
+      rect.height,
+      window.innerHeight,
+      getTopMargin()
+    );
     offsetX += nextLeft - rect.left;
     offsetY += nextTop - rect.top;
     applyDialogOffset();
@@ -123,7 +151,8 @@ export function useDialogDrag(isOpen?: WatchSource<boolean>): DialogDragControll
     const nextTop = clampAxisPosition(
       dragStart.dialogTop + event.clientY - dragStart.pointerY,
       rect.height,
-      window.innerHeight
+      window.innerHeight,
+      getTopMargin()
     );
     offsetX = dragStart.offsetX + nextLeft - dragStart.dialogLeft;
     offsetY = dragStart.offsetY + nextTop - dragStart.dialogTop;

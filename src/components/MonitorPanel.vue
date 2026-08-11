@@ -4,8 +4,9 @@
  * 数据来源于 monitor store（按会话持续采集），切换选项卡不清空不重采
  * 未连接时展示占位骨架，避免面板空荡
  */
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import Icon from "./Icon.vue";
+import SystemInfoDialog from "./SystemInfoDialog.vue";
 import type { ConnectionConfig, ProcessInfo } from "../types";
 import { useMonitorStore } from "../stores/monitor";
 import { formatShort, formatShortRate, formatUptime } from "../utils";
@@ -35,6 +36,23 @@ const sortKey = ref<"cpu" | "mem">("cpu");
 
 /** IP 复制反馈 */
 const copied = ref(false);
+/** 系统信息弹窗可见性 */
+const showSystemInfo = ref(false);
+
+// 切换会话、断开连接或监控状态清除时关闭当前弹窗
+watch(
+  () => props.sessionId,
+  () => (showSystemInfo.value = false)
+);
+watch(
+  () => props.connected,
+  (connected) => {
+    if (!connected) showSystemInfo.value = false;
+  }
+);
+watch(data, (current) => {
+  if (!current) showSystemInfo.value = false;
+});
 
 /** 复制 IP 到剪贴板 */
 async function copyIp() {
@@ -140,9 +158,15 @@ const netChart = computed(() => {
     </div>
 
     <!-- 系统信息按钮 -->
-    <div class="btn-sysinfo" :class="{ disabled: !data }" :title="data?.os || ''">
+    <button
+      type="button"
+      class="btn-sysinfo"
+      :disabled="!connected || !data"
+      :title="data ? `查看 ${data.hostname || '当前主机'} 的系统信息` : '等待监控数据'"
+      @click="showSystemInfo = true"
+    >
       系统信息
-    </div>
+    </button>
 
     <!-- 运行 / 负载 -->
     <div class="stat-line">
@@ -302,6 +326,12 @@ const netChart = computed(() => {
 
     <!-- 采集错误提示 -->
     <div v-if="error" class="mon-error">{{ error }}</div>
+
+    <SystemInfoDialog
+      v-if="showSystemInfo && data"
+      :data="data"
+      @close="showSystemInfo = false"
+    />
   </div>
 </template>
 
@@ -363,18 +393,20 @@ const netChart = computed(() => {
 .btn-sysinfo {
   margin: 2px 10px 10px;
   padding: 7px 0;
+  border: 0;
   text-align: center;
   background: linear-gradient(#5e86ad, #4a739c);
   color: #fff;
   border-radius: 3px;
+  font-family: inherit;
   font-size: 13px;
-  letter-spacing: 2px;
+  letter-spacing: 0;
   cursor: pointer;
 }
-.btn-sysinfo:hover {
+.btn-sysinfo:not(:disabled):hover {
   background: linear-gradient(#6a92b9, #547fab);
 }
-.btn-sysinfo.disabled {
+.btn-sysinfo:disabled {
   background: #cdd5dd;
   color: #eef2f5;
   cursor: default;

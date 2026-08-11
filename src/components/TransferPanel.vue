@@ -14,6 +14,7 @@ import {
   transferRetryFailed,
 } from "../api";
 import { useTransfersStore } from "../stores/transfers";
+import { hasOpenModal } from "../composables/useEscClose";
 import type { TransferStatus, TransferTask } from "../types";
 import { formatDuration, formatRate, formatSizeFixed } from "../utils";
 
@@ -573,7 +574,7 @@ function moveSelection(delta: number) {
 
 /** 面板按键：Esc 关闭菜单或清空选择，方向键与翻页键移动选择 */
 function onKeyDown(event: KeyboardEvent) {
-  if (!props.active || dialog.open) return;
+  if (!props.active || dialog.open || hasOpenModal()) return;
   if (event.key === "Escape") {
     if (contextMenu.open) {
       closeContextMenu();

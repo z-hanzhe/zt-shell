@@ -140,7 +140,7 @@ function submit() {
 }
 
 // ESC 关闭：始终随组件挂载而生效（嵌套于连接管理器之上，栈顶优先关闭本弹窗）
-useEscClose(
+const { isTop: isTopModal } = useEscClose(
   () => true,
   () => {
     if (!props.saving) emit("cancel");
@@ -149,8 +149,17 @@ useEscClose(
 </script>
 
 <template>
-  <div class="modal-mask">
-    <div ref="dialogRef" class="modal dialog-draggable connection-editor">
+  <div
+    :class="['modal-mask', { 'modal-top-mask': isTopModal }]"
+    :inert="!isTopModal"
+    :aria-hidden="isTopModal ? undefined : 'true'"
+  >
+    <div
+      ref="dialogRef"
+      class="modal dialog-draggable connection-editor"
+      role="dialog"
+      :aria-modal="isTopModal ? 'true' : 'false'"
+    >
       <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
         <span>{{ model ? "编辑连接" : "新建连接" }}</span>
         <button class="modal-close" title="关闭" @click="emit('cancel')">×</button>

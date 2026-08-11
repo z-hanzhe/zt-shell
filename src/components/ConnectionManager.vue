@@ -3,7 +3,7 @@
  * 连接管理器弹窗：以文件夹树形分组展示已保存连接，支持新建/编辑连接、重命名文件夹、复制/删除、
  * 分组归类、键盘导航、单选、同级拖拽排序与拖拽移动
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import AppDialog from "./AppDialog.vue";
 import ConnectionEditor from "./ConnectionEditor.vue";
@@ -262,7 +262,7 @@ const contextMenuItems = computed<MenuItem[]>(() => {
 });
 
 // ESC 逐级关闭：先关右键菜单，再清选择，最后关闭本弹窗；内层编辑/通用弹窗在栈顶时先自行关闭
-useEscClose(
+const { isTop: isTopModal } = useEscClose(
   () => true,
   () => {
     if (contextMenu.open) {
@@ -275,6 +275,18 @@ useEscClose(
     }
     emit("close");
   }
+);
+
+// 被更高层弹窗覆盖后重新显示时，将键盘导航焦点收回连接管理器
+watch(
+  isTopModal,
+  async (isTop) => {
+    if (!isTop) return;
+    await nextTick();
+    await nextTick();
+    dialogRef.value?.focus();
+  },
+  { immediate: true }
 );
 
 /** 判断是否选中 */
@@ -818,7 +830,15 @@ function onGlobalPointerDown(event: PointerEvent) {
 
 /** 全局键盘：方向键导航、回车连接、左右展开收起 */
 function onKeyDown(event: KeyboardEvent) {
-  if (transferBusy.value || editing.value !== undefined || dialog.open || contextMenu.open) return;
+  if (
+    !isTopModal.value ||
+    transferBusy.value ||
+    editing.value !== undefined ||
+    dialog.open ||
+    contextMenu.open
+  ) {
+    return;
+  }
   const target = event.target as HTMLElement;
   if (target.closest?.("input, textarea, select")) return;
   const key = event.key;
@@ -959,8 +979,18 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="modal-mask">
-    <div ref="dialogRef" class="modal dialog-draggable conn-mgr">
+  <div
+    :class="['modal-mask', { 'modal-top-mask': isTopModal }]"
+    :inert="!isTopModal"
+    :aria-hidden="isTopModal ? undefined : 'true'"
+  >
+    <div
+      ref="dialogRef"
+      class="modal dialog-draggable conn-mgr"
+      role="dialog"
+      :aria-modal="isTopModal ? 'true' : 'false'"
+      tabindex="-1"
+    >
       <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
         <span>连接管理器</span>
         <button class="modal-close" title="关闭" @click="emit('close')">×</button>

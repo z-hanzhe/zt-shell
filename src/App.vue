@@ -432,6 +432,7 @@ onBeforeUnmount(() => {
       :message="`有 ${closeConfirmSessionCount} 个会话正处于连接中，确定要退出吗？`"
       confirm-text="退出"
       :confirm-danger="true"
+      window-modal
       @confirm="onConfirmClose"
       @cancel="onCancelClose"
     />

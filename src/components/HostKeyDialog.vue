@@ -5,7 +5,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import type { HostKeyChallenge } from "../types";
 import { useDialogDrag } from "../composables/useDialogDrag";
-import { useEscClose } from "../composables/useEscClose";
+import { ESC_MODAL_PRIORITY, useEscClose } from "../composables/useEscClose";
 import Icon from "./Icon.vue";
 
 const props = withDefaults(
@@ -70,16 +70,25 @@ watch(
   { immediate: true }
 );
 
-useEscClose(() => props.open, requestCancel);
+const { isTop: isTopModal } = useEscClose(
+  () => props.open,
+  requestCancel,
+  () => ESC_MODAL_PRIORITY.ELEVATED
+);
 </script>
 
 <template>
-  <div v-if="open && challenge" class="modal-mask host-key-mask">
+  <div
+    v-if="open && challenge"
+    :class="['modal-mask', 'host-key-mask', { 'modal-top-mask': isTopModal }]"
+    :inert="!isTopModal"
+    :aria-hidden="isTopModal ? undefined : 'true'"
+  >
     <div
       ref="dialogRef"
       class="modal dialog-draggable host-key-dialog"
       role="alertdialog"
-      aria-modal="true"
+      :aria-modal="isTopModal ? 'true' : 'false'"
       aria-labelledby="host-key-title"
       aria-describedby="host-key-guidance"
     >

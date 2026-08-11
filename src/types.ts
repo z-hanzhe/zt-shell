@@ -261,14 +261,41 @@ export interface ProcessInfo {
   memBytes: number;
 }
 
+/** CPU 各类别占用率 */
+export interface CpuUsageBreakdown {
+  /** 用户态占用率 */
+  user: number;
+  /** 系统态占用率 */
+  system: number;
+  /** 调整过优先级的用户态占用率 */
+  nice: number;
+  /** 空闲占比 */
+  idle: number;
+  /** I/O 等待占比 */
+  ioWait: number;
+  /** 硬件中断占用率 */
+  irq: number;
+  /** 软件中断占用率 */
+  softIrq: number;
+  /** 虚拟机被宿主机占用的时间占比 */
+  steal: number;
+}
+
 /** 完整监控数据 */
 export interface MonitorData {
   hostname: string;
   os: string;
+  kernelName: string;
   kernel: string;
+  architecture: string;
   uptime: number;
   cpuCount: number;
+  cpuModel: string;
+  cpuFrequencyMhz: number;
+  cpuCache: number;
+  cpuBogoMips: number;
   cpuUsage: number;
+  cpuUsageBreakdown: CpuUsageBreakdown;
   loadAvg: [number, number, number];
   memTotal: number;
   memUsed: number;
@@ -277,6 +304,7 @@ export interface MonitorData {
   swapUsed: number;
   netInterfaces: NetInterface[];
   disks: DiskUsage[];
+  fileSystems: DiskUsage[];
   processes: ProcessInfo[];
 }
 

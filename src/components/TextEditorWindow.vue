@@ -23,7 +23,7 @@ import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
 import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 import { sftpCancelOperation, sftpCheckWritable, sftpRead, sftpWrite } from "../api";
-import { useEscClose } from "../composables/useEscClose";
+import { hasOpenModal } from "../composables/useEscClose";
 import type {
   EditorCloseSessionRequestPayload,
   EditorClosePreparedPayload,
@@ -48,6 +48,7 @@ import {
   EDITOR_SESSION_CLOSED_EVENT,
 } from "../editorProtocol";
 import { genId } from "../utils";
+import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
 import TitleBar from "./TitleBar.vue";
 
@@ -58,6 +59,19 @@ type TabMenuAction =
   | "closeRight"
   | "closeSaved"
   | "closeAll";
+type EditorConfirmScope = "business" | "window";
+
+type EditorConfirmRequest = {
+  /** 确认请求标识，用于切换请求时重新初始化弹窗 */
+  id: number;
+  /** 弹窗层级，窗口级确认优先于业务确认 */
+  scope: EditorConfirmScope;
+  title: string;
+  message: string;
+  documentKey: string;
+  settled: boolean;
+  resolve?: (value: boolean) => void;
+};
 
 declare global {
   interface Window {
@@ -142,13 +156,10 @@ const activeKey = ref("");
 const startupError = ref("");
 const canScrollLeft = ref(false);
 const canScrollRight = ref(false);
-const confirmDialog = reactive({
-  open: false,
-  title: "",
-  message: "",
-  documentKey: "",
-  resolve: undefined as ((value: boolean) => void) | undefined,
-});
+/** 等待处理的业务确认，窗口级确认出现时保留在下层 */
+const businessConfirmQueue = ref<EditorConfirmRequest[]>([]);
+/** 当前窗口关闭流程的确认请求 */
+const windowConfirm = ref<EditorConfirmRequest>();
 const tabMenu = reactive({
   open: false,
   x: 0,
@@ -165,7 +176,9 @@ const pendingSessionCloseRequests = new Map<string, string>();
 /** 是否由组件主动销毁窗口，避免再次触发关闭确认 */
 let destroying = false;
 /** 是否正在执行整窗关闭确认，避免两层弹窗之间重复进入 */
-let closingWorkspace = false;
+const closingWorkspace = ref(false);
+/** 确认请求递增序号 */
+let confirmRequestSequence = 0;
 let documentLoadQueue = Promise.resolve();
 let unlistenCloseRequested: UnlistenFn | undefined;
 let unlistenOpenDocument: UnlistenFn | undefined;
@@ -177,7 +190,8 @@ let unlistenReleaseClosePreparation: UnlistenFn | undefined;
 let sessionCloseQueue = Promise.resolve();
 let tabsResizeObserver: ResizeObserver | undefined;
 
-useEscClose(() => confirmDialog.open, () => confirmAction(false));
+/** 当前队首业务确认，窗口级确认仅在视觉层级上覆盖它 */
+const activeBusinessConfirm = computed(() => businessConfirmQueue.value[0]);
 
 const activeDocument = computed(() =>
   documents.value.find((document) => document.key === activeKey.value)
@@ -335,7 +349,8 @@ function syncEditorReadOnly(): void {
   const document = activeDocument.value;
   const blocked =
     !!document?.saving ||
-    confirmDialog.open ||
+    businessConfirmQueue.value.length > 0 ||
+    Boolean(windowConfirm.value) ||
     (!!document && isSessionCloseLocked(document.sessionId));
   editor.value?.updateOptions({ readOnly: !document || document.readOnly || blocked });
 }
@@ -448,7 +463,10 @@ async function removeDocument(key: string, destroyWhenEmpty = true): Promise<voi
   const document = documents.value[index];
   const wasActive = activeKey.value === key;
   if (wasActive) editor.value?.setModel(null);
-  if (confirmDialog.documentKey === key) confirmAction(false);
+  const relatedConfirm = businessConfirmQueue.value.find(
+    (request) => request.documentKey === key
+  );
+  if (relatedConfirm) settleConfirm(relatedConfirm, false);
   document.closed = true;
   documents.value.splice(index, 1);
   disposeDocumentModel(document);
@@ -468,22 +486,73 @@ async function removeDocument(key: string, destroyWhenEmpty = true): Promise<voi
   updateTabScrollState();
 }
 
-/** 显示确认弹窗，并按需关联对应文档 */
-function showConfirm(title: string, message: string, key = ""): Promise<boolean> {
+/** 创建确认请求并放入对应层级 */
+function createConfirmRequest(
+  scope: EditorConfirmScope,
+  title: string,
+  message: string,
+  documentKey = ""
+): Promise<boolean> {
   return new Promise((resolve) => {
-    Object.assign(confirmDialog, { open: true, title, message, documentKey: key, resolve });
+    const request: EditorConfirmRequest = {
+      id: ++confirmRequestSequence,
+      scope,
+      title,
+      message,
+      documentKey,
+      settled: false,
+      resolve,
+    };
+    if (scope === "window") windowConfirm.value = request;
+    else businessConfirmQueue.value.push(request);
     syncEditorReadOnly();
   });
 }
 
-/** 确认二次弹窗 */
-function confirmAction(value: boolean): void {
-  const resolve = confirmDialog.resolve;
-  confirmDialog.open = false;
-  confirmDialog.documentKey = "";
-  confirmDialog.resolve = undefined;
+/** 显示业务确认弹窗，并按需关联对应文档 */
+function showConfirm(title: string, message: string, documentKey = ""): Promise<boolean> {
+  return createConfirmRequest("business", title, message, documentKey);
+}
+
+/** 显示覆盖整个编辑窗口的窗口级确认 */
+function showWindowConfirm(title: string, message: string): Promise<boolean> {
+  return createConfirmRequest("window", title, message);
+}
+
+/** 幂等结算指定确认请求 */
+function settleConfirm(request: EditorConfirmRequest, value: boolean): void {
+  if (request.settled) return;
+  request.settled = true;
+  if (request.scope === "window") {
+    if (windowConfirm.value === request) windowConfirm.value = undefined;
+  } else {
+    const index = businessConfirmQueue.value.indexOf(request);
+    if (index >= 0) businessConfirmQueue.value.splice(index, 1);
+  }
+  const resolve = request.resolve;
+  request.resolve = undefined;
   syncEditorReadOnly();
   resolve?.(value);
+}
+
+/** 结算当前队首业务确认 */
+function settleActiveBusinessConfirm(value: boolean): void {
+  const request = activeBusinessConfirm.value;
+  if (request) settleConfirm(request, value);
+}
+
+/** 结算当前窗口级确认 */
+function settleWindowConfirm(value: boolean): void {
+  const request = windowConfirm.value;
+  if (request) settleConfirm(request, value);
+}
+
+/** 取消全部尚未结算的确认请求 */
+function cancelAllConfirms(): void {
+  const requests = [windowConfirm.value, ...businessConfirmQueue.value].filter(
+    (request): request is EditorConfirmRequest => Boolean(request)
+  );
+  requests.forEach((request) => settleConfirm(request, false));
 }
 
 /** 请求批量关闭文档，未保存文档只统一确认一次 */
@@ -491,8 +560,9 @@ async function requestCloseDocuments(targets: EditorDocument[]): Promise<void> {
   if (
     targets.some((document) => document.saving) ||
     targets.some((document) => isSessionCloseLocked(document.sessionId)) ||
-    confirmDialog.open ||
-    closingWorkspace
+    businessConfirmQueue.value.length > 0 ||
+    Boolean(windowConfirm.value) ||
+    closingWorkspace.value
   ) {
     return;
   }
@@ -847,6 +917,7 @@ function disposeWorkspace(): void {
 async function destroyWindow(): Promise<void> {
   if (destroying) return;
   destroying = true;
+  cancelAllConfirms();
   disposeWorkspace();
   await appWindow.destroy();
 }
@@ -857,17 +928,17 @@ async function requestCloseWorkspace(): Promise<void> {
     hasSavingDocument.value ||
     closePreparations.size > 0 ||
     committingSessionIds.size > 0 ||
-    confirmDialog.open ||
-    closingWorkspace
+    Boolean(windowConfirm.value) ||
+    closingWorkspace.value
   ) {
     return;
   }
-  closingWorkspace = true;
+  closingWorkspace.value = true;
   closeTabMenu();
   try {
     if (
       documents.value.length > 1 &&
-      !(await showConfirm(
+      !(await showWindowConfirm(
         "关闭窗口",
         `当前打开了 ${documents.value.length} 个文件，是否关闭编辑器窗口？`
       ))
@@ -878,11 +949,11 @@ async function requestCloseWorkspace(): Promise<void> {
     const dirtyCount = documents.value.filter((document) => document.dirty).length;
     if (dirtyCount > 0) {
       const message = `有 ${dirtyCount} 个文件尚未保存，是否关闭编辑器窗口？`;
-      if (!(await showConfirm("未保存确认", message))) return;
+      if (!(await showWindowConfirm("未保存确认", message))) return;
     }
     await destroyWindow();
   } finally {
-    if (!destroying) closingWorkspace = false;
+    if (!destroying) closingWorkspace.value = false;
   }
 }
 
@@ -898,7 +969,7 @@ async function closeSessionDocuments(sessionId: string): Promise<boolean> {
 
 /** 阻止编辑窗口中的浏览器默认快捷键，并提供保存快捷键 */
 function preventBrowserShortcut(event: KeyboardEvent): void {
-  if (event.key === "Escape" && tabMenu.open) {
+  if (event.key === "Escape" && tabMenu.open && !hasOpenModal()) {
     event.preventDefault();
     event.stopPropagation();
     closeTabMenu();
@@ -909,6 +980,7 @@ function preventBrowserShortcut(event: KeyboardEvent): void {
   if (ctrlOrMeta && key === "s") {
     event.preventDefault();
     event.stopPropagation();
+    if (hasOpenModal()) return;
     void saveActiveDocument();
     return;
   }
@@ -1030,6 +1102,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  cancelAllConfirms();
   disposeWorkspace();
   tabsResizeObserver?.disconnect();
   unlistenOpenDocument?.();
@@ -1227,16 +1300,26 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <div v-if="confirmDialog.open" class="modal-mask editor-confirm-mask">
-      <div class="modal editor-confirm" role="dialog" aria-modal="true">
-        <div class="modal-header">{{ confirmDialog.title }}</div>
-        <div class="modal-body editor-confirm-body">{{ confirmDialog.message }}</div>
-        <div class="modal-footer">
-          <button class="btn" @click="confirmAction(false)">取消</button>
-          <button class="btn btn-primary" @click="confirmAction(true)">确定</button>
-        </div>
-      </div>
-    </div>
+    <AppDialog
+      :key="activeBusinessConfirm?.id ?? 0"
+      :open="Boolean(activeBusinessConfirm)"
+      type="confirm"
+      :title="activeBusinessConfirm?.title ?? ''"
+      :message="activeBusinessConfirm?.message ?? ''"
+      @confirm="settleActiveBusinessConfirm(true)"
+      @cancel="settleActiveBusinessConfirm(false)"
+    />
+
+    <AppDialog
+      :key="windowConfirm?.id ?? 0"
+      :open="Boolean(windowConfirm)"
+      type="confirm"
+      :title="windowConfirm?.title ?? ''"
+      :message="windowConfirm?.message ?? ''"
+      window-modal
+      @confirm="settleWindowConfirm(true)"
+      @cancel="settleWindowConfirm(false)"
+    />
   </div>
 </template>
 
@@ -1511,16 +1594,6 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 8px;
   margin-top: 8px;
-}
-.editor-confirm-mask {
-  z-index: 1001;
-}
-.editor-confirm {
-  width: 360px;
-}
-.editor-confirm-body {
-  line-height: 1.6;
-  color: var(--text-secondary);
 }
 .editor-spinner {
   width: 16px;
