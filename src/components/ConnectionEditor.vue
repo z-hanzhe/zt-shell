@@ -151,8 +151,6 @@ const { isTop: isTopModal } = useEscClose(
 <template>
   <div
     :class="['modal-mask', { 'modal-top-mask': isTopModal }]"
-    :inert="!isTopModal"
-    :aria-hidden="isTopModal ? undefined : 'true'"
   >
     <div
       ref="dialogRef"

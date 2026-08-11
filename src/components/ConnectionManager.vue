@@ -981,14 +981,14 @@ onBeforeUnmount(() => {
 <template>
   <div
     :class="['modal-mask', { 'modal-top-mask': isTopModal }]"
-    :inert="!isTopModal"
-    :aria-hidden="isTopModal ? undefined : 'true'"
   >
     <div
       ref="dialogRef"
       class="modal dialog-draggable conn-mgr"
       role="dialog"
       :aria-modal="isTopModal ? 'true' : 'false'"
+      :inert="!isTopModal"
+      :aria-hidden="isTopModal ? undefined : 'true'"
       tabindex="-1"
     >
       <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
