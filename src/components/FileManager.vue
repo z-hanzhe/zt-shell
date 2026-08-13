@@ -8,6 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
+import PermissionDialog, { type PermissionDialogValue } from "./PermissionDialog.vue";
 import {
   sftpList,
   sftpHome,
@@ -18,6 +19,7 @@ import {
   sftpWrite,
   sftpCreateArchive,
   sftpExtractArchive,
+  sftpSetPermissions,
   sftpSetSudo,
   transferUpload,
   transferDownload,
@@ -97,6 +99,15 @@ const fileOperation = reactive<{
 }>({ id: "", sessionId: "", kind: null, cancelling: false });
 /** 中断确认弹窗状态，叠加在进行中弹窗之上 */
 const interruptDialog = reactive({ open: false, message: "" });
+/** 修改权限弹窗状态 */
+const permissionDialog = reactive({
+  open: false,
+  saving: false,
+  targetName: "",
+  targetCount: 0,
+  mixedMode: false,
+  initialMode: 0o644,
+});
 /** 鼠标框选状态 */
 const marquee = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 });
 /** 拖拽移动状态 */
@@ -134,7 +145,7 @@ type ColumnKey = SortKey;
 type PointerMode = "select" | "drag";
 type TypeaheadZone = "tree" | "list";
 type ArchiveFormat = "zip" | "tarGz";
-type FileOperationKind = "archive" | "extract" | "delete";
+type FileOperationKind = "archive" | "extract" | "delete" | "permissions";
 type PointerAction = {
   mode: PointerMode;
   entry?: FileEntry;
@@ -154,6 +165,8 @@ type MenuAction =
   | "archiveZip"
   | "archiveTarGz"
   | "extractArchive"
+  | "extractArchiveTo"
+  | "permissions"
   | "newFile"
   | "newDir"
   | "delete";
@@ -241,6 +254,12 @@ const contextMenuItems = computed<MenuItem[]>(() => {
           label: "解压到当前目录",
           disabled: count !== 1 || singleDir || !isExtractableArchive(first?.name ?? ""),
         },
+        {
+          key: "extractArchiveTo",
+          action: "extractArchiveTo",
+          label: extractArchiveToLabel(first?.name ?? ""),
+          disabled: count !== 1 || singleDir || !isExtractableArchive(first?.name ?? ""),
+        },
       ],
     },
     {
@@ -261,6 +280,7 @@ const contextMenuItems = computed<MenuItem[]>(() => {
         { key: "packDownload", action: "packDownload", label: "打包下载", disabled: count === 0 },
       ],
     },
+    { key: "permissions", action: "permissions", label: "修改权限", disabled: count === 0 },
     // sudo 模式经 SFTP 递归删除，普通模式经 rm -rf 快速删除
     { key: "delete", action: "delete", label: sudoActive.value ? "删除" : "删除(rm -rf)", disabled: count === 0 },
   ];
@@ -469,7 +489,7 @@ function onFileKeyDown(event: KeyboardEvent) {
     // App 层已拦截浏览器刷新，这里借 F5 刷新文件管理；终端聚焦时 F5 归终端使用
     const target = event.target as HTMLElement;
     if (target.closest?.(".xterm")) return;
-    if (props.connected && !dialog.open) refresh();
+    if (props.connected && !dialog.open && !hasOpenModal()) refresh();
     return;
   }
   if (handleTypeaheadKey(event)) return;
@@ -953,6 +973,12 @@ async function runMenuAction(item: MenuItem) {
     case "extractArchive":
       await onExtractArchive();
       break;
+    case "extractArchiveTo":
+      await onExtractArchive(true);
+      break;
+    case "permissions":
+      openPermissionDialog();
+      break;
     case "newFile":
       await onNewFile();
       break;
@@ -986,6 +1012,129 @@ async function onEditText() {
 /** 处理菜单项点击，父级菜单不执行动作，子菜单由鼠标悬停展开 */
 function onMenuItemClick(item: MenuItem) {
   if (item.action) runMenuAction(item);
+}
+
+/** 打开权限编辑弹窗，并以单选条目的当前权限作为初始值。*/
+function openPermissionDialog() {
+  const targets = selectedEntries.value;
+  if (targets.length === 0) return;
+  const firstMode = targets[0].permissions & 0o777;
+  const sameMode = targets.every((entry) => (entry.permissions & 0o777) === firstMode);
+  Object.assign(permissionDialog, {
+    open: true,
+    saving: false,
+    targetName: targets.length === 1 ? targets[0].name : "",
+    targetCount: targets.length,
+    mixedMode: targets.length > 1 && !sameMode,
+    initialMode: sameMode ? firstMode : 0o644,
+  });
+}
+
+/** 关闭权限编辑弹窗。*/
+function closePermissionDialog() {
+  if (permissionDialog.saving) return;
+  permissionDialog.open = false;
+}
+
+/** 判断异步文件操作是否仍对应开始时的会话和目录视图。 */
+function isFileViewCurrent(sessionId: string, directory: string, version: number): boolean {
+  return (
+    version === sessionViewVersion &&
+    sessionId === props.sessionId &&
+    directory === cwd.value &&
+    props.connected
+  );
+}
+
+/** 提交权限设置；多选条目逐项执行，任一失败即停止并提示。*/
+async function onPermissionConfirm(value: PermissionDialogValue) {
+  const targets = selectedEntries.value;
+  const sessionId = props.sessionId;
+  const directory = cwd.value;
+  const viewVersion = sessionViewVersion;
+  const targetPaths = targets.map((entry) => ({
+    name: entry.name,
+    path: joinPath(directory, entry.name),
+  }));
+  if (
+    targetPaths.length === 0 ||
+    permissionDialog.saving ||
+    !isFileViewCurrent(sessionId, directory, viewVersion)
+  ) {
+    return;
+  }
+  const targetCount = targetPaths.length;
+  let viewChanged = false;
+  permissionDialog.saving = true;
+  const operationId = beginFileOperation(
+    "permissions",
+    "修改权限中",
+    `正在修改 ${targetCount} 个项目的权限，请稍候…`
+  );
+  try {
+    for (const target of targetPaths) {
+      // 取消请求可能刚好落在批量条目之间，先阻止后续条目继续修改。
+      if (fileOperation.cancelling || fileOperation.id !== operationId) {
+        throw new Error("文件操作已中断");
+      }
+      if (!isFileViewCurrent(sessionId, directory, viewVersion)) {
+        viewChanged = true;
+        throw new Error("文件视图已切换，已停止后续权限修改");
+      }
+      await sftpSetPermissions(
+        sessionId,
+        target.path,
+        value.mode,
+        value.recursive,
+        value.scope,
+        operationId
+      );
+      if (fileOperation.cancelling) throw new Error("文件操作已中断");
+      if (!isFileViewCurrent(sessionId, directory, viewVersion)) {
+        viewChanged = true;
+        throw new Error("文件视图已切换，已停止后续权限修改");
+      }
+    }
+    const currentView = isFileViewCurrent(sessionId, directory, viewVersion);
+    finishFileOperation(operationId);
+    permissionDialog.open = false;
+    permissionDialog.saving = false;
+    if (!currentView) return;
+    invalidateTreeDirs(directory);
+    await refresh();
+    if (!isFileViewCurrent(sessionId, directory, viewVersion)) return;
+    await syncTreeToCwd();
+    if (!isFileViewCurrent(sessionId, directory, viewVersion)) return;
+    showMessage(
+      "权限修改完成",
+      targetCount === 1 ? ` [ ${targetPaths[0].name} ] 的权限已更新` : `${targetCount} 个项目的权限已更新`
+    );
+  } catch (error) {
+    const currentView = isFileViewCurrent(sessionId, directory, viewVersion);
+    finishFileOperation(operationId);
+    permissionDialog.saving = false;
+    if (viewChanged || !currentView) {
+      // 视图已切换时不触碰新会话/目录的缓存，也不刷新同名路径。
+      permissionDialog.open = false;
+      return;
+    }
+    if (isOperationCancelled(error)) {
+      permissionDialog.open = false;
+      // 中断可能已经修改了部分条目，目录树缓存也需要同步失效。
+      invalidateTreeDirs(directory);
+      await refresh();
+      if (isFileViewCurrent(sessionId, directory, viewVersion)) {
+        showMessage("操作已中断", "已停止后续处理，请检查已完成的部分。");
+      }
+    } else {
+      // 批量操作可能已经修改了前面的条目，失败后也要同步当前目录显示。
+      invalidateTreeDirs(directory);
+      await refresh();
+      if (isFileViewCurrent(sessionId, directory, viewVersion)) {
+        showMessage("权限修改失败", String(error));
+      }
+    }
+  }
 }
 
 /** 获取表格单元格完整内容 */
@@ -1389,6 +1538,8 @@ function finishFileOperation(operationId: string) {
   if (fileOperation.id !== operationId) return;
   Object.assign(fileOperation, { id: "", sessionId: "", kind: null, cancelling: false });
   interruptDialog.open = false;
+  // 操作结束后关闭进行中弹窗，否则 loading 状态会残留并遮挡文件面板。
+  if (dialog.type === "loading") dialog.open = false;
 }
 
 /** 读取当前操作对应的中断风险提示 */
@@ -1400,6 +1551,8 @@ function interruptMessage(kind: FileOperationKind | null): string {
       return "确认中断解压？已解压或覆盖的文件不会自动回滚。";
     case "delete":
       return "确认中断删除？已经删除的文件无法恢复，只会停止后续处理。";
+    case "permissions":
+      return "确认中断权限修改？已完成的条目不会自动恢复。";
     default:
       return "确认中断当前文件操作？已完成的部分不会自动回滚。";
   }
@@ -1426,7 +1579,11 @@ async function confirmFileOperationCancel() {
   fileOperation.cancelling = true;
   try {
     const accepted = await sftpCancelOperation(sessionId, operationId);
-    if (!accepted && fileOperation.id === operationId) fileOperation.cancelling = false;
+    if (!accepted && fileOperation.id === operationId && fileOperation.kind !== "permissions") {
+      // 权限批处理由多个连续请求组成；请求间隙后端可能暂时没有登记该操作，
+      // 仍保留本地中断标记，让批处理循环在下一项开始前停止。
+      fileOperation.cancelling = false;
+    }
   } catch (error) {
     if (fileOperation.id !== operationId) return;
     fileOperation.cancelling = false;
@@ -1449,7 +1606,32 @@ async function showOperationCancelled() {
 /** 判断文件名是否为当前支持解压的压缩包格式 */
 function isExtractableArchive(name: string): boolean {
   const lowerName = name.toLowerCase();
-  return lowerName.endsWith(".zip") || lowerName.endsWith(".tar.gz") || lowerName.endsWith(".tgz");
+  return [
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz2",
+    ".tbz",
+    ".tar.xz",
+    ".txz",
+  ].some((suffix) => lowerName.endsWith(suffix));
+}
+
+/** 取压缩包对应的目录名，用于“解压到 xxx”菜单和目标目录 */
+function extractArchiveDirectoryName(name: string): string {
+  const lowerName = name.toLowerCase();
+  const suffixes = [".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".tbz", ".txz", ".zip", ".tar"];
+  const suffix = suffixes.find((item) => lowerName.endsWith(item));
+  const stem = suffix ? name.slice(0, -suffix.length) : name;
+  // 后端会校验目录名；空名称和点目录回退到固定安全名称。
+  return stem && stem !== "." && stem !== ".." ? stem : "archive";
+}
+
+/** 生成“解压到 xxx”菜单文案 */
+function extractArchiveToLabel(name: string): string {
+  return `解压到 ${extractArchiveDirectoryName(name)}/`;
 }
 
 /** 将选中条目压缩为当前远端目录下的指定格式 */
@@ -1514,32 +1696,55 @@ async function onCreateArchive(format: ArchiveFormat) {
   }
 }
 
-/** 将选中的压缩包解压到当前远端目录 */
-async function onExtractArchive() {
+/** 将选中的压缩包解压到当前目录或按文件名创建的子目录 */
+async function onExtractArchive(toNamedDirectory = false) {
   const target = selectedEntries.value[0];
   if (!target || target.isDir || !isExtractableArchive(target.name)) return;
+  const sessionId = props.sessionId;
+  const directory = cwd.value;
+  const viewVersion = sessionViewVersion;
+  const archiveName = target.name;
+  const targetDirectory = toNamedDirectory ? extractArchiveDirectoryName(target.name) : undefined;
+  const destination = targetDirectory ? `目录 [ ${targetDirectory} ]` : "当前目录";
   const confirmed = await showConfirm(
     "解压确认",
-    `将 [ ${target.name} ] 解压到当前目录，可能覆盖同名文件，是否继续？`,
+    `将 [ ${archiveName} ] 解压到${destination}，可能覆盖同名文件，是否继续？`,
     "继续解压",
     true
   );
-  if (!confirmed) return;
+  if (!confirmed || !isFileViewCurrent(sessionId, directory, viewVersion)) return;
 
-  const operationId = beginFileOperation("extract", "解压中", `正在解压 [ ${target.name} ] ，请稍候…`);
+  const operationId = beginFileOperation("extract", "解压中", `正在解压 [ ${archiveName} ] ，请稍候…`);
+  const targetPath = targetDirectory ? joinPath(directory, targetDirectory) : directory;
   try {
-    await sftpExtractArchive(props.sessionId, cwd.value, target.name, operationId);
+    await sftpExtractArchive(sessionId, directory, archiveName, operationId, targetDirectory);
+    const currentView = isFileViewCurrent(sessionId, directory, viewVersion);
     finishFileOperation(operationId);
-    invalidateTreeDirs(cwd.value);
+    if (!currentView) return;
+    invalidateTreeDirs(directory, targetPath);
     await refresh();
-    showMessage("解压完成", ` [ ${target.name} ] 已解压到当前目录`);
+    if (!isFileViewCurrent(sessionId, directory, viewVersion)) return;
+    await syncTreeToCwd();
+    if (targetDirectory) await reloadExpandedTreeDirs(targetPath);
+    if (!isFileViewCurrent(sessionId, directory, viewVersion)) return;
+    showMessage("解压完成", ` [ ${archiveName} ] 已解压到${destination}`);
   } catch (e) {
+    const currentView = isFileViewCurrent(sessionId, directory, viewVersion);
     finishFileOperation(operationId);
+    if (!currentView) return;
     if (isOperationCancelled(e)) {
-      invalidateTreeDirs(cwd.value);
-      await showOperationCancelled();
+      invalidateTreeDirs(directory, targetPath);
+      await refresh();
+      if (isFileViewCurrent(sessionId, directory, viewVersion)) {
+        showMessage("操作已中断", "已停止后续处理，请检查已完成的部分。");
+      }
     } else {
-      showMessage("解压失败", String(e));
+      // 解压可能在报错前已经写入部分内容，失败后也要同步远端目录状态。
+      invalidateTreeDirs(directory, targetPath);
+      await refresh();
+      if (isFileViewCurrent(sessionId, directory, viewVersion)) {
+        showMessage("解压失败", String(e));
+      }
     }
   }
 }
@@ -1965,7 +2170,7 @@ defineExpose({ setPathFromTerminal });
             :class="{ disabled: item.disabled, 'has-submenu': item.children }"
           >
             <button :disabled="item.disabled" @click.stop="onMenuItemClick(item)">
-              <span>{{ item.label }}</span>
+              <span :title="item.label">{{ item.label }}</span>
               <Icon v-if="item.children" name="chevronRight" :size="11" class="submenu-arrow" />
             </button>
             <div
@@ -1977,9 +2182,10 @@ defineExpose({ setPathFromTerminal });
                 v-for="child in item.children"
                 :key="child.key"
                 :disabled="child.disabled"
+                :title="child.label"
                 @click.stop="onMenuItemClick(child)"
               >
-                {{ child.label }}
+                <span>{{ child.label }}</span>
               </button>
             </div>
           </div>
@@ -1997,6 +2203,16 @@ defineExpose({ setPathFromTerminal });
       </span>
       <span v-else-if="typeahead.keyword" class="ta-count none">无匹配</span>
     </div>
+    <PermissionDialog
+      :open="permissionDialog.open"
+      :saving="permissionDialog.saving"
+      :target-name="permissionDialog.targetName"
+      :target-count="permissionDialog.targetCount"
+      :mixed-mode="permissionDialog.mixedMode"
+      :initial-mode="permissionDialog.initialMode"
+      @confirm="onPermissionConfirm"
+      @cancel="closePermissionDialog"
+    />
     <AppDialog
       :open="dialog.open"
       :type="dialog.type"
@@ -2421,6 +2637,12 @@ defineExpose({ setPathFromTerminal });
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+}
+.context-menu button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .context-menu button:hover:not(:disabled) {
   background: var(--row-hover);

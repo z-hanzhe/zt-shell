@@ -198,14 +198,21 @@ export function sftpCreateArchive(
   return invoke("sftp_create_archive", { sessionId, directory, names, archiveFormat, archiveName, operationId });
 }
 
-/** 将远端压缩包解压到当前目录 */
+/** 将远端压缩包解压到当前目录或指定子目录 */
 export function sftpExtractArchive(
   sessionId: string,
   directory: string,
   archiveName: string,
-  operationId: string
+  operationId: string,
+  targetDirectory?: string
 ): Promise<void> {
-  return invoke("sftp_extract_archive", { sessionId, directory, archiveName, operationId });
+  return invoke("sftp_extract_archive", {
+    sessionId,
+    directory,
+    archiveName,
+    operationId,
+    targetDirectory: targetDirectory ?? null,
+  });
 }
 
 /** 批量删除远端条目，目录递归删除支持中断 */
@@ -230,6 +237,25 @@ export function sftpSetSudo(sessionId: string, enabled: boolean): Promise<void> 
 /** 检测当前权限模式下对远端文件是否有写入权限 */
 export function sftpCheckWritable(sessionId: string, path: string): Promise<boolean> {
   return invoke("sftp_check_writable", { sessionId, path });
+}
+
+/** 修改远端文件或目录权限，支持递归应用范围。 */
+export function sftpSetPermissions(
+  sessionId: string,
+  path: string,
+  mode: number,
+  recursive: boolean,
+  scope: "all" | "files" | "directories",
+  operationId: string
+): Promise<void> {
+  return invoke("sftp_set_permissions", {
+    sessionId,
+    path,
+    mode,
+    recursive,
+    scope,
+    operationId,
+  });
 }
 
 /** 创建上传任务，force 确认超量、overwrite 确认覆盖，未确认时仅返回统计 */

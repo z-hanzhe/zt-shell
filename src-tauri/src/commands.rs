@@ -329,13 +329,14 @@ pub async fn sftp_create_archive(
     )
 }
 
-/// 将远端压缩包解压到当前目录
+/// 将远端压缩包解压到当前目录或指定子目录
 #[tauri::command]
 pub async fn sftp_extract_archive(
     manager: State<'_, SessionManager>,
     session_id: String,
     directory: String,
     archive_name: String,
+    target_directory: Option<String>,
     operation_id: String,
 ) -> CmdResult<()> {
     let mut operation = map_err(manager.begin_operation(&session_id, &operation_id))?;
@@ -345,6 +346,7 @@ pub async fn sftp_extract_archive(
             &session_id,
             &directory,
             &archive_name,
+            target_directory.as_deref(),
             operation.cancellation(),
         )
         .await,
@@ -361,6 +363,38 @@ pub async fn sftp_remove_entries(
 ) -> CmdResult<()> {
     let mut operation = map_err(manager.begin_operation(&session_id, &operation_id))?;
     map_err(sftp::remove_entries(&manager, &session_id, &entries, operation.cancellation()).await)
+}
+
+/// 修改远端文件或目录的 Unix 权限，支持递归应用范围与中断。
+#[tauri::command]
+pub async fn sftp_set_permissions(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+    path: String,
+    mode: u32,
+    recursive: bool,
+    scope: String,
+    operation_id: String,
+) -> CmdResult<()> {
+    let mut operation = map_err(manager.begin_operation(&session_id, &operation_id))?;
+    let sftp = tokio::select! {
+        biased;
+        _ = wait_for_cancellation(operation.cancellation()) => {
+            return Err(OPERATION_CANCELLED_MESSAGE.to_string());
+        }
+        result = manager.sftp(&session_id) => map_err(result)?,
+    };
+    map_err(
+        sftp::set_permissions(
+            &sftp,
+            &path,
+            mode,
+            recursive,
+            &scope,
+            Some(operation.cancellation()),
+        )
+        .await,
+    )
 }
 
 /// 请求中断当前会话中的文件操作

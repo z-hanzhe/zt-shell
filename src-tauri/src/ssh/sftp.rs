@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Result};
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::FileType;
+use russh_sftp::protocol::{FileAttributes, FileType};
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
@@ -109,6 +109,146 @@ pub async fn list_dir(sftp: &SftpSession, path: &str) -> Result<Vec<FileEntry>> 
         _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
     });
     Ok(entries)
+}
+
+/// 修改远端文件或目录的 Unix 权限位。
+///
+/// 权限修改使用 SFTP `SETSTAT`，不依赖远端 shell。递归处理目录时不跟随符号链接，
+/// `scope` 可限制为全部条目、仅文件或仅目录；中断不会回滚已经完成的修改。
+pub async fn set_permissions(
+    sftp: &SftpSession,
+    path: &str,
+    mode: u32,
+    recursive: bool,
+    scope: &str,
+    cancellation: Option<&watch::Receiver<bool>>,
+) -> Result<()> {
+    validate_permission_path(path)?;
+    validate_permission_mode(mode)?;
+    validate_permission_scope(scope)?;
+    validate_permission_application(recursive, scope)?;
+
+    let root_metadata = sftp
+        .symlink_metadata(path)
+        .await
+        .map_err(|e| anyhow!("读取权限失败：{}", format_sftp_error(&e)))?;
+    let root_type = root_metadata.file_type();
+    if root_type == FileType::Symlink {
+        return Err(anyhow!("符号链接不支持直接修改权限"));
+    }
+    let mut targets = vec![(path.to_string(), root_type)];
+    if recursive && root_type == FileType::Dir {
+        collect_permission_targets(sftp, path, &mut targets, cancellation).await?;
+    }
+
+    // 子项先于父目录修改，避免提前移除父目录执行权限后无法继续访问后代。
+    for (target_path, file_type) in targets.into_iter().rev() {
+        ensure_not_cancelled(cancellation)?;
+        if recursive && !permission_scope_matches(scope, &file_type) {
+            continue;
+        }
+        // 只保留文件类型位并替换权限位；清除 setuid/setgid/sticky，确保界面中的
+        // 八进制权限值与实际结果一致，避免修改普通权限时意外保留特殊提权位。
+        if file_type == FileType::Symlink {
+            continue;
+        }
+        let current = sftp
+            .symlink_metadata(&target_path)
+            .await
+            .map_err(|e| anyhow!("读取权限失败（{}）：{}", target_path, format_sftp_error(&e)))?
+            .permissions
+            .unwrap_or(0);
+        let mut attrs = FileAttributes::empty();
+        attrs.permissions = Some((current & 0o170000) | mode);
+        sftp.set_metadata(&target_path, attrs)
+            .await
+            .map_err(|e| anyhow!("修改权限失败（{}）：{}", target_path, format_sftp_error(&e)))?;
+    }
+    ensure_not_cancelled(cancellation)?;
+    Ok(())
+}
+
+/// 递归收集目录下的条目；符号链接按叶子节点处理，避免跟随链接造成越界或循环。
+async fn collect_permission_targets(
+    sftp: &SftpSession,
+    root: &str,
+    targets: &mut Vec<(String, FileType)>,
+    cancellation: Option<&watch::Receiver<bool>>,
+) -> Result<()> {
+    let mut stack = vec![root.to_string()];
+    while let Some(directory) = stack.pop() {
+        ensure_not_cancelled(cancellation)?;
+        let children = sftp
+            .read_dir(&directory)
+            .await
+            .map_err(|e| anyhow!("读取目录失败（{}）：{}", directory, format_sftp_error(&e)))?;
+        for item in children {
+            ensure_not_cancelled(cancellation)?;
+            let child = format!("{}/{}", directory.trim_end_matches('/'), item.file_name());
+            let file_type = sftp
+                .symlink_metadata(&child)
+                .await
+                .map_err(|e| anyhow!("读取权限失败（{}）：{}", child, format_sftp_error(&e)))?
+                .file_type();
+            targets.push((child.clone(), file_type));
+            if file_type == FileType::Dir {
+                stack.push(child);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 判断递归权限修改的范围过滤条件。
+fn permission_scope_matches(scope: &str, file_type: &FileType) -> bool {
+    match scope {
+        // “仅应用到文件”只匹配普通文件，符号链接和特殊文件不应被误改。
+        "files" => *file_type == FileType::File,
+        "directories" => *file_type == FileType::Dir,
+        _ => true,
+    }
+}
+
+/// 校验权限模式仅包含 Unix 九位 rwx 权限位。
+fn validate_permission_mode(mode: u32) -> Result<()> {
+    if mode > 0o777 {
+        return Err(anyhow!("权限值必须在 000 到 777 之间"));
+    }
+    Ok(())
+}
+
+/// 校验递归权限修改范围。
+fn validate_permission_scope(scope: &str) -> Result<()> {
+    if matches!(scope, "all" | "files" | "directories") {
+        Ok(())
+    } else {
+        Err(anyhow!("权限应用范围不合法"))
+    }
+}
+
+/// 校验非递归模式不能选择仅文件或仅目录范围。
+fn validate_permission_application(recursive: bool, scope: &str) -> Result<()> {
+    if !recursive && scope != "all" {
+        return Err(anyhow!("非递归权限修改只能应用到全部条目"));
+    }
+    Ok(())
+}
+
+/// 校验权限修改路径，拒绝相对路径、根目录和路径穿越。
+fn validate_permission_path(path: &str) -> Result<()> {
+    let is_root = path.trim_matches('/').is_empty();
+    let has_parent_component = path
+        .split('/')
+        .any(|component| component == "." || component == "..");
+    if path.is_empty()
+        || !path.starts_with('/')
+        || path.contains('\0')
+        || is_root
+        || has_parent_component
+    {
+        return Err(anyhow!("非法的权限修改路径"));
+    }
+    Ok(())
 }
 
 /// 读取远端文件全部内容
@@ -399,49 +539,185 @@ fn build_archive_command(temp_name: &str, names: &[String], archive_format: &str
     }
 }
 
-/// 将远端 zip 或 tar.gz 压缩包解压到当前目录
+/// 支持的远端归档格式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArchiveKind {
+    Zip,
+    Tar,
+    TarGz,
+    TarBz2,
+    TarXz,
+}
+
+/// 根据文件名后缀识别归档格式（不识别单文件压缩流，如 `.gz`）。
+fn detect_archive_kind(name: &str) -> Option<ArchiveKind> {
+    let lower_name = name.to_ascii_lowercase();
+    if lower_name.ends_with(".zip") {
+        Some(ArchiveKind::Zip)
+    } else if lower_name.ends_with(".tar.gz") || lower_name.ends_with(".tgz") {
+        Some(ArchiveKind::TarGz)
+    } else if lower_name.ends_with(".tar.bz2")
+        || lower_name.ends_with(".tbz2")
+        || lower_name.ends_with(".tbz")
+    {
+        Some(ArchiveKind::TarBz2)
+    } else if lower_name.ends_with(".tar.xz") || lower_name.ends_with(".txz") {
+        Some(ArchiveKind::TarXz)
+    } else if lower_name.ends_with(".tar") {
+        Some(ArchiveKind::Tar)
+    } else {
+        None
+    }
+}
+
+/// 构建远端解压命令，归档路径和目标路径均须为已校验的 shell 参数。
+fn build_extract_command(kind: ArchiveKind, archive_path: &str, destination: &str) -> String {
+    match kind {
+        ArchiveKind::Zip => format!(
+            "{} && unzip -oq {} -d {} >/dev/null 2>&1",
+            build_zip_entry_validation_command(archive_path),
+            shell_quote(archive_path),
+            shell_quote(destination)
+        ),
+        ArchiveKind::Tar => format!(
+            "tar -xf {} -C {} >/dev/null 2>&1",
+            shell_quote(archive_path),
+            shell_quote(destination)
+        ),
+        ArchiveKind::TarGz => format!(
+            "tar -xzf {} -C {} >/dev/null 2>&1",
+            shell_quote(archive_path),
+            shell_quote(destination)
+        ),
+        ArchiveKind::TarBz2 => format!(
+            "tar -xjf {} -C {} >/dev/null 2>&1",
+            shell_quote(archive_path),
+            shell_quote(destination)
+        ),
+        ArchiveKind::TarXz => format!(
+            "tar -xJf {} -C {} >/dev/null 2>&1",
+            shell_quote(archive_path),
+            shell_quote(destination)
+        ),
+    }
+}
+
+/// 构建 ZIP 条目路径校验命令，拒绝绝对路径和会穿越目标目录的 `..` 条目。
+///
+/// `unzip` 的不同实现对路径清理策略并不完全一致，因此在解压前显式检查条目名。
+/// 仅依赖 POSIX shell 和 Info-ZIP 常见的 `-Z1` 列表模式；列表失败时整个操作失败。
+fn build_zip_entry_validation_command(archive_path: &str) -> String {
+    let archive = shell_quote(archive_path);
+    format!(
+        "unzip -Z1 {archive} >/dev/null 2>&1 && if unzip -Z1 {archive} | while IFS= read -r entry; do case \"$entry\" in /*|../*|*/../*|*/..|..|*\\\\**) exit 1 ;; esac; done; then :; else exit 1; fi",
+        archive = archive
+    )
+}
+
+/// 构建“解压到指定子目录”的命令。
+///
+/// 先在随机 staging 目录中解压，再将内容合并到目标目录。若 staging 顶层
+/// 只有一个与目标同名的真实目录，则复制该目录的内容而不是再嵌套一层。
+fn build_extract_to_directory_command(
+    archive_path: &str,
+    staging_path: &str,
+    target_path: &str,
+    target_name: &str,
+    kind: ArchiveKind,
+) -> String {
+    let extract_command = match kind {
+        ArchiveKind::Zip => "unzip -oq \"$archive\" -d \"$staging\" >/dev/null 2>&1",
+        ArchiveKind::Tar => "tar -xf \"$archive\" -C \"$staging\" >/dev/null 2>&1",
+        ArchiveKind::TarGz => "tar -xzf \"$archive\" -C \"$staging\" >/dev/null 2>&1",
+        ArchiveKind::TarBz2 => "tar -xjf \"$archive\" -C \"$staging\" >/dev/null 2>&1",
+        ArchiveKind::TarXz => "tar -xJf \"$archive\" -C \"$staging\" >/dev/null 2>&1",
+    };
+    let archive = shell_quote(archive_path);
+    let staging = shell_quote(staging_path);
+    let target = shell_quote(target_path);
+    let target_name = shell_quote(target_name);
+    let zip_validation = if kind == ArchiveKind::Zip {
+        format!("{} && ", build_zip_entry_validation_command(archive_path))
+    } else {
+        String::new()
+    };
+    // `cp -a source/. target/.` 同时包含隐藏文件并保留归档中的属性与符号链接。
+    format!(
+        "archive={archive}; staging={staging}; target={target}; target_name={target_name}; (rm -rf -- \"$staging\" || exit 1) && (mkdir -- \"$staging\" || exit 1) && ({zip_validation}{extract} || exit 1) && (if [ -e \"$target\" ] || [ -L \"$target\" ]; then if [ ! -d \"$target\" ] || [ -L \"$target\" ]; then exit 1; fi; else mkdir -- \"$target\" || exit 1; fi; target_links=$(find \"$target\" -type l -print) || exit 1; if [ -n \"$target_links\" ]; then exit 1; fi; top_count=0; only_name=; for item in \"$staging\"/* \"$staging\"/.[!.]* \"$staging\"/..?*; do if [ -e \"$item\" ] || [ -L \"$item\" ]; then top_count=$((top_count + 1)); only_name=\"${{item##*/}}\"; fi; done; if [ \"$top_count\" -eq 1 ] && [ \"$only_name\" = \"$target_name\" ] && [ -d \"$staging/$target_name\" ] && [ ! -L \"$staging/$target_name\" ]; then cp -a \"$staging/$target_name/.\" \"$target/.\" || exit 1; else cp -a \"$staging/.\" \"$target/.\" || exit 1; fi; rm -rf -- \"$staging\" || exit 1) && printf __ZTOK__ || {{ rm -rf -- \"$staging\"; printf __ZTFAIL__; }}",
+        extract = extract_command,
+        zip_validation = zip_validation,
+        archive = archive,
+        staging = staging,
+        target = target,
+        target_name = target_name,
+    )
+}
+
+/// 将远端归档解压到当前目录或指定子目录。
 pub async fn extract_archive(
     manager: &SessionManager,
     session_id: &str,
     directory: &str,
     archive_name: &str,
+    target_directory: Option<&str>,
     cancellation: &mut watch::Receiver<bool>,
 ) -> Result<()> {
     ensure_normal_exec_mode(manager, session_id).await?;
     validate_directory(directory)?;
     validate_entry_name(archive_name, "压缩包名称")?;
 
-    let lower_name = archive_name.to_ascii_lowercase();
-    let (tool, extract_command) = if lower_name.ends_with(".zip") {
-        (
-            "unzip",
-            format!(
-                "unzip -oq {} -d . >/dev/null 2>&1",
-                shell_quote(&format!("./{}", archive_name))
-            ),
-        )
-    } else if lower_name.ends_with(".tar.gz") || lower_name.ends_with(".tgz") {
-        (
-            "tar",
-            format!(
-                "tar -xzf {} >/dev/null 2>&1",
-                shell_quote(&format!("./{}", archive_name))
-            ),
-        )
-    } else {
-        return Err(anyhow!("仅支持解压 zip、tar.gz 或 tgz 文件"));
+    let kind = detect_archive_kind(archive_name).ok_or_else(|| {
+        anyhow!("仅支持解压 zip、tar、tar.gz、tgz、tar.bz2、tbz2、tbz、tar.xz 或 txz 文件")
+    })?;
+    let tool = match kind {
+        ArchiveKind::Zip => "unzip",
+        ArchiveKind::Tar | ArchiveKind::TarGz | ArchiveKind::TarBz2 | ArchiveKind::TarXz => "tar",
     };
     ensure_remote_tool(manager, session_id, tool, cancellation).await?;
 
-    let command = format!(
-        "cd {} && {} && printf __ZTOK__ || printf __ZTFAIL__",
-        shell_quote(directory),
-        extract_command
-    );
-    let output = manager
+    let archive_path = format!("./{}", archive_name);
+    let (command, staging_path) = if let Some(target_name) = target_directory {
+        validate_entry_name(target_name, "目标目录名")?;
+        let staging_name = format!(".ztshell-extract-{}", Uuid::new_v4());
+        let staging_path = format!("./{staging_name}");
+        let target_path = format!("./{target_name}");
+        let command = format!(
+            "cd {} && ({})",
+            shell_quote(directory),
+            build_extract_to_directory_command(
+                &archive_path,
+                &staging_path,
+                &target_path,
+                target_name,
+                kind,
+            )
+        );
+        (command, Some(staging_path))
+    } else {
+        let extract_command = build_extract_command(kind, &archive_path, ".");
+        let command = format!(
+            "cd {} && {} && printf __ZTOK__ || printf __ZTFAIL__",
+            shell_quote(directory),
+            extract_command
+        );
+        (command, None)
+    };
+    let output = match manager
         .exec_cancellable(session_id, &command, cancellation)
-        .await?;
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            if let Some(staging_path) = staging_path.as_deref() {
+                cleanup_extract_temp(manager, session_id, directory, staging_path).await;
+            }
+            return Err(error);
+        }
+    };
     if !output.contains("__ZTOK__") {
+        if let Some(staging_path) = staging_path.as_deref() {
+            cleanup_extract_temp(manager, session_id, directory, staging_path).await;
+        }
         return Err(anyhow!(
             "远端解压失败，请检查压缩包内容、文件权限和剩余空间"
         ));
@@ -492,6 +768,21 @@ async fn cleanup_archive_temp(
     let _ = timeout(Duration::from_secs(5), manager.exec(session_id, &command)).await;
 }
 
+/// 中断或异常后限时清理解压 staging 目录，清理失败不覆盖原始错误。
+async fn cleanup_extract_temp(
+    manager: &SessionManager,
+    session_id: &str,
+    directory: &str,
+    staging_path: &str,
+) {
+    let command = format!(
+        "cd {} && rm -rf -- {}",
+        shell_quote(directory),
+        shell_quote(staging_path)
+    );
+    let _ = timeout(Duration::from_secs(5), manager.exec(session_id, &command)).await;
+}
+
 /// 校验删除路径为非根绝对路径
 fn validate_removal_path(path: &str) -> Result<()> {
     let is_root = path.trim_matches('/').is_empty();
@@ -535,9 +826,66 @@ fn validate_entry_name(name: &str, label: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use russh_sftp::protocol::FileType;
+
     use super::{
-        build_archive_command, validate_directory, validate_entry_name, validate_removal_path,
+        build_archive_command, build_extract_command, build_extract_to_directory_command,
+        detect_archive_kind, permission_scope_matches, validate_directory, validate_entry_name,
+        validate_permission_application, validate_permission_mode, validate_permission_path,
+        validate_permission_scope, validate_removal_path, ArchiveKind,
     };
+    /// 常见归档扩展名映射到正确的解压工具格式。
+    #[test]
+    fn detects_supported_archive_kinds() {
+        for (name, kind) in [
+            ("a.ZIP", ArchiveKind::Zip),
+            ("a.tar", ArchiveKind::Tar),
+            ("a.tar.gz", ArchiveKind::TarGz),
+            ("a.tgz", ArchiveKind::TarGz),
+            ("a.tar.bz2", ArchiveKind::TarBz2),
+            ("a.tbz2", ArchiveKind::TarBz2),
+            ("a.tbz", ArchiveKind::TarBz2),
+            ("a.tar.xz", ArchiveKind::TarXz),
+            ("a.txz", ArchiveKind::TarXz),
+        ] {
+            assert_eq!(detect_archive_kind(name), Some(kind));
+        }
+        for name in ["a.gz", "a.7z", "a.rar", "a"] {
+            assert_eq!(detect_archive_kind(name), None);
+        }
+    }
+
+    /// 解压命令使用对应 tar 过滤器并正确引用路径。
+    #[test]
+    fn builds_extract_commands() {
+        assert_eq!(
+            build_extract_command(ArchiveKind::TarBz2, "./包.tar.bz2", "./目标"),
+            "tar -xjf './包.tar.bz2' -C './目标' >/dev/null 2>&1"
+        );
+        let zip_command = build_extract_command(ArchiveKind::Zip, "./包.zip", "./目标 目录");
+        assert!(zip_command.contains("unzip -oq './包.zip' -d './目标 目录'"));
+        assert!(zip_command.contains("unzip -Z1 './包.zip'"));
+        assert!(zip_command.contains("then :; else exit 1; fi"));
+        assert!(!zip_command.contains("if ! unzip -Z1"));
+        assert!(zip_command.contains("*\\\\**"));
+    }
+
+    /// 目标目录命令包含隐藏文件 glob 和同名顶层目录剥离分支。
+    #[test]
+    fn builds_named_extract_command_with_deduplication() {
+        let command = build_extract_to_directory_command(
+            "./包.tar.gz",
+            "./.staging",
+            "./包",
+            "包",
+            ArchiveKind::TarGz,
+        );
+        assert!(command.contains("\"$staging\"/*"));
+        assert!(command.contains("\"$staging\"/.[!.]*"));
+        assert!(command.contains("\"$staging\"/..?*"));
+        assert!(command.contains("[ \"$only_name\" = \"$target_name\" ]"));
+        assert!(command.contains("cp -a \"$staging/$target_name/.\" \"$target/.\""));
+    }
 
     /// tar 包内条目不应携带会被 Windows 解压工具显示为目录层的 ./ 前缀
     #[test]
@@ -570,6 +918,30 @@ mod tests {
         assert!(validate_directory("/目录/子目录").is_ok());
         assert!(validate_directory("相对路径").is_err());
         assert!(validate_directory("/目录\0子目录").is_err());
+    }
+
+    /// 权限值、应用范围和目标路径校验拒绝越界输入。
+    #[test]
+    fn validates_permission_arguments() {
+        assert!(validate_permission_mode(0o755).is_ok());
+        assert!(validate_permission_mode(0o1000).is_err());
+        assert!(validate_permission_scope("all").is_ok());
+        assert!(validate_permission_scope("files").is_ok());
+        assert!(validate_permission_scope("directories").is_ok());
+        assert!(validate_permission_scope("bad").is_err());
+        assert!(validate_permission_application(false, "all").is_ok());
+        assert!(validate_permission_application(false, "files").is_err());
+        assert!(validate_permission_application(true, "files").is_ok());
+        assert!(validate_permission_path("/tmp/item").is_ok());
+        assert!(validate_permission_path("/").is_err());
+        assert!(validate_permission_path("relative").is_err());
+        assert!(validate_permission_path("/tmp/../item").is_err());
+        assert!(permission_scope_matches("files", &FileType::File));
+        assert!(!permission_scope_matches("files", &FileType::Dir));
+        assert!(!permission_scope_matches("files", &FileType::Symlink));
+        assert!(!permission_scope_matches("files", &FileType::Other));
+        assert!(permission_scope_matches("directories", &FileType::Dir));
+        assert!(!permission_scope_matches("directories", &FileType::File));
     }
 
     /// 删除仅允许非根绝对路径

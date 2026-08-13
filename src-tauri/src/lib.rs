@@ -63,6 +63,7 @@ pub fn run() {
             commands::sftp_create_archive,
             commands::sftp_extract_archive,
             commands::sftp_remove_entries,
+            commands::sftp_set_permissions,
             commands::sftp_cancel_operation,
             commands::sftp_set_sudo,
             commands::sftp_check_writable,
