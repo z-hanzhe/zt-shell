@@ -208,7 +208,7 @@ impl SessionManager {
                     if disconnected {
                         close_app
                             .state::<TransferManager>()
-                            .remove_session(&close_app, &close_session_id);
+                            .interrupt_session(&close_app, &close_session_id);
                     }
                     disconnected
                 },

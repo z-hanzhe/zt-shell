@@ -275,7 +275,8 @@ export const useSessionsStore = defineStore("sessions", () => {
     // 全新连接（首次失败或连接中）先置连接中以显示进度并触发终端挂载
     if (!hadTerminal) setStatus(id, "connecting");
     try {
-      await sshDisconnect(id);
+      // 重连只释放旧 SSH 资源，保留传输任务供新连接恢复
+      await sshDisconnect(id, true);
     } catch {
       // 旧连接可能已断开，忽略
     }

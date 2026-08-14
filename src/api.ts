@@ -78,9 +78,9 @@ export function saveConnectionExportFile(
   });
 }
 
-/** 断开会话 */
-export function sshDisconnect(sessionId: string): Promise<void> {
-  return invoke("ssh_disconnect", { sessionId });
+/** 断开会话；重连前保留传输任务时传入 keepTransfers */
+export function sshDisconnect(sessionId: string, keepTransfers = false): Promise<void> {
+  return invoke("ssh_disconnect", { sessionId, keepTransfers });
 }
 
 /**

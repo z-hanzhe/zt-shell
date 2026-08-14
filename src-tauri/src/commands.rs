@@ -91,15 +91,20 @@ pub async fn ssh_connect(
     )
 }
 
-/// 断开并释放会话，同时清理该会话的全部传输任务
+/// 断开并释放会话；保留传输时将中断任务标记为失败并保留列表
 #[tauri::command]
 pub async fn ssh_disconnect(
     app: AppHandle,
     manager: State<'_, SessionManager>,
     transfers: State<'_, TransferManager>,
     session_id: String,
+    keep_transfers: bool,
 ) -> CmdResult<()> {
-    transfers.remove_session(&app, &session_id);
+    if keep_transfers {
+        transfers.interrupt_session(&app, &session_id);
+    } else {
+        transfers.remove_session(&app, &session_id);
+    }
     manager.disconnect(&session_id);
     Ok(())
 }

@@ -81,6 +81,7 @@ defineExpose({ setFilePath });
       <TransferPanel
         v-show="activeTab === 'transfers'"
         :session-id="sessionId"
+        :connected="connected"
         :active="activeTab === 'transfers'"
       />
     </div>

@@ -21,6 +21,8 @@ import { formatDuration, formatRate, formatSizeFixed } from "../utils";
 const props = defineProps<{
   /** 当前会话标识，仅展示该会话的任务 */
   sessionId: string;
+  /** 当前会话是否已连接，未连接时禁止启动需要 SSH 的任务 */
+  connected: boolean;
   /** 面板是否处于激活可见状态，决定是否响应方向键导航 */
   active: boolean;
 }>();
@@ -194,11 +196,23 @@ const contextMenuItems = computed<MenuItem[]>(() => {
   items.push(
     { action: "pause", label: "暂停", disabled: !selectedTasks.value.some((t) => isPausable(t.status)) },
     { action: "pauseAll", label: "全部暂停", disabled: !all.some((t) => isPausable(t.status)) },
-    { action: "resume", label: "继续", disabled: !selectedTasks.value.some((t) => t.status === "paused") },
-    { action: "resumeAll", label: "全部继续", disabled: !all.some((t) => t.status === "paused") },
+    {
+      action: "resume",
+      label: "继续",
+      disabled: !props.connected || !selectedTasks.value.some((t) => t.status === "paused"),
+    },
+    {
+      action: "resumeAll",
+      label: "全部继续",
+      disabled: !props.connected || !all.some((t) => t.status === "paused"),
+    },
     { action: "remove", label: "删除", disabled: selectedTasks.value.length === 0 },
     { action: "removeAll", label: "全部删除", disabled: all.length === 0 },
-    { action: "retryFailed", label: "重试失败的作业", disabled: !all.some((t) => t.status === "failed") },
+    {
+      action: "retryFailed",
+      label: "重试失败的作业",
+      disabled: !props.connected || !all.some((t) => t.status === "failed"),
+    },
     { action: "clearCompleted", label: "清空已完成的任务", disabled: completedRootIds.value.length === 0 }
   );
   return items;
