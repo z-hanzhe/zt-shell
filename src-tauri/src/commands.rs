@@ -4,7 +4,8 @@ use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, State};
 
 use crate::credentials::{
-    CredentialCopy, CredentialKey, CredentialManager, CredentialMatch, CredentialWrite,
+    CredentialCopy, CredentialKey, CredentialKind, CredentialManager, CredentialMatch,
+    CredentialWrite,
 };
 use crate::ssh::host_keys::HostKeyStore;
 use crate::ssh::manager::SessionManager;
@@ -39,6 +40,19 @@ pub async fn credentials_check_many(
     keys: Vec<CredentialKey>,
 ) -> CmdResult<Vec<bool>> {
     map_err(credentials.check_many(keys).await)
+}
+
+/// 读取连接编辑器使用的登录密码
+#[tauri::command]
+pub async fn credentials_get_connection_password(
+    credentials: State<'_, CredentialManager>,
+    id: String,
+) -> CmdResult<Option<String>> {
+    map_err(
+        credentials
+            .get_optional(CredentialKind::ConnectionPassword, &id)
+            .await,
+    )
 }
 
 /// 批量比较代理密码，结果顺序与输入一致且不返回已存明文

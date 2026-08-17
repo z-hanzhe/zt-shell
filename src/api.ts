@@ -45,6 +45,11 @@ export function credentialsCheckMany(keys: CredentialKey[]): Promise<boolean[]> 
   return invoke("credentials_check_many", { keys });
 }
 
+/** 读取连接编辑器使用的登录密码 */
+export function credentialsGetConnectionPassword(id: string): Promise<string | null> {
+  return invoke("credentials_get_connection_password", { id });
+}
+
 /** 批量比较代理密码，结果顺序与输入一致且不返回已存明文 */
 export function credentialsMatchMany(changes: CredentialMatch[]): Promise<boolean[]> {
   return invoke("credentials_match_many", { changes });

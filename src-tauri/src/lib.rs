@@ -40,6 +40,7 @@ pub fn run() {
             connection_file::save_connection_export_file,
             commands::credentials_set_many,
             commands::credentials_check_many,
+            commands::credentials_get_connection_password,
             commands::credentials_match_many,
             commands::credentials_delete_many,
             commands::credentials_copy_many,

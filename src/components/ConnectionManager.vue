@@ -8,6 +8,7 @@ import Icon from "./Icon.vue";
 import AppDialog from "./AppDialog.vue";
 import ConnectionEditor from "./ConnectionEditor.vue";
 import {
+  credentialsGetConnectionPassword,
   credentialsMatchMany,
   pickConnectionImportFile,
   saveConnectionExportFile,
@@ -664,9 +665,18 @@ function onNewConnection(parentId: string | null) {
   editing.value = null;
 }
 
-/** 打开编辑弹窗 */
-function onEdit() {
-  if (selectedConn.value) editing.value = { ...selectedConn.value };
+/** 读取已保存的登录密码并打开编辑弹窗 */
+async function onEdit() {
+  const connection = selectedConn.value;
+  if (!connection) return;
+  try {
+    const password = connection.hasPassword
+      ? await credentialsGetConnectionPassword(connection.id)
+      : null;
+    editing.value = { ...connection, password: password ?? "" };
+  } catch (error) {
+    await showInfo("读取失败", `无法读取连接密码：${String(error)}`);
+  }
 }
 
 /** 保存进行中不得关闭连接编辑器 */

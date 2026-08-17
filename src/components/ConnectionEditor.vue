@@ -46,8 +46,6 @@ const settingSections: Array<{ id: SettingsSectionId; label: string }> = [
 const activeSection = ref<SettingsSectionId>("connection");
 /** 连接编辑弹窗拖动控制器 */
 const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag();
-/** 登录密码修改意图 */
-const passwordChange = ref<SecretChange>({ mode: "keep" });
 /** 私钥口令修改意图 */
 const passphraseChange = ref<SecretChange>({ mode: "keep" });
 
@@ -60,6 +58,7 @@ function defaults(): ConnectionConfig {
     port: 22,
     username: "root",
     authType: "password",
+    password: "",
     privateKeyPath: "",
     proxyId: null,
     remark: "",
@@ -81,9 +80,7 @@ watch(
   () => props.model,
   (m) => {
     Object.assign(form, defaults(), m ?? {}, { tunnels: cloneTunnels(m?.tunnels) });
-    delete form.password;
     delete form.passphrase;
-    passwordChange.value = { mode: "keep" };
     passphraseChange.value = { mode: "keep" };
     activeSection.value = "connection";
   },
@@ -101,15 +98,6 @@ async function selectPrivateKey() {
   } catch (error) {
     alert(`选择私钥文件失败：${String(error)}`);
   }
-}
-
-/** 接收固定掩码输入框的登录密码修改 */
-function onPasswordChange(action: SecretChange["mode"], value?: string) {
-  if (action === "set") {
-    passwordChange.value = value !== undefined ? { mode: "set", value } : { mode: "keep" };
-    return;
-  }
-  passwordChange.value = { mode: action };
 }
 
 /** 接收固定掩码输入框的私钥口令修改 */
@@ -134,7 +122,9 @@ function submit() {
   delete config.password;
   delete config.passphrase;
   emit("save", config, {
-    password: passwordChange.value,
+    password: form.password
+      ? { mode: "set", value: form.password }
+      : { mode: "clear" },
     passphrase: passphraseChange.value,
   });
 }
@@ -212,11 +202,11 @@ const { isTop: isTopModal } = useEscClose(
 
               <template v-if="form.authType === 'password'">
                 <label>密码</label>
-                <SecretInput
-                  :has-secret="form.hasPassword === true"
-                  :reset-key="`${form.id}:password`"
+                <input
+                  class="input"
+                  type="password"
+                  v-model="form.password"
                   placeholder="请输入密码"
-                  @change="onPasswordChange"
                 />
               </template>
 

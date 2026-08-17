@@ -250,7 +250,7 @@ impl CredentialManager {
         .await
     }
 
-    /// 读取一项可选凭据，仅供 Rust 内部业务使用
+    /// 读取一项可选凭据
     pub async fn get_optional(&self, kind: CredentialKind, id: &str) -> Result<Option<String>> {
         let key = CredentialKey {
             kind,
