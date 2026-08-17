@@ -3,7 +3,7 @@
 ## 职责
 
 - ZTShell 是基于 Tauri 2 的跨平台桌面 SSH 客户端；前端使用 Vue 3、Pinia 与 xterm，后端使用 Rust、Tokio、russh 与 russh-sftp。
-- 主窗口由监控面板、终端工作区和文件/传输工作区组成；终端区域占用剩余空间。
+- 主窗口由监控面板、可承载 SSH 会话及工具页的主工作区和文件/传输工作区组成；主工作区占用剩余空间。
 - `src-tauri/src/ssh/` 承载 SSH 领域能力，`commands.rs` 是 Tauri 命令边界，`src/` 承载界面、状态和调用封装。
 
 ## 入口与数据流

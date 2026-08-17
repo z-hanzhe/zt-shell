@@ -4,9 +4,8 @@
  * 数据来源于 monitor store（按会话持续采集），切换选项卡不清空不重采
  * 未连接时展示占位骨架，避免面板空荡
  */
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import Icon from "./Icon.vue";
-import SystemInfoDialog from "./SystemInfoDialog.vue";
 import type { ConnectionConfig, ProcessInfo } from "../types";
 import { useMonitorStore } from "../stores/monitor";
 import { formatShort, formatShortRate, formatUptime } from "../utils";
@@ -18,6 +17,10 @@ const props = defineProps<{
   connected: boolean;
   /** 当前连接配置，用于显示 IP */
   config?: ConnectionConfig;
+}>();
+
+const emit = defineEmits<{
+  (e: "open-system-info", sessionId: string): void;
 }>();
 
 const monitor = useMonitorStore();
@@ -36,23 +39,12 @@ const sortKey = ref<"cpu" | "mem">("cpu");
 
 /** IP 复制反馈 */
 const copied = ref(false);
-/** 系统信息弹窗可见性 */
-const showSystemInfo = ref(false);
 
-// 切换会话、断开连接或监控状态清除时关闭当前弹窗
-watch(
-  () => props.sessionId,
-  () => (showSystemInfo.value = false)
-);
-watch(
-  () => props.connected,
-  (connected) => {
-    if (!connected) showSystemInfo.value = false;
-  }
-);
-watch(data, (current) => {
-  if (!current) showSystemInfo.value = false;
-});
+/** 在主工作区打开当前会话的系统信息选项卡 */
+function openSystemInfo() {
+  if (!data.value || !props.sessionId) return;
+  emit("open-system-info", props.sessionId);
+}
 
 /** 复制 IP 到剪贴板 */
 async function copyIp() {
@@ -163,7 +155,7 @@ const netChart = computed(() => {
       class="btn-sysinfo"
       :disabled="!connected || !data"
       :title="data ? `查看 ${data.hostname || '当前主机'} 的系统信息` : '等待监控数据'"
-      @click="showSystemInfo = true"
+      @click="openSystemInfo"
     >
       系统信息
     </button>
@@ -327,11 +319,6 @@ const netChart = computed(() => {
     <!-- 采集错误提示 -->
     <div v-if="error" class="mon-error">{{ error }}</div>
 
-    <SystemInfoDialog
-      v-if="showSystemInfo && data"
-      :data="data"
-      @close="showSystemInfo = false"
-    />
   </div>
 </template>
 

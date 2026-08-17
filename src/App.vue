@@ -26,6 +26,7 @@ import { useProxiesStore } from "./stores/proxies";
 import { useSessionsStore } from "./stores/sessions";
 import { useSettingsStore } from "./stores/settings";
 import { useTransfersStore } from "./stores/transfers";
+import { useWorkspacesStore } from "./stores/workspaces";
 import type { ConnectionConfig } from "./types";
 import type { AppSettings } from "./stores/settings";
 import { closeAllTextEditorWindows } from "./editorWindows";
@@ -36,6 +37,7 @@ const proxiesStore = useProxiesStore();
 const sessionsStore = useSessionsStore();
 const settingsStore = useSettingsStore();
 const transfersStore = useTransfersStore();
+const workspacesStore = useWorkspacesStore();
 
 /** 连接管理器弹窗可见性 */
 const showConnManager = ref(false);
@@ -61,6 +63,10 @@ const bottomPanelRef = ref<InstanceType<typeof BottomPanel>>();
 /** 当前激活会话（用于状态栏与子面板） */
 const active = computed(() => sessionsStore.activeSession);
 const activeConnected = computed(() => active.value?.status === "connected");
+/** 系统信息页独占右侧纵向空间，其他页面保留底部文件与传输区域 */
+const showBottomRegion = computed(
+  () => workspacesStore.activeTab?.type !== "systemInfo"
+);
 /** 当前最早等待确认主机密钥的会话，多个连接按会话顺序逐个处理 */
 const pendingHostKeySession = computed(() =>
   sessionsStore.sessions.find((session) => session.hostKeyChallenge)
@@ -173,6 +179,18 @@ function detachBrowserGuards() {
 function onConnect(config: ConnectionConfig) {
   if (checkingAppClose) return;
   sessionsStore.open(config);
+}
+
+/** 按连接配置复用系统信息选项卡，并切换到指定来源会话 */
+function openSystemInfo(sessionId: string) {
+  const session = sessionsStore.sessions.find((item) => item.id === sessionId);
+  if (!session) return;
+  sessionsStore.setActiveContext(sessionId);
+  workspacesStore.openSystemInfo(
+    sessionId,
+    session.config.id,
+    session.config.name || session.name
+  );
 }
 
 /** 在连接数据就绪后打开管理器，启动期间的点击会延迟执行 */
@@ -363,6 +381,7 @@ onBeforeUnmount(() => {
           :session-id="active?.id ?? ''"
           :connected="activeConnected"
           :config="active?.config"
+          @open-system-info="openSystemInfo"
         />
       </div>
 
@@ -379,10 +398,18 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 上下分隔条 -->
-        <div class="splitter splitter-h" @mousedown.prevent="startDragBottom"></div>
+        <div
+          v-show="showBottomRegion"
+          class="splitter splitter-h"
+          @mousedown.prevent="startDragBottom"
+        ></div>
 
         <!-- 底部文件区（固定高） -->
-        <div class="bottom-region" :style="{ height: layout.bottomHeight + 'px' }">
+        <div
+          v-show="showBottomRegion"
+          class="bottom-region"
+          :style="{ height: layout.bottomHeight + 'px' }"
+        >
           <BottomPanel
             ref="bottomPanelRef"
             :session-id="active?.id ?? ''"

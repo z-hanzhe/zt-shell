@@ -18,6 +18,10 @@ import { sshConnect, sshDisconnect } from "../api";
 import { genId } from "../utils";
 import { useMonitorStore } from "./monitor";
 import { useProxiesStore } from "./proxies";
+import {
+  sessionWorkspaceTabId,
+  useWorkspacesStore,
+} from "./workspaces";
 import { closeTextEditorWindowsForSession } from "../editorWindows";
 
 /**
@@ -70,6 +74,8 @@ export const useSessionsStore = defineStore("sessions", () => {
   const sessions = ref<Session[]>([]);
   /** 当前激活的会话 id */
   const activeId = ref<string>("");
+  /** 主工作区导航状态，SSH 资源仍由当前 store 管理 */
+  const workspaces = useWorkspacesStore();
   // 正在执行受控重连的会话，用于抑制重连过程中后端断开触发的掉线标记
   const reconnecting = new Set<string>();
 
@@ -162,6 +168,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     };
     sessions.value.push(session);
     activeId.value = id;
+    workspaces.openSession(id, session.name);
 
     try {
       // 后端以该会话 id 建立连接，前端与后端共用同一标识
@@ -223,17 +230,29 @@ export const useSessionsStore = defineStore("sessions", () => {
     // 停止该会话监控
     useMonitorStore().stop(id);
     const [removed] = sessions.value.splice(idx, 1);
+    const replacement = sessions.value.find(
+      (session) => session.config.id === removed.config.id
+    );
+    workspaces.removeSession(id, replacement?.id);
     reconnecting.delete(id);
+    // 关闭后激活相邻选项卡
+    if (activeId.value === id) {
+      const next = sessions.value[idx] ?? sessions.value[idx - 1];
+      const workspaceSessionId = workspaces.activeTab?.sessionId;
+      activeId.value = sessions.value.some((session) => session.id === workspaceSessionId)
+        ? workspaceSessionId ?? ""
+        : next?.id ?? "";
+    }
     try {
       await sshDisconnect(removed.id);
     } catch {
       // 断开失败忽略，前端会话已移除
     }
-    // 关闭后激活相邻选项卡
-    if (activeId.value === id) {
-      const next = sessions.value[idx] ?? sessions.value[idx - 1];
-      activeId.value = next ? next.id : "";
-    }
+  }
+
+  /** 更新当前会话上下文，不改变主工作区正在展示的工具页 */
+  function setActiveContext(id: string) {
+    if (sessions.value.some((session) => session.id === id)) activeId.value = id;
   }
 
   /** 激活指定会话，并清除其未读输出提示 */
@@ -241,18 +260,14 @@ export const useSessionsStore = defineStore("sessions", () => {
     const s = sessions.value.find((x) => x.id === id);
     if (s) s.activity = false;
     activeId.value = id;
+    workspaces.activateSession(id);
   }
 
   /**
    * 将指定会话移动到目标下标位置（指针拖拽排序用）
    */
   function moveToIndex(id: string, index: number) {
-    const from = sessions.value.findIndex((s) => s.id === id);
-    if (from < 0) return;
-    const to = Math.min(Math.max(index, 0), sessions.value.length - 1);
-    if (from === to) return;
-    const [item] = sessions.value.splice(from, 1);
-    sessions.value.splice(to, 0, item);
+    workspaces.moveToIndex(sessionWorkspaceTabId(id), index);
   }
 
   /**
@@ -313,7 +328,8 @@ export const useSessionsStore = defineStore("sessions", () => {
 
   /** 标记未选中会话有新输出（激活中的会话不标记） */
   function markActivity(id: string) {
-    if (id === activeId.value) return;
+    const activeWorkspace = workspaces.activeTab;
+    if (activeWorkspace?.type === "session" && activeWorkspace.sessionId === id) return;
     const s = sessions.value.find((x) => x.id === id);
     if (s && s.status === "connected") s.activity = true;
   }
@@ -324,6 +340,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     activeSession,
     open,
     close,
+    setActiveContext,
     activate,
     moveToIndex,
     reconnect,

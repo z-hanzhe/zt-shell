@@ -1,24 +1,29 @@
 <script setup lang="ts">
 /**
- * 远端系统信息弹窗：展示当前会话的完整系统信息与动态 CPU、网络数据
+ * 远端系统信息视图：展示当前会话的完整系统信息与动态 CPU、网络数据
  */
-import { computed } from "vue";
+import { computed, type ComponentPublicInstance } from "vue";
 import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 import type { MonitorData, NetInterface } from "../types";
 import { formatBytes, formatRate } from "../utils";
 
-const props = defineProps<{
-  /** 当前会话最新一次监控数据 */
-  data: MonitorData;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** 当前会话最新一次监控数据 */
+    data: MonitorData;
+    /** 是否嵌入主工作区，默认保持原弹窗形态 */
+    embedded?: boolean;
+  }>(),
+  { embedded: false }
+);
 
 const emit = defineEmits<{
   (e: "close"): void;
 }>();
 
-/** 弹窗拖动控制器 */
-const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag();
+/** 弹窗模式下的拖动控制器，嵌入工作区时不注册窗口级拖动监听 */
+const dialogDrag = props.embedded ? null : useDialogDrag();
 
 /** 弹窗打开时的静态信息快照 */
 const staticData = {
@@ -84,25 +89,40 @@ function interfaceType(item: NetInterface): string {
 
 // 组件挂载即为打开状态，ESC 关闭
 const { isTop: isTopModal } = useEscClose(
-  () => true,
+  () => !props.embedded,
   () => emit("close")
 );
+
+/** 仅在弹窗模式下绑定可拖动容器 */
+function setDialogElement(element: Element | ComponentPublicInstance | null) {
+  if (!dialogDrag) return;
+  dialogDrag.dialogRef.value = element instanceof HTMLElement ? element : null;
+}
+
+/** 仅在弹窗模式下响应标题栏拖动 */
+function onDialogHeaderPointerDown(event: PointerEvent) {
+  dialogDrag?.onDialogHeaderPointerDown(event);
+}
 </script>
 
 <template>
   <div
-    :class="['modal-mask', { 'modal-top-mask': isTopModal }]"
-    :inert="!isTopModal"
-    :aria-hidden="isTopModal ? undefined : 'true'"
+    :class="embedded ? 'system-info-page' : ['modal-mask', { 'modal-top-mask': isTopModal }]"
+    :inert="!embedded && !isTopModal"
+    :aria-hidden="!embedded && !isTopModal ? 'true' : undefined"
   >
     <div
-      ref="dialogRef"
-      class="modal dialog-draggable system-info-dialog"
-      role="dialog"
-      :aria-modal="isTopModal ? 'true' : 'false'"
-      aria-labelledby="system-info-title"
+      :ref="setDialogElement"
+      :class="embedded ? 'system-info-page-content' : 'modal dialog-draggable system-info-dialog'"
+      :role="embedded ? undefined : 'dialog'"
+      :aria-modal="embedded ? undefined : isTopModal ? 'true' : 'false'"
+      :aria-labelledby="embedded ? undefined : 'system-info-title'"
     >
-      <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
+      <div
+        v-if="!embedded"
+        class="modal-header dialog-drag-handle"
+        @pointerdown="onDialogHeaderPointerDown"
+      >
         <span id="system-info-title">系统信息 - {{ displayText(staticData.hostname) }}</span>
         <button class="modal-close" title="关闭" @click="emit('close')">×</button>
       </div>
@@ -291,6 +311,28 @@ const { isTop: isTopModal } = useEscClose(
 </template>
 
 <style scoped>
+.system-info-page,
+.system-info-page-content {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.system-info-page {
+  overflow: hidden;
+  background: var(--bg-window);
+}
+
+.system-info-page-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.system-info-page-content > .system-info-body {
+  flex: 1 1 auto;
+}
+
 .system-info-dialog {
   width: min(1040px, calc(100vw - 32px));
   height: min(720px, calc(100vh - var(--titlebar-height) - 16px));

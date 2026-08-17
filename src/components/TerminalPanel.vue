@@ -8,6 +8,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import Icon from "./Icon.vue";
 import Terminal from "./Terminal.vue";
+import SystemInfoWorkspace from "./SystemInfoWorkspace.vue";
 import AppDialog from "./AppDialog.vue";
 import TerminalExtensions from "./TerminalExtensions.vue";
 import { transferList } from "../api";
@@ -21,12 +22,23 @@ import {
   type TransferClosePreparation,
 } from "../transferClose";
 import { useSessionsStore } from "../stores/sessions";
+import {
+  sessionWorkspaceTabId,
+  useWorkspacesStore,
+  type WorkspaceTab,
+} from "../stores/workspaces";
 
 const emit = defineEmits<{
   (e: "open-conn-manager"): void;
 }>();
 
 const store = useSessionsStore();
+const workspaces = useWorkspacesStore();
+
+/** 按会话标识读取响应式会话对象，供联合类型选项卡展示连接状态 */
+const sessionsById = computed(
+  () => new Map(store.sessions.map((session) => [session.id, session]))
+);
 
 /** 通用确认弹窗状态（复用 AppDialog，样式与文件管理一致） */
 const dialog = reactive<{
@@ -144,8 +156,34 @@ type TabDragState = {
 /** 右键菜单状态 */
 const menu = reactive({ open: false, x: 0, y: 0, id: "" });
 
-/** 右键菜单目标会话 */
-const menuSession = computed(() => store.sessions.find((s) => s.id === menu.id));
+/** 右键菜单目标工作区选项卡 */
+const menuTab = computed(() => workspaces.tabs.find((tab) => tab.id === menu.id));
+
+/** 右键菜单目标会话，工具页签返回空 */
+const menuSession = computed(() => {
+  const tab = menuTab.value;
+  return tab?.type === "session"
+    ? store.sessions.find((session) => session.id === tab.sessionId)
+    : undefined;
+});
+
+/** 激活工作区选项卡，并同步其关联的会话上下文 */
+function activateTab(tab: WorkspaceTab) {
+  if (tab.type === "session") {
+    store.activate(tab.sessionId);
+    return;
+  }
+  workspaces.activate(tab.id);
+  store.setActiveContext(tab.sessionId);
+}
+
+/** 按当前工作区选项卡同步左侧监控与底部面板的会话上下文 */
+function syncActiveSessionContext() {
+  const tab = workspaces.activeTab;
+  if (!tab) return;
+  if (tab.type === "session") store.activate(tab.sessionId);
+  else store.setActiveContext(tab.sessionId);
+}
 
 /** 将当前激活终端切换到指定目录 */
 function cdActiveTerminal(path: string) {
@@ -164,15 +202,21 @@ function reopenSession(id: string) {
 
 // 切换激活会话后，等 DOM 显示再重新适配终端尺寸并刷新视口
 watch(
-  () => store.activeId,
+  () => workspaces.activeId,
   (id) => {
-    nextTick(() => termRefs.value[id]?.activate());
+    const tab = workspaces.tabs.find((item) => item.id === id);
+    if (tab?.type === "session") {
+      store.activate(tab.sessionId);
+      nextTick(() => termRefs.value[tab.sessionId]?.activate());
+    } else if (tab) {
+      store.setActiveContext(tab.sessionId);
+    }
   }
 );
 
 // 选项卡增减后重新计算左右滚动按钮的可用状态
 watch(
-  () => store.sessions.length,
+  () => workspaces.tabs.length,
   () => nextTick(updateScrollState)
 );
 
@@ -195,7 +239,7 @@ function onTabPointerDown(id: string, e: PointerEvent) {
     const r = el.getBoundingClientRect();
     return r.left + r.width / 2;
   });
-  const from = store.sessions.findIndex((s) => s.id === id);
+  const from = workspaces.tabs.findIndex((tab) => tab.id === id);
   tabDrag = { id, startX: e.clientX, moved: false, centers };
   dragFrom.value = from;
   dragTo.value = from;
@@ -235,7 +279,7 @@ function onTabPointerUp() {
     // 若保留 transition 会把 translateX(-step) -> 0 动画化，造成松手后回弹闪一下。
     // 先禁用过渡让 transform 与新槽位同帧归零，下一帧再恢复动画。
     suppressTabAnim.value = true;
-    store.moveToIndex(tabDrag!.id, dragTo.value);
+    workspaces.moveToIndex(tabDrag!.id, dragTo.value);
   }
   draggingId.value = "";
   dragOffset.value = 0;
@@ -506,9 +550,16 @@ async function releaseCloseRisks(): Promise<void> {
 
 /** 关闭单个选项卡 */
 async function closeTab(id: string) {
-  const session = store.sessions.find((item) => item.id === id);
+  const tab = workspaces.tabs.find((item) => item.id === id);
+  if (!tab) return;
+  if (tab.type !== "session") {
+    workspaces.close(id);
+    syncActiveSessionContext();
+    return;
+  }
+  const session = store.sessions.find((item) => item.id === tab.sessionId);
   if (!session) return;
-  await requestCloseSessions([id], () =>
+  await requestCloseSessions([session.id], () =>
     showConfirm({
       title: "关闭会话",
       message: `会话 [ ${session.name} ] 仍处于连接中，确定要关闭吗？`,
@@ -562,6 +613,7 @@ async function reconnect(id: string) {
 /** 菜单动作分发 */
 async function onMenuAction(action: "close" | "closeOthers" | "closeAll" | "reconnect") {
   const id = menu.id;
+  const sessionId = menuSession.value?.id;
   closeMenu();
   if (!id) return;
   switch (action) {
@@ -569,13 +621,13 @@ async function onMenuAction(action: "close" | "closeOthers" | "closeAll" | "reco
       await closeTab(id);
       break;
     case "closeOthers":
-      await closeOthers(id);
+      if (sessionId) await closeOthers(sessionId);
       break;
     case "closeAll":
       await closeAll();
       break;
     case "reconnect":
-      await reconnect(id);
+      if (sessionId) await reconnect(sessionId);
       break;
   }
 }
@@ -620,7 +672,7 @@ let tabsResizeObserver: ResizeObserver | null = null;
 
 // 选项卡数量变化后，等 DOM 更新再刷新滚动按钮状态
 watch(
-  () => store.sessions.length,
+  () => workspaces.tabs.length,
   () => nextTick(updateScrollState)
 );
 
@@ -673,25 +725,32 @@ defineExpose({
 
       <div ref="tabsRef" class="tabs" @scroll="updateScrollState">
         <div
-          v-for="(s, i) in store.sessions"
-          :key="s.id"
-          :class="['tab', { active: store.activeId === s.id, dragging: draggingId === s.id, 'no-anim': suppressTabAnim }]"
-          :style="{ transform: `translateX(${draggingId === s.id ? dragOffset : tabShift(i)}px)` }"
-          @pointerdown="onTabPointerDown(s.id, $event)"
-          @click="store.activate(s.id)"
-          @contextmenu.prevent="onTabContextMenu(s.id, $event)"
+          v-for="(tab, i) in workspaces.tabs"
+          :key="tab.id"
+          :class="['tab', { active: workspaces.activeId === tab.id, dragging: draggingId === tab.id, 'no-anim': suppressTabAnim }]"
+          :style="{ transform: `translateX(${draggingId === tab.id ? dragOffset : tabShift(i)}px)` }"
+          @pointerdown="onTabPointerDown(tab.id, $event)"
+          @click="activateTab(tab)"
+          @contextmenu.prevent="onTabContextMenu(tab.id, $event)"
         >
           <!-- 状态指示位固定尺寸，绿点/叹号切换时不改变宽度避免选项卡抖动 -->
-          <span class="tab-indicator">
+          <span v-if="tab.type === 'session'" class="tab-indicator">
             <span
-              v-if="s.activity && store.activeId !== s.id"
+              v-if="sessionsById.get(tab.sessionId)?.activity && workspaces.activeId !== tab.id"
               class="ind-badge"
               title="有新输出"
             >!</span>
-            <span v-else :class="['ind-dot', s.status]" :title="statusTitle(s.status)"></span>
+            <span
+              v-else
+              :class="['ind-dot', sessionsById.get(tab.sessionId)?.status ?? 'disconnected']"
+              :title="statusTitle(sessionsById.get(tab.sessionId)?.status ?? 'disconnected')"
+            ></span>
           </span>
-          <span class="tab-name">{{ s.name }}</span>
-          <button class="tab-close" title="关闭" @click.stop="closeTab(s.id)">
+          <span v-else class="tab-indicator tab-tool-indicator" title="工具页">
+            <Icon name="server" :size="12" />
+          </span>
+          <span class="tab-name" :title="tab.title">{{ tab.title }}</span>
+          <button class="tab-close" title="关闭" @click.stop="closeTab(tab.id)">
             <Icon name="close" :size="11" />
           </button>
         </div>
@@ -715,26 +774,28 @@ defineExpose({
       :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
     >
       <div class="tcm-item" @click="onMenuAction('close')">关闭</div>
-      <div
-        :class="['tcm-item', { disabled: store.sessions.length <= 1 }]"
-        @click="onMenuAction('closeOthers')"
-      >
-        关闭其他
-      </div>
-      <div class="tcm-item" @click="onMenuAction('closeAll')">关闭全部</div>
-      <div class="tcm-sep"></div>
-      <div
-        :class="['tcm-item', { disabled: !menuSession || menuSession.status === 'connecting' || menuSession.status === 'verifying' }]"
-        @click="onMenuAction('reconnect')"
-      >
-        重连
-      </div>
+      <template v-if="menuTab?.type === 'session'">
+        <div
+          :class="['tcm-item', { disabled: store.sessions.length <= 1 }]"
+          @click="onMenuAction('closeOthers')"
+        >
+          关闭其他
+        </div>
+        <div class="tcm-item" @click="onMenuAction('closeAll')">关闭全部</div>
+        <div class="tcm-sep"></div>
+        <div
+          :class="['tcm-item', { disabled: !menuSession || menuSession.status === 'connecting' || menuSession.status === 'verifying' }]"
+          @click="onMenuAction('reconnect')"
+        >
+          重连
+        </div>
+      </template>
     </div>
 
     <!-- 终端区域 -->
     <div class="term-area">
       <template v-for="s in store.sessions" :key="s.id">
-        <div v-show="store.activeId === s.id" class="term-slot">
+        <div v-show="workspaces.activeId === sessionWorkspaceTabId(s.id)" class="term-slot">
           <div v-if="s.status === 'connecting'" class="term-status">
             正在连接 {{ s.config.host }} ...
           </div>
@@ -746,7 +807,7 @@ defineExpose({
             :ref="(el) => { if (el) termRefs[s.id] = el as any }"
             :session-id="s.id"
             :connected="s.status === 'connected'"
-            :active="store.activeId === s.id"
+            :active="workspaces.activeId === sessionWorkspaceTabId(s.id)"
             @closed="onTerminalClosed(s.id)"
             @activity="onTerminalActivity(s.id)"
           />
@@ -763,8 +824,18 @@ defineExpose({
         </div>
       </template>
 
+      <template v-for="tab in workspaces.tabs" :key="`workspace:${tab.id}`">
+        <div
+          v-if="tab.type === 'systemInfo'"
+          v-show="workspaces.activeId === tab.id"
+          class="workspace-slot"
+        >
+          <SystemInfoWorkspace :key="tab.sessionId" :session-id="tab.sessionId" />
+        </div>
+      </template>
+
       <!-- 无会话时的欢迎页 -->
-      <div v-if="store.sessions.length === 0" class="welcome">
+      <div v-if="workspaces.tabs.length === 0" class="welcome">
         <Icon name="terminal" :size="44" />
         <p>点击左上角文件夹图标打开连接管理器，开始一个 SSH 会话</p>
       </div>
@@ -893,6 +964,9 @@ defineExpose({
   height: 10px;
   flex-shrink: 0;
 }
+.tab-tool-indicator {
+  color: var(--accent);
+}
 .ind-dot {
   width: 8px;
   height: 8px;
@@ -956,6 +1030,14 @@ defineExpose({
 .term-slot {
   position: absolute;
   inset: 0;
+}
+.workspace-slot {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-window);
 }
 .term-status {
   padding: 20px;
