@@ -919,9 +919,14 @@ impl TransferManager {
         self.emit_changed(app);
     }
 
-    /// 重试失败的任务（断点续传接续已传部分），session_id 为空时重试全部会话
-    pub fn retry_failed(&self, app: &AppHandle, session_id: Option<&str>) {
-        for task in self.collect_targets(None, false) {
+    /// 重试失败的任务（断点续传接续已传部分），可按会话及任务标识限制范围
+    pub fn retry_failed(
+        &self,
+        app: &AppHandle,
+        session_id: Option<&str>,
+        ids: Option<Vec<String>>,
+    ) {
+        for task in self.collect_targets(ids, false) {
             if let Some(sid) = session_id {
                 if task.session_id != sid {
                     continue;

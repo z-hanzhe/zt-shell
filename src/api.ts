@@ -321,7 +321,7 @@ export function transferRemove(ids?: string[]): Promise<void> {
   return invoke("transfer_remove", { ids: ids ?? null });
 }
 
-/** 重试失败的传输任务，不传 sessionId 表示全部会话 */
-export function transferRetryFailed(sessionId?: string): Promise<void> {
-  return invoke("transfer_retry_failed", { sessionId: sessionId ?? null });
+/** 重试失败的传输任务，可按会话及任务标识限制范围 */
+export function transferRetryFailed(sessionId?: string, ids?: string[]): Promise<void> {
+  return invoke("transfer_retry_failed", { sessionId: sessionId ?? null, ids: ids ?? null });
 }

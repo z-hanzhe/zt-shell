@@ -550,13 +550,14 @@ pub async fn transfer_remove(
     Ok(())
 }
 
-/// 重试失败的传输任务，sessionId 为空表示全部会话
+/// 重试失败的传输任务，可按会话及任务标识限制范围
 #[tauri::command]
 pub async fn transfer_retry_failed(
     app: AppHandle,
     transfers: State<'_, TransferManager>,
     session_id: Option<String>,
+    ids: Option<Vec<String>>,
 ) -> CmdResult<()> {
-    transfers.retry_failed(&app, session_id.as_deref());
+    transfers.retry_failed(&app, session_id.as_deref(), ids);
     Ok(())
 }

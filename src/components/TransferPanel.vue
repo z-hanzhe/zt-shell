@@ -40,7 +40,7 @@ const listRef = ref<HTMLElement | null>(null);
 /** 鼠标框选状态 */
 const marquee = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 });
 /** 右键菜单状态 */
-const contextMenu = reactive({ open: false, x: 0, y: 0 });
+const contextMenu = reactive({ open: false, x: 0, y: 0, targetId: "" });
 /** 通用弹窗状态（提示与删除确认） */
 const dialog = reactive({
   open: false,
@@ -70,6 +70,7 @@ type MenuAction =
   | "pauseAll"
   | "resume"
   | "resumeAll"
+  | "retry"
   | "remove"
   | "removeAll"
   | "retryFailed"
@@ -174,6 +175,13 @@ const selectedTasks = computed(() =>
   sessionTasks.value.filter((t) => selectedIds.value.has(t.id))
 );
 
+/** 当前右键指向的任务 */
+const contextTargetTask = computed(() =>
+  contextMenu.targetId
+    ? sessionTasks.value.find((task) => task.id === contextMenu.targetId)
+    : undefined
+);
+
 /** 判断任务是否处于可暂停状态 */
 function isPausable(status: TransferStatus): boolean {
   return status === "pending" || status === "running" || status === "packing";
@@ -184,28 +192,33 @@ const completedRootIds = computed(() =>
   sessionTasks.value.filter((t) => !t.parentId && t.status === "completed").map((t) => t.id)
 );
 
-/** 右键菜单项：失败任务单选时首项为查看失败信息，其后为在资源管理器中打开 */
+/** 右键菜单项：首项按右键任务状态提供暂停、继续或重试 */
 const contextMenuItems = computed<MenuItem[]>(() => {
   const all = sessionTasks.value;
   const single = selectedTasks.value.length === 1 ? selectedTasks.value[0] : undefined;
+  const target = contextTargetTask.value;
   const items: MenuItem[] = [];
-  if (single?.status === "failed") {
+
+  if (target && isPausable(target.status)) {
+    items.push({ action: "pause", label: "暂停", disabled: false });
+  } else if (target?.status === "paused") {
+    items.push({ action: "resume", label: "继续", disabled: !props.connected });
+  } else if (target?.status === "failed") {
+    items.push({ action: "retry", label: "重试", disabled: !props.connected });
+  } else {
+    items.push({ action: "pause", label: "暂停", disabled: true });
+  }
+  if (target?.status === "failed") {
     items.push({ action: "showError", label: "查看失败信息", disabled: false });
   }
-  items.push({ action: "reveal", label: "在资源管理器中打开", disabled: !single });
   items.push(
-    { action: "pause", label: "暂停", disabled: !selectedTasks.value.some((t) => isPausable(t.status)) },
     { action: "pauseAll", label: "全部暂停", disabled: !all.some((t) => isPausable(t.status)) },
-    {
-      action: "resume",
-      label: "继续",
-      disabled: !props.connected || !selectedTasks.value.some((t) => t.status === "paused"),
-    },
     {
       action: "resumeAll",
       label: "全部继续",
       disabled: !props.connected || !all.some((t) => t.status === "paused"),
     },
+    { action: "reveal", label: "在资源管理器中查看", disabled: !single },
     { action: "remove", label: "删除", disabled: selectedTasks.value.length === 0 },
     { action: "removeAll", label: "全部删除", disabled: all.length === 0 },
     {
@@ -300,6 +313,7 @@ function clearSelection() {
 /** 关闭右键菜单 */
 function closeContextMenu() {
   contextMenu.open = false;
+  contextMenu.targetId = "";
 }
 
 /** 单选指定任务 */
@@ -419,11 +433,11 @@ function onPointerUp(event: PointerEvent) {
   if (!action.moved && action.task) selectByMouse(action.task, event);
 }
 
-/** 行右键：右键未选中项等同空白处右键，先清空选择再打开菜单 */
+/** 行右键：未选中的任务先切换为单选，再按目标任务状态打开菜单 */
 function onRowContextMenu(task: TransferTask, event: MouseEvent) {
   event.preventDefault();
-  if (!isSelected(task)) clearSelection();
-  openContextMenu(event);
+  if (!isSelected(task)) selectSingle(task.id);
+  openContextMenu(event, task.id);
 }
 
 /** 空白区域右键 */
@@ -435,7 +449,8 @@ function onListContextMenu(event: MouseEvent) {
 }
 
 /** 定位右键菜单（按当前菜单项数计算高度，边缘收敛不超出视口） */
-function openContextMenu(event: MouseEvent) {
+function openContextMenu(event: MouseEvent, targetId = "") {
+  contextMenu.targetId = targetId;
   const height = contextMenuItems.value.length * CONTEXT_MENU_ITEM_HEIGHT + 8;
   contextMenu.open = true;
   contextMenu.x = Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_MARGIN);
@@ -514,13 +529,13 @@ async function revealSelectedTask() {
 /** 执行右键菜单动作 */
 async function runMenuAction(item: MenuItem) {
   if (item.disabled) return;
+  const targetTask = contextTargetTask.value;
   closeContextMenu();
   const ids = [...selectedIds.value];
   try {
     switch (item.action) {
       case "showError": {
-        const task = selectedTasks.value[0];
-        if (task) showMessage("失败信息", task.error || "未记录失败原因");
+        if (targetTask) showMessage("失败信息", targetTask.error || "未记录失败原因");
         break;
       }
       case "reveal":
@@ -537,6 +552,9 @@ async function runMenuAction(item: MenuItem) {
         break;
       case "resumeAll":
         await transferResume(sessionRootIds.value);
+        break;
+      case "retry":
+        await transferRetryFailed(props.sessionId, ids);
         break;
       case "remove":
         if (!(await confirmRemove(selectedTasks.value, false))) break;

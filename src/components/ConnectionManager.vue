@@ -244,10 +244,6 @@ const contextMenuItems = computed<MenuItem[]>(() => {
   const blocked = transferBusy.value;
   return [
     { key: "connect", action: "connect", label: "连接", disabled: blocked || !hasConnSelected.value },
-    singleFolder
-      ? { key: "rename", action: "rename", label: "重命名", disabled: blocked }
-      : { key: "edit", action: "edit", label: "编辑", disabled: blocked || !singleConn },
-    { key: "duplicate", action: "duplicate", label: "复制", disabled: blocked || !singleConn },
     {
       key: "new",
       label: "新建",
@@ -257,6 +253,10 @@ const contextMenuItems = computed<MenuItem[]>(() => {
         { key: "newFolder", action: "newFolder", label: "文件夹", disabled: blocked },
       ],
     },
+    { key: "duplicate", action: "duplicate", label: "复制", disabled: blocked || !singleConn },
+    singleFolder
+      ? { key: "rename", action: "rename", label: "重命名", disabled: blocked }
+      : { key: "edit", action: "edit", label: "编辑", disabled: blocked || !singleConn },
     { key: "export", action: "export", label: "导出", disabled: blocked || !single },
     { key: "delete", action: "delete", label: "删除", disabled: blocked || !single },
   ];
