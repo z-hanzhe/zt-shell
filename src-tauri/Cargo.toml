@@ -1,6 +1,6 @@
 [package]
 name = "zt-shell"
-version = "0.2.3"
+version = "0.2.4"
 description = "跨平台桌面 SSH 客户端"
 authors = ["hanzhe"]
 edition = "2021"
