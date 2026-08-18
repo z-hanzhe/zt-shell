@@ -33,8 +33,28 @@ export interface SystemInfoWorkspaceTab {
   connectionId: string;
 }
 
+/** 进程列表工作区选项卡 */
+export interface ProcessListWorkspaceTab {
+  /** 工作区选项卡唯一标识 */
+  id: string;
+  /** 选项卡类型 */
+  type: "processList";
+  /** 选项卡显示名称 */
+  title: string;
+  /** 提供进程数据的 SSH 会话标识 */
+  sessionId: string;
+  /** 关联的连接配置标识，同一连接的多个会话共用一个进程列表页 */
+  connectionId: string;
+}
+
 /** 主工作区支持的选项卡联合类型 */
-export type WorkspaceTab = SessionWorkspaceTab | SystemInfoWorkspaceTab;
+export type WorkspaceTab =
+  | SessionWorkspaceTab
+  | SystemInfoWorkspaceTab
+  | ProcessListWorkspaceTab;
+
+/** 按连接配置复用的工具选项卡 */
+type ConnectionToolWorkspaceTab = SystemInfoWorkspaceTab | ProcessListWorkspaceTab;
 
 /** 生成 SSH 会话对应的工作区选项卡标识 */
 export function sessionWorkspaceTabId(sessionId: string): string {
@@ -44,6 +64,11 @@ export function sessionWorkspaceTabId(sessionId: string): string {
 /** 生成连接系统信息对应的工作区选项卡标识 */
 export function systemInfoWorkspaceTabId(connectionId: string): string {
   return `system-info:${connectionId}`;
+}
+
+/** 生成连接进程列表对应的工作区选项卡标识 */
+export function processListWorkspaceTabId(connectionId: string): string {
+  return `process-list:${connectionId}`;
 }
 
 export const useWorkspacesStore = defineStore("workspaces", () => {
@@ -67,6 +92,24 @@ export const useWorkspacesStore = defineStore("workspaces", () => {
     activeId.value = id;
   }
 
+  /** 打开或激活按连接复用的工具选项卡 */
+  function openConnectionTool(tab: ConnectionToolWorkspaceTab): void {
+    const existing = tabs.value.find((item) => item.id === tab.id);
+    if (existing && existing.type !== "session") {
+      existing.title = tab.title;
+      existing.sessionId = tab.sessionId;
+      activeId.value = tab.id;
+      return;
+    }
+
+    const sessionIndex = tabs.value.findIndex(
+      (item) => item.id === sessionWorkspaceTabId(tab.sessionId)
+    );
+    const insertAt = sessionIndex >= 0 ? sessionIndex + 1 : tabs.value.length;
+    tabs.value.splice(insertAt, 0, tab);
+    activeId.value = tab.id;
+  }
+
   /** 打开或激活指定连接的系统信息选项卡，并切换到当前来源会话 */
   function openSystemInfo(
     sessionId: string,
@@ -75,26 +118,28 @@ export const useWorkspacesStore = defineStore("workspaces", () => {
   ): void {
     const id = systemInfoWorkspaceTabId(connectionId);
     const title = `系统信息 - ${connectionName.trim() || "未命名连接"}`;
-    const existing = tabs.value.find((tab) => tab.id === id);
-    if (existing?.type === "systemInfo") {
-      existing.title = title;
-      existing.sessionId = sessionId;
-      activeId.value = id;
-      return;
-    }
-
-    const sessionIndex = tabs.value.findIndex(
-      (tab) => tab.id === sessionWorkspaceTabId(sessionId)
-    );
-    const insertAt = sessionIndex >= 0 ? sessionIndex + 1 : tabs.value.length;
-    tabs.value.splice(insertAt, 0, {
+    openConnectionTool({
       id,
       type: "systemInfo",
       title,
       sessionId,
       connectionId,
     });
-    activeId.value = id;
+  }
+
+  /** 打开或激活指定连接的进程列表选项卡，并切换到当前来源会话 */
+  function openProcessList(
+    sessionId: string,
+    connectionId: string,
+    connectionName: string
+  ): void {
+    openConnectionTool({
+      id: processListWorkspaceTabId(connectionId),
+      type: "processList",
+      title: `进程列表 - ${connectionName.trim() || "未命名连接"}`,
+      sessionId,
+      connectionId,
+    });
   }
 
   /** 激活指定工作区选项卡 */
@@ -131,11 +176,11 @@ export const useWorkspacesStore = defineStore("workspaces", () => {
     removeTabs(new Set([id]));
   }
 
-  /** 移除指定会话终端页，并迁移或移除以它为数据源的系统信息页 */
+  /** 移除指定会话终端页，并迁移或移除以它为数据源的连接工具页 */
   function removeSession(sessionId: string, replacementSessionId?: string): void {
     const ids = new Set([sessionWorkspaceTabId(sessionId)]);
     for (const tab of tabs.value) {
-      if (tab.type !== "systemInfo" || tab.sessionId !== sessionId) continue;
+      if (tab.type === "session" || tab.sessionId !== sessionId) continue;
       if (replacementSessionId) tab.sessionId = replacementSessionId;
       else ids.add(tab.id);
     }
@@ -158,6 +203,7 @@ export const useWorkspacesStore = defineStore("workspaces", () => {
     activeTab,
     openSession,
     openSystemInfo,
+    openProcessList,
     activate,
     activateSession,
     close,

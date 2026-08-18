@@ -4,7 +4,7 @@
 
 - `main.ts` 根据窗口参数加载 `App.vue` 或 `TextEditorWindow.vue`；两者各自创建 Vue 与 Pinia 应用。
 - `App.vue` 负责主窗口布局、应用初始化、窗口关闭协调和连接管理器入口。
-- `TerminalPanel.vue` 承载统一工作区选项卡，`Terminal.vue` 承载 xterm 会话视图；`BottomPanel.vue` 在文件管理与传输面板之间切换。
+- `TerminalPanel.vue` 承载统一工作区选项卡，包含终端、系统信息与进程列表视图；`Terminal.vue` 承载 xterm 会话视图，`BottomPanel.vue` 在文件管理与传输面板之间切换。
 - `HostKeyDialog.vue` 展示首次主机信任与密钥变化警告，由应用根组件协调等待确认的会话。
 - `ConnectionManager.vue`、`ConnectionEditor.vue`、`ProxySettings.vue` 和 `TunnelSettings.vue` 管理已保存连接及其扩展配置。
 - `TextEditorWindow.vue` 是单例独立工作区，使用 Monaco 编辑远端文件；`editorWindows.ts` 负责主窗口与编辑器窗口通信、会话关闭准备及关闭提交。
@@ -14,7 +14,7 @@
 | 模块 | 职责 |
 | --- | --- |
 | `sessions.ts` | 活动 SSH 会话、主机密钥确认状态和重连。 |
-| `workspaces.ts` | 主工作区中会话页与工具页的顺序、激活和视图关闭。 |
+| `workspaces.ts` | 主工作区中会话页与按连接复用工具页的顺序、激活、迁移和关闭。 |
 | `connections.ts`、`proxies.ts` | 持久化连接元数据、分组文件夹、展开状态和共享代理；秘密凭据单独存入系统凭据库。 |
 | `monitor.ts` | 按会话采集、缓存监控数据和网卡历史。 |
 | `transfers.ts` | 监听传输事件并维护任务快照。 |
@@ -27,6 +27,7 @@
 ## 稳定约束
 
 - 所有模态界面的视觉层级、焦点隔离与 Escape 行为通过 `composables/useEscClose.ts` 协调；窗口级确认必须同时使用更高的遮罩层级与 Escape 优先级。
+- 主工作区选项卡被激活或从侧栏复用时，键盘焦点必须同步转移到对应内容区域；终端页聚焦终端输入，工具页聚焦自身工作区。
 - 自绘弹窗的标题栏拖动通过 `composables/useDialogDrag.ts` 协调；普通业务弹窗的遮罩和拖动范围必须避让自绘标题栏，只有窗口关闭确认可使用全窗口遮罩。
 - 业务确认与窗口关闭确认必须保留独立的等待状态；窗口级确认只覆盖、不结算底层业务确认，取消后原样恢复，确认退出时再结算或等待底层业务流程。
 - 连接、私钥和代理密码不得写入插件存储，必须由 Rust 按稳定标识存入系统凭据库。

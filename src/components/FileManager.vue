@@ -489,7 +489,8 @@ function onFileKeyDown(event: KeyboardEvent) {
     // App 层已拦截浏览器刷新，这里借 F5 刷新文件管理；终端聚焦时 F5 归终端使用
     const target = event.target as HTMLElement;
     if (target.closest?.(".xterm")) return;
-    if (props.connected && !dialog.open && !hasOpenModal()) refresh();
+    const visible = fileListRef.value?.offsetParent !== null;
+    if (visible && props.active && props.connected && !dialog.open && !hasOpenModal()) refresh();
     return;
   }
   if (handleTypeaheadKey(event)) return;

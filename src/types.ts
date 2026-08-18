@@ -261,6 +261,50 @@ export interface ProcessInfo {
   memBytes: number;
 }
 
+/** 完整进程列表条目 */
+export interface ProcessListItem {
+  /** 进程 ID */
+  pid: number;
+  /** 有效用户名称 */
+  user: string;
+  /** 实际内存占用（字节，来自 RSS） */
+  memBytes: number;
+  /** CPU 占用百分比 */
+  cpu: number;
+  /** 进程启动时钟值，用于防止 PID 复用后误操作 */
+  startTime: number;
+  /** 进程名称 */
+  name: string;
+  /** 可执行文件位置，无权限读取时为空 */
+  executable: string;
+  /** 完整命令行 */
+  command: string;
+}
+
+/** 进程环境变量 */
+export interface ProcessEnvironmentVariable {
+  /** 变量名 */
+  name: string;
+  /** 变量值 */
+  value: string;
+}
+
+/** 单个进程的详细信息 */
+export interface ProcessDetail {
+  /** 进程 ID */
+  pid: number;
+  /** 进程名称 */
+  name: string;
+  /** 完整命令行 */
+  command: string;
+  /** 可执行文件位置 */
+  executable: string;
+  /** 当前工作目录 */
+  workingDirectory: string;
+  /** 进程启动时的环境变量 */
+  environment: ProcessEnvironmentVariable[];
+}
+
 /** CPU 各类别占用率 */
 export interface CpuUsageBreakdown {
   /** 用户态占用率 */

@@ -6,7 +6,7 @@
  */
 
 import { defineStore } from "pinia";
-import { reactive } from "vue";
+import { reactive, watch } from "vue";
 import { monitorCollect } from "../api";
 import type { MonitorData, NetInterface } from "../types";
 import { useSettingsStore } from "./settings";
@@ -45,6 +45,7 @@ export interface MonitorState {
 }
 
 export const useMonitorStore = defineStore("monitor", () => {
+  const settingsStore = useSettingsStore();
   /** 会话标识 → 监控状态 */
   const states = reactive<Record<string, MonitorState>>({});
 
@@ -93,7 +94,7 @@ export const useMonitorStore = defineStore("monitor", () => {
   }
 
   /** 采集一次并写入状态 */
-  async function poll(id: string) {
+  async function refresh(id: string) {
     const s = states[id];
     if (!s || s.polling) return;
     s.polling = true;
@@ -129,13 +130,18 @@ export const useMonitorStore = defineStore("monitor", () => {
     }
   }
 
+  /** 按当前设置为会话创建监控采集定时器 */
+  function schedule(id: string, state: MonitorState) {
+    const interval = Math.max(1, settingsStore.settings.monitorInterval) * 1000;
+    state.timer = window.setInterval(() => refresh(id), interval);
+  }
+
   /** 会话建立后启动持续采集（幂等，重复调用不会重复起定时器） */
   function start(id: string) {
     const s = ensure(id);
     if (s.timer !== null) return;
-    const interval = useSettingsStore().settings.monitorInterval * 1000;
-    poll(id);
-    s.timer = window.setInterval(() => poll(id), interval);
+    refresh(id);
+    schedule(id, s);
   }
 
   /** 会话关闭时停止采集并清除状态 */
@@ -160,5 +166,18 @@ export const useMonitorStore = defineStore("monitor", () => {
     }
   }
 
-  return { states, start, stop, state, setNetName };
+  watch(
+    () => settingsStore.settings.monitorInterval,
+    () => {
+      for (const [id, state] of Object.entries(states)) {
+        if (state.timer === null) continue;
+        window.clearInterval(state.timer);
+        state.timer = null;
+        refresh(id);
+        schedule(id, state);
+      }
+    }
+  );
+
+  return { states, start, stop, state, setNetName, refresh };
 });

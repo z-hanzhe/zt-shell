@@ -21,6 +21,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "open-system-info", sessionId: string): void;
+  (e: "open-process-list", sessionId: string): void;
 }>();
 
 const monitor = useMonitorStore();
@@ -44,6 +45,12 @@ const copied = ref(false);
 function openSystemInfo() {
   if (!data.value || !props.sessionId) return;
   emit("open-system-info", props.sessionId);
+}
+
+/** 在主工作区打开当前会话的完整进程列表选项卡 */
+function openProcessList() {
+  if (!props.connected || !data.value || !props.sessionId) return;
+  emit("open-process-list", props.sessionId);
 }
 
 /** 复制 IP 到剪贴板 */
@@ -206,7 +213,15 @@ const netChart = computed(() => {
     </div>
 
     <!-- 进程表：内存/CPU 列窄且带占用背景条，表头可点击排序 -->
-    <div class="mini-table proc-table">
+    <div
+      class="mini-table proc-table"
+      :class="{ interactive: connected && data }"
+      :tabindex="connected && data ? 0 : -1"
+      role="button"
+      aria-label="打开完整进程列表"
+      @click="openProcessList"
+      @keydown.enter="openProcessList"
+    >
       <table>
         <colgroup>
           <col style="width: 24%" />
@@ -218,14 +233,14 @@ const netChart = computed(() => {
             <th
               class="sortable"
               :class="{ active: sortKey === 'mem' }"
-              @click="sortKey = 'mem'"
+              @click.stop="sortKey = 'mem'"
             >
               内存
             </th>
             <th
               class="sortable"
               :class="{ active: sortKey === 'cpu' }"
-              @click="sortKey = 'cpu'"
+              @click.stop="sortKey = 'cpu'"
             >
               CPU
             </th>
@@ -511,6 +526,13 @@ const netChart = computed(() => {
 .proc-table th.sortable.active {
   background: linear-gradient(#dbe8f5, #c5d8ec);
   color: var(--accent);
+}
+.proc-table.interactive tbody {
+  cursor: pointer;
+}
+.proc-table.interactive:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 /* 单元格占用背景条（进程内存/CPU、磁盘可用大小共用） */
 .mini-table td.bar-cell {

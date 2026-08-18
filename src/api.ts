@@ -14,6 +14,8 @@ import type {
   FileEntry,
   HostKeyApproval,
   MonitorData,
+  ProcessDetail,
+  ProcessListItem,
   ProxyConfig,
   TransferCreateResult,
   TransferTask,
@@ -122,6 +124,29 @@ export function pathIsDir(path: string): Promise<boolean> {
 /** 采集监控数据 */
 export function monitorCollect(sessionId: string): Promise<MonitorData> {
   return invoke("monitor_collect", { sessionId });
+}
+
+/** 查询远端完整进程列表 */
+export function processList(sessionId: string): Promise<ProcessListItem[]> {
+  return invoke("process_list", { sessionId });
+}
+
+/** 查询远端单个进程的详细信息 */
+export function processDetail(
+  sessionId: string,
+  pid: number,
+  startTime: number
+): Promise<ProcessDetail> {
+  return invoke("process_detail", { sessionId, pid, startTime });
+}
+
+/** 向远端目标进程发送终止信号 */
+export function processTerminate(
+  sessionId: string,
+  pid: number,
+  startTime: number
+): Promise<void> {
+  return invoke("process_terminate", { sessionId, pid, startTime });
 }
 
 /** 列举目录 */

@@ -9,6 +9,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import Icon from "./Icon.vue";
 import Terminal from "./Terminal.vue";
 import SystemInfoWorkspace from "./SystemInfoWorkspace.vue";
+import ProcessListWorkspace from "./ProcessListWorkspace.vue";
 import AppDialog from "./AppDialog.vue";
 import TerminalExtensions from "./TerminalExtensions.vue";
 import { transferList } from "../api";
@@ -121,6 +122,10 @@ function onDialogCancel() {
 
 /** 各会话终端组件引用，用于切换选项卡后触发尺寸自适应 */
 const termRefs = ref<Record<string, InstanceType<typeof Terminal>>>({});
+/** 主工作区容器，用于激活工具页后转移键盘焦点 */
+const termAreaRef = ref<HTMLElement | null>(null);
+/** 是否已有待执行的工作区聚焦任务 */
+let activeWorkspaceFocusPending = false;
 
 /** 选项卡滚动容器 */
 const tabsRef = ref<HTMLElement | null>(null);
@@ -171,10 +176,30 @@ const menuSession = computed(() => {
 function activateTab(tab: WorkspaceTab) {
   if (tab.type === "session") {
     store.activate(tab.sessionId);
-    return;
+  } else {
+    workspaces.activate(tab.id);
+    store.setActiveContext(tab.sessionId);
   }
-  workspaces.activate(tab.id);
-  store.setActiveContext(tab.sessionId);
+  focusActiveWorkspace();
+}
+
+/** 等工作区完成显示后，将键盘焦点转移到当前激活页 */
+function focusActiveWorkspace(): void {
+  if (activeWorkspaceFocusPending) return;
+  activeWorkspaceFocusPending = true;
+  void nextTick(() => {
+    activeWorkspaceFocusPending = false;
+    const tab = workspaces.activeTab;
+    if (!tab) return;
+    if (tab.type === "session" && termRefs.value[tab.sessionId]) {
+      termRefs.value[tab.sessionId].activate();
+      return;
+    }
+    const workspace = Array.from(
+      termAreaRef.value?.querySelectorAll<HTMLElement>("[data-workspace-id]") ?? []
+    ).find((element) => element.dataset.workspaceId === tab.id);
+    workspace?.focus({ preventScroll: true });
+  });
 }
 
 /** 按当前工作区选项卡同步左侧监控与底部面板的会话上下文 */
@@ -200,17 +225,17 @@ function reopenSession(id: string) {
   return termRefs.value[id]?.reopen();
 }
 
-// 切换激活会话后，等 DOM 显示再重新适配终端尺寸并刷新视口
+// 切换工作区后同步会话上下文，并把焦点交给当前显示的终端或工具页
 watch(
   () => workspaces.activeId,
   (id) => {
     const tab = workspaces.tabs.find((item) => item.id === id);
     if (tab?.type === "session") {
       store.activate(tab.sessionId);
-      nextTick(() => termRefs.value[tab.sessionId]?.activate());
     } else if (tab) {
       store.setActiveContext(tab.sessionId);
     }
+    focusActiveWorkspace();
   }
 );
 
@@ -696,6 +721,7 @@ defineExpose({
   requestActiveTerminalCwd,
   reopenSession,
   hasLiveSessions,
+  focusActiveWorkspace,
   confirmCloseRisks,
   releaseCloseRisks,
 });
@@ -746,8 +772,12 @@ defineExpose({
               :title="statusTitle(sessionsById.get(tab.sessionId)?.status ?? 'disconnected')"
             ></span>
           </span>
-          <span v-else class="tab-indicator tab-tool-indicator" title="工具页">
-            <Icon name="server" :size="12" />
+          <span
+            v-else
+            class="tab-indicator tab-tool-indicator"
+            :title="tab.type === 'systemInfo' ? '系统信息' : '进程列表'"
+          >
+            <Icon :name="tab.type === 'systemInfo' ? 'server' : 'activity'" :size="12" />
           </span>
           <span class="tab-name" :title="tab.title">{{ tab.title }}</span>
           <button class="tab-close" title="关闭" @click.stop="closeTab(tab.id)">
@@ -793,9 +823,14 @@ defineExpose({
     </div>
 
     <!-- 终端区域 -->
-    <div class="term-area">
+    <div ref="termAreaRef" class="term-area">
       <template v-for="s in store.sessions" :key="s.id">
-        <div v-show="workspaces.activeId === sessionWorkspaceTabId(s.id)" class="term-slot">
+        <div
+          v-show="workspaces.activeId === sessionWorkspaceTabId(s.id)"
+          class="term-slot"
+          :data-workspace-id="sessionWorkspaceTabId(s.id)"
+          tabindex="-1"
+        >
           <div v-if="s.status === 'connecting'" class="term-status">
             正在连接 {{ s.config.host }} ...
           </div>
@@ -829,8 +864,27 @@ defineExpose({
           v-if="tab.type === 'systemInfo'"
           v-show="workspaces.activeId === tab.id"
           class="workspace-slot"
+          :data-workspace-id="tab.id"
+          tabindex="-1"
         >
-          <SystemInfoWorkspace :key="tab.sessionId" :session-id="tab.sessionId" />
+          <SystemInfoWorkspace
+            :key="tab.sessionId"
+            :session-id="tab.sessionId"
+            :active="workspaces.activeId === tab.id"
+          />
+        </div>
+        <div
+          v-else-if="tab.type === 'processList'"
+          v-show="workspaces.activeId === tab.id"
+          class="workspace-slot"
+          :data-workspace-id="tab.id"
+          tabindex="-1"
+        >
+          <ProcessListWorkspace
+            :key="tab.sessionId"
+            :session-id="tab.sessionId"
+            :active="workspaces.activeId === tab.id"
+          />
         </div>
       </template>
 
@@ -1030,6 +1084,10 @@ defineExpose({
 .term-slot {
   position: absolute;
   inset: 0;
+}
+.term-slot:focus,
+.workspace-slot:focus {
+  outline: none;
 }
 .workspace-slot {
   position: absolute;

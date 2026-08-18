@@ -3,6 +3,7 @@
 pub(crate) mod host_keys;
 pub mod manager;
 pub mod monitor;
+pub mod process;
 pub mod proxy;
 pub mod session;
 pub mod sftp;

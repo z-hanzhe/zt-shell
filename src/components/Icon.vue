@@ -38,6 +38,7 @@ const paths: Record<string, string> = {
   home: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10",
   arrowUp: "M12 19V5M5 12l7-7 7 7",
   search: "M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3",
+  locate: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3",
   chevronRight: "M9 18l6-6-6-6",
   chevronLeft: "M15 18l-6-6 6-6",
   unfoldVertical: "M7 10l5-6 5 6M7 14l5 6 5-6",

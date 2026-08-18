@@ -63,9 +63,9 @@ const bottomPanelRef = ref<InstanceType<typeof BottomPanel>>();
 /** 当前激活会话（用于状态栏与子面板） */
 const active = computed(() => sessionsStore.activeSession);
 const activeConnected = computed(() => active.value?.status === "connected");
-/** 系统信息页独占右侧纵向空间，其他页面保留底部文件与传输区域 */
+/** 连接工具页独占右侧纵向空间，会话页和欢迎页保留底部文件与传输区域 */
 const showBottomRegion = computed(
-  () => workspacesStore.activeTab?.type !== "systemInfo"
+  () => !workspacesStore.activeTab || workspacesStore.activeTab.type === "session"
 );
 /** 当前最早等待确认主机密钥的会话，多个连接按会话顺序逐个处理 */
 const pendingHostKeySession = computed(() =>
@@ -191,6 +191,20 @@ function openSystemInfo(sessionId: string) {
     session.config.id,
     session.config.name || session.name
   );
+  terminalPanelRef.value?.focusActiveWorkspace();
+}
+
+/** 按连接配置复用进程列表选项卡，并切换到指定来源会话 */
+function openProcessList(sessionId: string) {
+  const session = sessionsStore.sessions.find((item) => item.id === sessionId);
+  if (!session) return;
+  sessionsStore.setActiveContext(sessionId);
+  workspacesStore.openProcessList(
+    sessionId,
+    session.config.id,
+    session.config.name || session.name
+  );
+  terminalPanelRef.value?.focusActiveWorkspace();
 }
 
 /** 在连接数据就绪后打开管理器，启动期间的点击会延迟执行 */
@@ -382,6 +396,7 @@ onBeforeUnmount(() => {
           :connected="activeConnected"
           :config="active?.config"
           @open-system-info="openSystemInfo"
+          @open-process-list="openProcessList"
         />
       </div>
 

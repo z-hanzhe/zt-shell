@@ -5,6 +5,7 @@ import test from "node:test";
 import { createPinia, setActivePinia } from "pinia";
 
 import {
+  processListWorkspaceTabId,
   sessionWorkspaceTabId,
   systemInfoWorkspaceTabId,
   useWorkspacesStore,
@@ -32,12 +33,51 @@ test("同一连接的多个会话共用系统信息选项卡并切换数据来�
   assert.equal(store.activeTab.sessionId, "session-a-2");
 });
 
+test("同一连接的多个会话共用进程列表选项卡并切换数据来源", () => {
+  const store = createStore();
+  store.openSession("session-a", "主机 A");
+  store.openSession("session-a-2", "主机 A（2）");
+
+  store.openProcessList("session-a", "connection-a", "生产环境");
+  store.openProcessList("session-a-2", "connection-a", "生产环境");
+
+  const processTabs = store.tabs.filter((tab) => tab.type === "processList");
+  assert.equal(processTabs.length, 1);
+  assert.equal(store.activeId, processListWorkspaceTabId("connection-a"));
+  assert.equal(store.activeTab.title, "进程列表 - 生产环境");
+  assert.equal(store.activeTab.sessionId, "session-a-2");
+});
+
+test("同一连接的系统信息和进程列表使用独立工具选项卡", () => {
+  const store = createStore();
+  store.openSession("session-a", "主机 A");
+
+  store.openSystemInfo("session-a", "connection-a", "生产环境");
+  store.openProcessList("session-a", "connection-a", "生产环境");
+
+  assert.deepEqual(
+    store.tabs.filter((tab) => tab.type !== "session").map((tab) => tab.id).sort(),
+    [processListWorkspaceTabId("connection-a"), systemInfoWorkspaceTabId("connection-a")].sort()
+  );
+});
+
 test("关闭工具选项卡不会移除关联 SSH 会话", () => {
   const store = createStore();
   store.openSession("session-a", "主机 A");
   store.openSystemInfo("session-a", "connection-a", "生产环境");
 
   store.close(systemInfoWorkspaceTabId("connection-a"));
+
+  assert.deepEqual(store.tabs.map((tab) => tab.id), [sessionWorkspaceTabId("session-a")]);
+  assert.equal(store.activeId, sessionWorkspaceTabId("session-a"));
+});
+
+test("关闭进程列表选项卡不会移除关联 SSH 会话", () => {
+  const store = createStore();
+  store.openSession("session-a", "主机 A");
+  store.openProcessList("session-a", "connection-a", "生产环境");
+
+  store.close(processListWorkspaceTabId("connection-a"));
 
   assert.deepEqual(store.tabs.map((tab) => tab.id), [sessionWorkspaceTabId("session-a")]);
   assert.equal(store.activeId, sessionWorkspaceTabId("session-a"));
@@ -52,27 +92,33 @@ test("通用关闭入口拒绝直接移除 SSH 会话页", () => {
   assert.deepEqual(store.tabs.map((tab) => tab.id), [sessionWorkspaceTabId("session-a")]);
 });
 
-test("移除系统信息来源会话时优先迁移到同连接的其他会话", () => {
+test("移除工具页来源会话时优先迁移到同连接的其他会话", () => {
   const store = createStore();
   store.openSession("session-a", "主机 A");
   store.openSession("session-a-2", "主机 A（2）");
   store.openSystemInfo("session-a", "connection-a", "生产环境");
-  store.activate(systemInfoWorkspaceTabId("connection-a"));
+  store.openProcessList("session-a", "connection-a", "生产环境");
+  store.activate(processListWorkspaceTabId("connection-a"));
 
   store.removeSession("session-a", "session-a-2");
 
-  assert.equal(store.activeId, systemInfoWorkspaceTabId("connection-a"));
+  assert.equal(store.activeId, processListWorkspaceTabId("connection-a"));
   assert.equal(store.activeTab.sessionId, "session-a-2");
+  assert.equal(
+    store.tabs.find((tab) => tab.id === systemInfoWorkspaceTabId("connection-a")).sessionId,
+    "session-a-2"
+  );
   assert.equal(
     store.tabs.some((tab) => tab.id === sessionWorkspaceTabId("session-a")),
     false
   );
 });
 
-test("移除连接的最后一个会话时同步移除系统信息页", () => {
+test("移除连接的最后一个会话时同步移除全部连接工具页", () => {
   const store = createStore();
   store.openSession("session-a", "主机 A");
   store.openSystemInfo("session-a", "connection-a", "生产环境");
+  store.openProcessList("session-a", "connection-a", "生产环境");
   store.openSession("session-b", "主机 B");
   store.activate(systemInfoWorkspaceTabId("connection-a"));
 

@@ -18,7 +18,7 @@
 | [SSH 内核](ssh-core.md) | 建连、终端、代理、隧道和会话生命周期 | `ssh/manager.rs`、`ssh/session.rs` |
 | [SFTP](sftp.md) | 远端文件操作、sudo 文件会话和可中断操作 | `ssh/sftp.rs`、`FileManager.vue` |
 | [传输](transfer.md) | 后台上传下载、断点续传和任务控制 | `ssh/transfer.rs`、`TransferPanel.vue` |
-| [监控](monitor.md) | Linux 远端指标采集与按会话展示 | `ssh/monitor.rs`、`monitor.ts` |
+| [监控](monitor.md) | Linux 远端指标采集、进程查询与按会话展示 | `ssh/monitor.rs`、`ssh/process.rs`、`monitor.ts` |
 | [前端](frontend.md) | Vue 组件、Pinia 状态和独立编辑器窗口 | `main.ts`、`src/components/` |
 | [Tauri 命令](commands.md) | 前后端命令边界、托管状态和权限 | `commands.rs`、`api.ts` |
 | [发布](release.md) | 多平台构建和发布草稿流程 | `.github/workflows/release.yml` |

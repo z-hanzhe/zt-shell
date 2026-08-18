@@ -10,6 +10,7 @@ use crate::credentials::{
 use crate::ssh::host_keys::HostKeyStore;
 use crate::ssh::manager::SessionManager;
 use crate::ssh::monitor::{self, MonitorData};
+use crate::ssh::process::{self, ProcessDetail, ProcessListItem};
 use crate::ssh::session::{wait_for_cancellation, OPERATION_CANCELLED_MESSAGE};
 use crate::ssh::sftp::{self, RemoveEntryArg};
 use crate::ssh::transfer::{
@@ -174,6 +175,37 @@ pub async fn monitor_collect(
     session_id: String,
 ) -> CmdResult<MonitorData> {
     map_err(monitor::collect(&manager, &session_id).await)
+}
+
+/// 查询远端完整进程列表
+#[tauri::command]
+pub async fn process_list(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+) -> CmdResult<Vec<ProcessListItem>> {
+    map_err(process::list(&manager, &session_id).await)
+}
+
+/// 查询远端单个进程的详细信息
+#[tauri::command]
+pub async fn process_detail(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+    pid: u32,
+    start_time: u64,
+) -> CmdResult<ProcessDetail> {
+    map_err(process::detail(&manager, &session_id, pid, start_time).await)
+}
+
+/// 向远端目标进程发送终止信号
+#[tauri::command]
+pub async fn process_terminate(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+    pid: u32,
+    start_time: u64,
+) -> CmdResult<()> {
+    map_err(process::terminate(&manager, &session_id, pid, start_time).await)
 }
 
 /// 列举远端目录内容
