@@ -59,8 +59,8 @@ const permissionBits: Record<PermissionGroup, Record<PermissionBit, number>> = {
 
 const groupLabels: Record<PermissionGroup, string> = {
   owner: "所有者",
-  group: "组",
-  other: "其他",
+  group: "所有组",
+  other: "其他人",
 };
 
 const state = reactive<Record<PermissionGroup, Record<PermissionBit, boolean>>>({

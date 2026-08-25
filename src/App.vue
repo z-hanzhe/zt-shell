@@ -224,13 +224,13 @@ function markConnectionDataReady() {
   showConnManager.value = true;
 }
 
-/** 信任当前展示的主机密钥，并在需要时恢复原终端通道 */
-async function onApproveHostKey() {
+/** 完成主机密钥确认；persist 为 false 时仅信任当前连接 */
+async function onApproveHostKey(persist = true) {
   const session = pendingHostKeySession.value;
   if (!session || hostKeyBusy.value) return;
   hostKeyBusy.value = true;
   try {
-    const reopenInPlace = await sessionsStore.approveHostKey(session.id);
+    const reopenInPlace = await sessionsStore.approveHostKey(session.id, persist);
     if (reopenInPlace) {
       try {
         await nextTick();
@@ -242,6 +242,11 @@ async function onApproveHostKey() {
   } finally {
     hostKeyBusy.value = false;
   }
+}
+
+/** 仅本次信任未知服务器，不保存主机密钥记录 */
+async function onTrustHostKeyOnce() {
+  await onApproveHostKey(false);
 }
 
 /** 取消当前主机密钥确认并终止对应连接 */
@@ -493,7 +498,8 @@ onBeforeUnmount(() => {
       :open="!!pendingHostKeySession"
       :challenge="pendingHostKeySession?.hostKeyChallenge ?? null"
       :busy="hostKeyBusy"
-      @confirm="onApproveHostKey"
+      @confirm="onApproveHostKey(true)"
+      @trust-once="onTrustHostKeyOnce"
       @cancel="onRejectHostKey"
     />
   </div>

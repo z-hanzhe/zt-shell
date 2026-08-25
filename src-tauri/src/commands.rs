@@ -287,15 +287,12 @@ pub async fn sftp_remove_dir(
     session_id: String,
     path: String,
 ) -> CmdResult<()> {
-    // 防御空路径与根目录，避免误删整个系统
-    let trimmed = path.trim();
-    if trimmed.is_empty() || trimmed == "/" {
-        return Err("非法的删除路径".to_string());
-    }
+    // 防御空路径、根目录和路径穿越，保留原始路径中的合法空格。
+    map_err(sftp::validate_removal_path(&path))?;
     if !map_err(manager.is_sudo(&session_id).await)? {
         let command = format!(
             "rm -rf -- {} && printf __ZTOK__ || printf __ZTFAIL__",
-            transfer::shell_quote(trimmed)
+            transfer::shell_quote(&path)
         );
         let output = map_err(manager.exec(&session_id, &command).await)?;
         if !output.contains("__ZTOK__") {
@@ -304,7 +301,7 @@ pub async fn sftp_remove_dir(
         return Ok(());
     }
     let sftp = map_err(manager.sftp(&session_id).await)?;
-    map_err(sftp::remove_dir_all(&sftp, trimmed).await)
+    map_err(sftp::remove_dir_all(&sftp, &path).await)
 }
 
 /// 创建远端目录
@@ -354,7 +351,7 @@ pub async fn sftp_download(
     map_err(sftp::download(&sftp, &remote_path, &local_path).await)
 }
 
-/// 将选中的远端文件压缩为当前目录下的 zip 或 tar.gz 文件
+/// 将选中的远端文件压缩为当前目录下的 tar、tar.gz、tar.xz、tar.zst、zip 或单文件 gz/xz/zst
 #[tauri::command]
 pub async fn sftp_create_archive(
     manager: State<'_, SessionManager>,
@@ -398,6 +395,30 @@ pub async fn sftp_extract_archive(
             &directory,
             &archive_name,
             target_directory.as_deref(),
+            operation.cancellation(),
+        )
+        .await,
+    )
+}
+
+/// 将压缩 tar 包还原为 .tar，可选择是否保留源文件
+#[tauri::command]
+pub async fn sftp_decompress_archive_to_tar(
+    manager: State<'_, SessionManager>,
+    session_id: String,
+    directory: String,
+    archive_name: String,
+    keep_source: bool,
+    operation_id: String,
+) -> CmdResult<String> {
+    let mut operation = map_err(manager.begin_operation(&session_id, &operation_id))?;
+    map_err(
+        sftp::decompress_archive_to_tar(
+            &manager,
+            &session_id,
+            &directory,
+            &archive_name,
+            keep_source,
             operation.cancellation(),
         )
         .await,

@@ -22,6 +22,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (event: "confirm"): void;
+  (event: "trust-once"): void;
   (event: "cancel"): void;
 }>();
 
@@ -43,7 +44,7 @@ const summary = computed(() =>
 const guidance = computed(() =>
   changed.value
     ? "这可能是服务器重装或密钥轮换，也可能有人正在冒充该服务器。请先通过服务器管理员或云控制台核对新指纹，确认变更后再更新密钥。"
-    : "请通过服务器管理员或云控制台核对下方 SHA-256 指纹。确认无误后，ZTShell 会记住该密钥并在后续连接时自动校验。"
+    : "请通过服务器管理员或云控制台核对下方 SHA-256 指纹。确认无误后，可以永久记住该密钥，也可以只允许本次连接使用。"
 );
 
 /** 按目标地址格式展示主机与端口 */
@@ -127,14 +128,27 @@ const { isTop: isTopModal } = useEscClose(
             <dt>{{ changed ? "新指纹" : "SHA-256 指纹" }}</dt>
             <dd><code>{{ challenge.fingerprint }}</code></dd>
           </div>
+          <div>
+            <dt>完整公钥</dt>
+            <dd><code class="host-key-public-key">{{ challenge.publicKey }}</code></dd>
+          </div>
         </dl>
 
         <p id="host-key-guidance" class="host-key-guidance">{{ guidance }}</p>
       </div>
 
-      <div class="modal-footer">
+      <div class="modal-footer host-key-footer">
         <button ref="cancelButton" class="btn" :disabled="busy" @click="requestCancel">
           取消连接
+        </button>
+        <button
+          v-if="!changed"
+          class="btn"
+          :disabled="busy"
+          @click="emit('trust-once')"
+        >
+          <Icon name="shieldCheck" :size="14" />
+          仅本次信任
         </button>
         <button
           :class="['btn', changed ? 'btn-danger' : 'btn-primary']"
@@ -143,7 +157,7 @@ const { isTop: isTopModal } = useEscClose(
         >
           <span v-if="busy" class="host-key-spinner"></span>
           <Icon v-else :name="changed ? 'refresh' : 'shieldCheck'" :size="14" />
-          {{ busy ? "正在重新验证" : changed ? "更新密钥并连接" : "信任并连接" }}
+          {{ busy ? "正在重新验证" : changed ? "更新密钥并连接" : "永久信任并连接" }}
         </button>
       </div>
     </div>
@@ -157,8 +171,14 @@ const { isTop: isTopModal } = useEscClose(
 .host-key-dialog {
   width: min(520px, calc(100vw - 32px));
 }
-.host-key-dialog .modal-footer .btn:last-child {
-  min-width: 138px;
+.host-key-footer {
+  flex-wrap: wrap;
+}
+.host-key-footer .btn {
+  white-space: nowrap;
+}
+.host-key-footer .btn:last-child {
+  min-width: 148px;
 }
 .modal-close:disabled {
   opacity: 0.45;
@@ -206,6 +226,14 @@ const { isTop: isTopModal } = useEscClose(
   font-family: "Cascadia Mono", "Consolas", monospace;
   font-size: 12px;
   user-select: text;
+}
+.host-key-public-key {
+  display: block;
+  max-height: 58px;
+  overflow: auto;
+  user-select: text;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .host-key-guidance {
   margin: 0;

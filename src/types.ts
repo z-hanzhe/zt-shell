@@ -188,7 +188,7 @@ export interface HostKeyChallenge {
   fingerprint: string;
   /** 已保存密钥的 SHA-256 指纹，首次连接时为空 */
   knownFingerprint: string | null;
-  /** 完整服务端公钥，仅用于确认后的二次握手精确匹配 */
+  /** 完整服务端公钥，用于展示并在确认后的二次握手中精确匹配 */
   publicKey: string;
 }
 
@@ -198,6 +198,8 @@ export interface HostKeyApproval {
   publicKey: string;
   /** 是否允许替换当前主机与端口的已有可信密钥 */
   replaceExisting: boolean;
+  /** 是否将本次授权写入本机主机密钥记录；false 仅对当前 SSH 会话生效 */
+  persist: boolean;
 }
 
 /** SSH 建连命令结果 */

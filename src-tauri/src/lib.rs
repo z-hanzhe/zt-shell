@@ -66,6 +66,7 @@ pub fn run() {
             commands::sftp_download,
             commands::sftp_create_archive,
             commands::sftp_extract_archive,
+            commands::sftp_decompress_archive_to_tar,
             commands::sftp_remove_entries,
             commands::sftp_set_permissions,
             commands::sftp_cancel_operation,

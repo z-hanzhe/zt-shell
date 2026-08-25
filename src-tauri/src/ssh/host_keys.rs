@@ -111,7 +111,9 @@ impl HostKeyStore {
                 known_fingerprint: Some(existing.fingerprint.clone()),
                 public_key: public_key.clone(),
             };
-            if approval_matches(approval, &public_key, true) {
+            if approval_matches(approval, &public_key, true)
+                && approval.is_some_and(|value| value.persist)
+            {
                 file.hosts[index] = KnownHostEntry {
                     host: normalized_host,
                     port,
@@ -135,14 +137,16 @@ impl HostKeyStore {
             public_key: public_key.clone(),
         };
         if approval_matches(approval, &public_key, false) {
-            file.hosts.push(KnownHostEntry {
-                host: normalized_host,
-                port,
-                algorithm,
-                fingerprint,
-                public_key,
-            });
-            save_known_hosts(&self.inner.path, &file).await?;
+            if approval.is_some_and(|value| value.persist) {
+                file.hosts.push(KnownHostEntry {
+                    host: normalized_host,
+                    port,
+                    algorithm,
+                    fingerprint,
+                    public_key,
+                });
+                save_known_hosts(&self.inner.path, &file).await?;
+            }
             return Ok(HostKeyVerification::Trusted);
         }
         Ok(HostKeyVerification::ConfirmationRequired(challenge))
@@ -291,6 +295,7 @@ mod tests {
         let approval = HostKeyApproval {
             public_key: challenge.public_key,
             replace_existing: false,
+            persist: true,
         };
         assert!(matches!(
             store.verify("example.com", 22, &key, Some(&approval)).await,
@@ -301,6 +306,43 @@ mod tests {
         assert!(matches!(
             reloaded.verify("EXAMPLE.COM", 22, &key, None).await,
             Ok(HostKeyVerification::Trusted)
+        ));
+        let _ = tokio::fs::remove_dir_all(path.parent().expect("测试路径应有父目录")).await;
+    }
+
+    /// 首次确认选择仅本次信任时允许当前握手通过，但不得写入主机密钥记录
+    #[tokio::test]
+    async fn trusts_approved_key_once_without_persisting() {
+        let path = test_path();
+        let store = HostKeyStore::new(path.clone());
+        let key = test_public_key(TEST_KEY_ONE);
+        let HostKeyVerification::ConfirmationRequired(challenge) = store
+            .verify("server", 22, &key, None)
+            .await
+            .expect("首次校验应成功")
+        else {
+            panic!("首次连接应要求确认");
+        };
+
+        assert!(matches!(
+            store
+                .verify(
+                    "server",
+                    22,
+                    &key,
+                    Some(&HostKeyApproval {
+                        public_key: challenge.public_key,
+                        replace_existing: false,
+                        persist: false,
+                    }),
+                )
+                .await,
+            Ok(HostKeyVerification::Trusted)
+        ));
+        assert!(!path.exists());
+        assert!(matches!(
+            store.verify("server", 22, &key, None).await,
+            Ok(HostKeyVerification::ConfirmationRequired(_))
         ));
         let _ = tokio::fs::remove_dir_all(path.parent().expect("测试路径应有父目录")).await;
     }
@@ -322,6 +364,7 @@ mod tests {
         let approval = HostKeyApproval {
             public_key: first_challenge.public_key,
             replace_existing: false,
+            persist: true,
         };
 
         let HostKeyVerification::ConfirmationRequired(second_challenge) = store
@@ -358,6 +401,7 @@ mod tests {
                 Some(&HostKeyApproval {
                     public_key: initial.public_key,
                     replace_existing: false,
+                    persist: true,
                 }),
             )
             .await
@@ -381,6 +425,7 @@ mod tests {
                 Some(&HostKeyApproval {
                     public_key: changed.public_key.clone(),
                     replace_existing: false,
+                    persist: true,
                 }),
             )
             .await
@@ -397,8 +442,25 @@ mod tests {
                     22,
                     &new_key,
                     Some(&HostKeyApproval {
+                        public_key: changed.public_key.clone(),
+                        replace_existing: true,
+                        persist: false,
+                    }),
+                )
+                .await,
+            Ok(HostKeyVerification::ConfirmationRequired(_))
+        ));
+
+        assert!(matches!(
+            store
+                .verify(
+                    "server",
+                    22,
+                    &new_key,
+                    Some(&HostKeyApproval {
                         public_key: changed.public_key,
                         replace_existing: true,
+                        persist: true,
                     }),
                 )
                 .await,
@@ -432,6 +494,7 @@ mod tests {
                 Some(&HostKeyApproval {
                     public_key: challenge.public_key,
                     replace_existing: false,
+                    persist: true,
                 }),
             )
             .await

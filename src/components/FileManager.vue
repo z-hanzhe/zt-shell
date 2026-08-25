@@ -19,6 +19,7 @@ import {
   sftpWrite,
   sftpCreateArchive,
   sftpExtractArchive,
+  sftpDecompressArchiveToTar,
   sftpSetPermissions,
   sftpSetSudo,
   transferUpload,
@@ -144,7 +145,7 @@ type TreeNode = { path: string; name: string; depth: number };
 type ColumnKey = SortKey;
 type PointerMode = "select" | "drag";
 type TypeaheadZone = "tree" | "list";
-type ArchiveFormat = "zip" | "tarGz";
+type ArchiveFormat = "tar" | "gz" | "xz" | "zst" | "zip" | "tarGz" | "tarXz" | "tarZst";
 type FileOperationKind = "archive" | "extract" | "delete" | "permissions";
 type PointerAction = {
   mode: PointerMode;
@@ -162,8 +163,16 @@ type MenuAction =
   | "uploadDir"
   | "download"
   | "packDownload"
+  | "archiveTar"
+  | "archiveGz"
+  | "archiveXz"
+  | "archiveZst"
   | "archiveZip"
   | "archiveTarGz"
+  | "archiveTarXz"
+  | "archiveTarZst"
+  | "extractTar"
+  | "extractTarKeepSource"
   | "extractArchive"
   | "extractArchiveTo"
   | "permissions"
@@ -190,6 +199,47 @@ type DialogState = {
   confirmDanger: boolean;
   resolve?: (value: string | boolean | null) => void;
 };
+
+const ARCHIVE_SUFFIXES = [
+  ".tar.gz",
+  ".tgz",
+  ".tar.bz2",
+  ".tbz2",
+  ".tbz",
+  ".tar.xz",
+  ".txz",
+  ".tar.zst",
+  ".tzst",
+  ".tar.lz4",
+  ".tlz4",
+  ".tar.lz",
+  ".tlz",
+  ".tar.lzma",
+  ".tlzma",
+  ".tar.lzo",
+  ".tzo",
+  ".tar.z",
+  ".taz",
+  ".gzip",
+  ".gz",
+  ".bz2",
+  ".bz",
+  ".xz",
+  ".zst",
+  ".zip",
+  ".tar",
+  ".7z",
+  ".rar",
+  ".cab",
+  ".arj",
+  ".wim",
+  ".iso",
+] as const;
+const TAR_COMPRESSED_SUFFIXES = ARCHIVE_SUFFIXES.filter(
+  (suffix) =>
+    suffix.startsWith(".tar.") ||
+    [".tgz", ".tbz2", ".tbz", ".txz", ".tzst", ".tlz4", ".tlz", ".tlzma", ".tzo", ".taz"].includes(suffix)
+);
 
 const columns: { key: ColumnKey; label: string }[] = [
   { key: "name", label: "文件名" },
@@ -229,6 +279,10 @@ const contextMenuItems = computed<MenuItem[]>(() => {
   const first = selectedEntries.value[0];
   const multi = count > 1;
   const singleDir = count === 1 && first?.isDir;
+  const extractable = count === 1 && !singleDir && isExtractableArchive(first?.name ?? "");
+  const tarCompressed = count === 1 && !singleDir && isTarCompressedArchive(first?.name ?? "");
+  const rawCompressible =
+    count === 1 && first?.isDir === false && first?.isSymlink === false;
   return [
     { key: "edit", action: "edit", label: "编辑文本", disabled: count !== 1 || singleDir || multi },
     { key: "rename", action: "rename", label: "重命名", disabled: count !== 1 || multi },
@@ -246,19 +300,44 @@ const contextMenuItems = computed<MenuItem[]>(() => {
       label: "压缩",
       disabled: count === 0,
       children: [
-        { key: "archiveZip", action: "archiveZip", label: "压缩为 zip", disabled: count === 0 },
-        { key: "archiveTarGz", action: "archiveTarGz", label: "压缩为 tar.gz", disabled: count === 0 },
+        { key: "archiveTar", action: "archiveTar", label: "打包为 .tar", disabled: count === 0 },
+        { key: "archiveGz", action: "archiveGz", label: "压缩为 .gz", disabled: !rawCompressible },
+        { key: "archiveXz", action: "archiveXz", label: "压缩为 .xz", disabled: !rawCompressible },
+        { key: "archiveZst", action: "archiveZst", label: "压缩为 .zst", disabled: !rawCompressible },
+        { key: "archiveTarGz", action: "archiveTarGz", label: "压缩为 .tar.gz", disabled: count === 0 },
+        { key: "archiveTarXz", action: "archiveTarXz", label: "压缩为 .tar.xz", disabled: count === 0 },
+        { key: "archiveTarZst", action: "archiveTarZst", label: "压缩为 .tar.zst", disabled: count === 0 },
+        { key: "archiveZip", action: "archiveZip", label: "压缩为 .zip", disabled: count === 0 },
+      ],
+    },
+    {
+      key: "extract",
+      label: "解压",
+      disabled: count === 0,
+      children: [
+        {
+          key: "extractTar",
+          action: "extractTar",
+          label: "解压为 .tar",
+          disabled: !tarCompressed,
+        },
+        {
+          key: "extractTarKeepSource",
+          action: "extractTarKeepSource",
+          label: "保留源文件解压为 .tar",
+          disabled: !tarCompressed,
+        },
         {
           key: "extractArchive",
           action: "extractArchive",
           label: "解压到当前目录",
-          disabled: count !== 1 || singleDir || !isExtractableArchive(first?.name ?? ""),
+          disabled: !extractable,
         },
         {
           key: "extractArchiveTo",
           action: "extractArchiveTo",
           label: extractArchiveToLabel(first?.name ?? ""),
-          disabled: count !== 1 || singleDir || !isExtractableArchive(first?.name ?? ""),
+          disabled: !extractable,
         },
       ],
     },
@@ -287,10 +366,11 @@ const contextMenuItems = computed<MenuItem[]>(() => {
 });
 
 const CONTEXT_MENU_WIDTH = 152;
-const CONTEXT_SUBMENU_WIDTH = 172;
+const CONTEXT_SUBMENU_WIDTH = 220;
 const CONTEXT_MENU_MARGIN = 8;
 const CONTEXT_MENU_ITEM_HEIGHT = 24;
 const CONTEXT_MENU_PADDING = 8;
+const CONTEXT_SUBMENU_BORDER_HEIGHT = 2;
 /** PageUp/PageDown 一次移动的条目数 */
 const PAGE_STEP = 10;
 
@@ -823,10 +903,34 @@ function onFileListContextMenu(event: MouseEvent) {
 /** 定位右键菜单 */
 function openContextMenu(event: MouseEvent) {
   const menuHeight = contextMenuItems.value.length * CONTEXT_MENU_ITEM_HEIGHT + CONTEXT_MENU_PADDING;
+  const maxY = Math.max(
+    CONTEXT_MENU_MARGIN,
+    window.innerHeight - menuHeight - CONTEXT_MENU_MARGIN
+  );
   contextMenu.open = true;
   contextMenu.x = Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_MARGIN);
-  contextMenu.y = Math.min(event.clientY, window.innerHeight - menuHeight - CONTEXT_MENU_MARGIN);
+  contextMenu.y = Math.max(CONTEXT_MENU_MARGIN, Math.min(event.clientY, maxY));
   contextMenu.submenuLeft = contextMenu.x + CONTEXT_MENU_WIDTH + CONTEXT_SUBMENU_WIDTH > window.innerWidth - CONTEXT_MENU_MARGIN;
+}
+
+/** 根据父菜单项和视口边界调整子菜单垂直位置，避免底部被裁切。 */
+function submenuStyle(item: MenuItem, index: number): { top: string; maxHeight: string } {
+  const childCount = item.children?.length ?? 0;
+  const viewportHeight = Math.max(window.innerHeight, CONTEXT_MENU_MARGIN * 2 + 1);
+  const availableHeight = viewportHeight - CONTEXT_MENU_MARGIN * 2;
+  const submenuHeight = Math.min(
+    childCount * CONTEXT_MENU_ITEM_HEIGHT + CONTEXT_MENU_PADDING + CONTEXT_SUBMENU_BORDER_HEIGHT,
+    availableHeight
+  );
+  const baseTop = contextMenu.y + index * CONTEXT_MENU_ITEM_HEIGHT;
+  const minTop = CONTEXT_MENU_MARGIN;
+  const maxTop = Math.max(minTop, viewportHeight - submenuHeight - CONTEXT_MENU_MARGIN);
+  const desiredTop = Math.min(Math.max(baseTop, minTop), maxTop);
+  const itemTop = contextMenu.y + CONTEXT_MENU_PADDING / 2 + index * CONTEXT_MENU_ITEM_HEIGHT;
+  return {
+    top: `${desiredTop - itemTop}px`,
+    maxHeight: `${availableHeight}px`,
+  };
 }
 
 /** 开始空白区域框选 */
@@ -965,11 +1069,35 @@ async function runMenuAction(item: MenuItem) {
     case "packDownload":
       await onPackDownload();
       break;
+    case "archiveTar":
+      await onCreateArchive("tar");
+      break;
+    case "archiveGz":
+      await onCreateArchive("gz");
+      break;
+    case "archiveXz":
+      await onCreateArchive("xz");
+      break;
+    case "archiveZst":
+      await onCreateArchive("zst");
+      break;
     case "archiveZip":
       await onCreateArchive("zip");
       break;
     case "archiveTarGz":
       await onCreateArchive("tarGz");
+      break;
+    case "archiveTarXz":
+      await onCreateArchive("tarXz");
+      break;
+    case "archiveTarZst":
+      await onCreateArchive("tarZst");
+      break;
+    case "extractTar":
+      await onDecompressArchiveToTar(false);
+      break;
+    case "extractTarKeepSource":
+      await onDecompressArchiveToTar(true);
       break;
     case "extractArchive":
       await onExtractArchive();
@@ -1604,48 +1732,82 @@ async function showOperationCancelled() {
   showMessage("操作已中断", "已停止后续处理，请检查已完成的部分。");
 }
 
-/** 判断文件名是否为当前支持解压的压缩包格式 */
-function isExtractableArchive(name: string): boolean {
+/** 判断文件名是否以归档后缀结尾，后缀表按最长优先匹配。 */
+function archiveSuffix(name: string, suffixes: readonly string[] = ARCHIVE_SUFFIXES): string | undefined {
   const lowerName = name.toLowerCase();
-  return [
-    ".zip",
-    ".tar",
-    ".tar.gz",
-    ".tgz",
-    ".tar.bz2",
-    ".tbz2",
-    ".tbz",
-    ".tar.xz",
-    ".txz",
-  ].some((suffix) => lowerName.endsWith(suffix));
+  return suffixes.find((suffix) => lowerName.endsWith(suffix));
 }
 
-/** 取压缩包对应的目录名，用于“解压到 xxx”菜单和目标目录 */
+/** 判断文件名是否为当前支持解压的压缩包格式。 */
+function isExtractableArchive(name: string): boolean {
+  return archiveSuffix(name) !== undefined;
+}
+
+/** 判断文件名是否为可还原成 tar 文件的压缩 tar 包。 */
+function isTarCompressedArchive(name: string): boolean {
+  return archiveSuffix(name, TAR_COMPRESSED_SUFFIXES) !== undefined;
+}
+
+/** 取压缩 tar 包还原后的目标文件名。 */
+function tarOutputName(name: string): string | undefined {
+  const suffix = archiveSuffix(name, TAR_COMPRESSED_SUFFIXES);
+  if (!suffix) return undefined;
+  const stem = name.slice(0, -suffix.length);
+  return `${stem}.tar`;
+}
+/** 取归档文件去掉完整后缀后的名称。 */
+function archiveStem(name: string): string {
+  const suffix = archiveSuffix(name);
+  return suffix ? name.slice(0, -suffix.length) : name;
+}
+
+/** 取压缩包对应的目录名，用于“解压到 xxx”菜单和目标目录。 */
 function extractArchiveDirectoryName(name: string): string {
-  const lowerName = name.toLowerCase();
-  const suffixes = [".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".tbz", ".txz", ".zip", ".tar"];
-  const suffix = suffixes.find((item) => lowerName.endsWith(item));
-  const stem = suffix ? name.slice(0, -suffix.length) : name;
+  const stem = archiveStem(name);
   // 后端会校验目录名；空名称和点目录回退到固定安全名称。
   return stem && stem !== "." && stem !== ".." ? stem : "archive";
 }
 
-/** 生成“解压到 xxx”菜单文案 */
+/** 生成“解压到 xxx”菜单文案。 */
 function extractArchiveToLabel(name: string): string {
   return `解压到 ${extractArchiveDirectoryName(name)}/`;
+}
+
+/** 生成压缩格式对应的后缀和弹窗标题。 */
+function archiveSpec(format: ArchiveFormat): { suffix: string; title: string } {
+  switch (format) {
+    case "tar":
+      return { suffix: ".tar", title: "打包为 .tar" };
+    case "gz":
+      return { suffix: ".gz", title: "压缩为 .gz" };
+    case "xz":
+      return { suffix: ".xz", title: "压缩为 .xz" };
+    case "zst":
+      return { suffix: ".zst", title: "压缩为 .zst" };
+    case "tarGz":
+      return { suffix: ".tar.gz", title: "压缩为 .tar.gz" };
+    case "tarXz":
+      return { suffix: ".tar.xz", title: "压缩为 .tar.xz" };
+    case "tarZst":
+      return { suffix: ".tar.zst", title: "压缩为 .tar.zst" };
+    case "zip":
+      return { suffix: ".zip", title: "压缩为 .zip" };
+  }
 }
 
 /** 将选中条目压缩为当前远端目录下的指定格式 */
 async function onCreateArchive(format: ArchiveFormat) {
   const targets = selectedEntries.value;
   if (targets.length === 0) return;
-  const suffix = format === "zip" ? ".zip" : ".tar.gz";
+  const first = targets[0];
+  const rawStream = format === "gz" || format === "xz" || format === "zst";
+  if (rawStream && (targets.length !== 1 || first.isDir || first.isSymlink)) return;
+  const spec = archiveSpec(format);
+  const { suffix, title } = spec;
   const directoryName = cwd.value.split("/").filter(Boolean).pop() ?? "archive";
-  const baseName = targets.length === 1
-    ? targets[0].name.replace(/\.(?:tar\.gz|tgz|zip)$/i, "")
-    : directoryName;
+  const baseName = rawStream ? first.name : targets.length === 1 ? archiveStem(first.name) : directoryName;
   const input = await showPrompt(
-    format === "zip" ? "压缩为 zip" : "压缩为 tar.gz",
+    title,
     "请输入压缩包名称",
     "压缩包名称",
     `${baseName}${suffix}`,
@@ -1694,6 +1856,71 @@ async function onCreateArchive(format: ArchiveFormat) {
     finishFileOperation(operationId);
     if (isOperationCancelled(e)) await showOperationCancelled();
     else showMessage("压缩失败", String(e));
+  }
+}
+
+/** 将压缩 tar 包还原为 .tar；默认删除源文件，可选择保留源文件。 */
+async function onDecompressArchiveToTar(keepSource: boolean) {
+  const target = selectedEntries.value[0];
+  const archiveName = target?.name ?? "";
+  const outputName = target && !target.isDir ? tarOutputName(archiveName) : undefined;
+  if (!target || target.isDir || !outputName) return;
+  const sessionId = props.sessionId;
+  const directory = cwd.value;
+  const viewVersion = sessionViewVersion;
+  const existing = entries.value.find((entry) => entry.name === outputName);
+  if (existing?.isDir) {
+    showMessage("解压失败", `当前目录存在同名文件夹 [ ${outputName} ] ，请先处理该文件夹`);
+    return;
+  }
+  if (existing) {
+    const overwrite = await showConfirm(
+      "覆盖确认",
+      `当前目录已存在 [ ${outputName} ] ，继续解压将覆盖该文件，是否继续？`,
+      "覆盖",
+      true
+    );
+    if (!overwrite) return;
+  }
+  const sourceAction = keepSource ? "并保留源文件" : "并删除源文件";
+  const confirmed = await showConfirm(
+    "解压确认",
+    `将 [ ${archiveName} ] 解压为 [ ${outputName} ] ${sourceAction}，是否继续？`,
+    "继续解压",
+    true
+  );
+  if (!confirmed || !isFileViewCurrent(sessionId, directory, viewVersion)) return;
+
+  const operationId = beginFileOperation("extract", "解压中", `正在生成 [ ${outputName} ] ，请稍候…`);
+  try {
+    const createdName = await sftpDecompressArchiveToTar(
+      sessionId,
+      directory,
+      archiveName,
+      keepSource,
+      operationId
+    );
+    const currentView = isFileViewCurrent(sessionId, directory, viewVersion);
+    finishFileOperation(operationId);
+    if (!currentView) return;
+    invalidateTreeDirs(directory);
+    await refresh();
+    if (isFileViewCurrent(sessionId, directory, viewVersion)) {
+      showMessage(
+        "解压完成",
+        ` [ ${createdName || outputName} ] 已生成${keepSource ? "，源文件已保留" : "，源文件已删除"}`
+      );
+    }
+  } catch (e) {
+    const currentView = isFileViewCurrent(sessionId, directory, viewVersion);
+    finishFileOperation(operationId);
+    if (!currentView) return;
+    invalidateTreeDirs(directory);
+    await refresh();
+    if (isFileViewCurrent(sessionId, directory, viewVersion)) {
+      if (isOperationCancelled(e)) showMessage("操作已中断", "已停止后续处理，请检查已完成的部分。");
+      else showMessage("解压失败", String(e));
+    }
   }
 }
 
@@ -2165,7 +2392,7 @@ defineExpose({ setPathFromTerminal });
           @click.stop
         >
           <div
-            v-for="item in contextMenuItems"
+            v-for="(item, itemIndex) in contextMenuItems"
             :key="item.key"
             class="context-menu-item"
             :class="{ disabled: item.disabled, 'has-submenu': item.children }"
@@ -2178,6 +2405,7 @@ defineExpose({ setPathFromTerminal });
               v-if="item.children"
               class="context-submenu"
               :class="{ left: contextMenu.submenuLeft }"
+              :style="submenuStyle(item, itemIndex)"
             >
               <button
                 v-for="child in item.children"
@@ -2662,13 +2890,16 @@ defineExpose({ setPathFromTerminal });
   position: absolute;
   top: -4px;
   left: 100%;
-  width: 172px;
+  width: 220px;
   box-sizing: border-box;
   padding: 4px;
   border: 1px solid #b8c6d6;
   border-radius: 4px;
   background: #fff;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .context-submenu.left {
   right: 100%;

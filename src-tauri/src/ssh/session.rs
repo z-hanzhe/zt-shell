@@ -634,6 +634,7 @@ e+JpiSq66Z6GIt0801skPh20jxOO3F52SoX1IeO5D5PXfZrfSZlw6S8c7bwyp2FHxDewRx
         let approval = HostKeyApproval {
             public_key: challenge.public_key,
             replace_existing: false,
+            persist: true,
         };
         let second = tokio::time::timeout(
             Duration::from_secs(5),

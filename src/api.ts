@@ -221,7 +221,7 @@ export function sftpCreateArchive(
   sessionId: string,
   directory: string,
   names: string[],
-  archiveFormat: "zip" | "tarGz",
+  archiveFormat: "tar" | "gz" | "xz" | "zst" | "zip" | "tarGz" | "tarXz" | "tarZst",
   archiveName: string,
   operationId: string
 ): Promise<void> {
@@ -242,6 +242,23 @@ export function sftpExtractArchive(
     archiveName,
     operationId,
     targetDirectory: targetDirectory ?? null,
+  });
+}
+
+/** 将压缩 tar 包还原为 .tar，可选择是否保留源文件 */
+export function sftpDecompressArchiveToTar(
+  sessionId: string,
+  directory: string,
+  archiveName: string,
+  keepSource: boolean,
+  operationId: string
+): Promise<string> {
+  return invoke("sftp_decompress_archive_to_tar", {
+    sessionId,
+    directory,
+    archiveName,
+    keepSource,
+    operationId,
   });
 }
 

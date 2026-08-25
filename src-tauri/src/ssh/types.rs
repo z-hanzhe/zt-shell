@@ -202,7 +202,7 @@ pub struct HostKeyChallenge {
     pub fingerprint: String,
     /// 已保存密钥的 SHA-256 指纹，首次连接时为空
     pub known_fingerprint: Option<String>,
-    /// 服务端公钥的 OpenSSH 表达，仅用于确认后精确匹配本次密钥
+    /// 服务端公钥的 OpenSSH 表达，用于展示并在确认后精确匹配本次密钥
     pub public_key: String,
 }
 
@@ -214,6 +214,9 @@ pub struct HostKeyApproval {
     pub public_key: String,
     /// 是否允许替换当前主机与端口的已有可信密钥
     pub replace_existing: bool,
+    /// 是否将本次授权写入本机主机密钥记录；关闭时仅对当前 SSH 会话生效
+    #[serde(default = "default_true")]
+    pub persist: bool,
 }
 
 /// SSH 建连命令结果

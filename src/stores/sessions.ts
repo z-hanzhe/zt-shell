@@ -178,8 +178,8 @@ export const useSessionsStore = defineStore("sessions", () => {
     }
   }
 
-  /** 信任当前展示的主机密钥，并使用完整公钥约束下一次握手 */
-  async function approveHostKey(id: string): Promise<boolean> {
+  /** 信任当前展示的主机密钥；persist 为 false 时仅允许本次会话使用 */
+  async function approveHostKey(id: string, persist = true): Promise<boolean> {
     const session = sessions.value.find((item) => item.id === id);
     const challenge = session?.hostKeyChallenge;
     if (!session || !challenge) return false;
@@ -191,6 +191,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         {
           publicKey: challenge.publicKey,
           replaceExisting: challenge.kind === "changed",
+          persist,
         },
         reopenInPlace
       );
