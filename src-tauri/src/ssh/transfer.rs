@@ -8,19 +8,21 @@
 //! - 进度由后台定时循环节流推送：结构变化推 transfer://changed 全量，动态变化推 transfer://progress 增量
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use dashmap::{DashMap, DashSet};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::{Mutex as AsyncMutex, Semaphore};
+use tokio::sync::{watch, Mutex as AsyncMutex, Semaphore};
+use tokio::time::{error::Elapsed, timeout};
 
 use super::manager::SessionManager;
 use super::sftp::format_sftp_error;
@@ -64,6 +66,14 @@ const CONFIRM_THRESHOLD: u64 = 50;
 const MAX_TOTAL_FILES: u64 = 100;
 /// 进度推送节流间隔（毫秒）
 const TICK_MS: u64 = 300;
+/// 清理远端临时文件的最长等待时间
+const REMOTE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// 校验远端打包文件的最长等待时间
+const ARCHIVE_METADATA_TIMEOUT: Duration = Duration::from_secs(10);
+/// 单次 SFTP 下载请求的最长等待时间
+const SFTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// 关闭 SFTP 文件句柄的最长等待时间
+const SFTP_CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// 传输方向
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,8 +101,6 @@ pub struct ArchiveJob {
     pub remote_dir: String,
     /// 参与打包的条目名称列表
     pub names: Vec<String>,
-    /// 远端临时压缩包路径
-    pub remote_tmp: String,
 }
 
 /// 单个传输任务的运行时状态
@@ -115,10 +123,16 @@ pub struct TaskState {
     pub remote_path: String,
     /// 打包下载附加信息
     pub archive: Option<ArchiveJob>,
+    /// 远端临时压缩包是否完整可供下载（仅打包下载任务）
+    archive_ready: AtomicBool,
+    /// 当前可下载的远端临时压缩包路径
+    archive_path: Mutex<Option<String>>,
     /// 当前状态
     pub status: AtomicU8,
     /// 控制指令（暂停/取消请求）
     pub control: AtomicU8,
+    /// 控制状态变化通知，用于唤醒阻塞中的执行体
+    control_tx: watch::Sender<u64>,
     /// 已传输字节数
     pub transferred: AtomicU64,
     /// 总字节数
@@ -148,6 +162,12 @@ impl TaskState {
     /// 状态转前端字符串
     fn status_str(&self) -> &'static str {
         status_str(self.status())
+    }
+
+    /// 通知当前执行体重新检查暂停、取消和执行代际。
+    fn notify_control(&self) {
+        self.control_tx
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
 }
 
@@ -322,6 +342,7 @@ impl TransferManager {
         total: u64,
         archive: Option<ArchiveJob>,
     ) -> Arc<TaskState> {
+        let (control_tx, _) = watch::channel(0);
         Arc::new(TaskState {
             id: uuid::Uuid::new_v4().to_string(),
             parent_id,
@@ -332,8 +353,11 @@ impl TransferManager {
             local_path,
             remote_path,
             archive,
+            archive_ready: AtomicBool::new(false),
+            archive_path: Mutex::new(None),
             status: AtomicU8::new(ST_PENDING),
             control: AtomicU8::new(CTL_NONE),
+            control_tx,
             transferred: AtomicU64::new(0),
             total: AtomicU64::new(total),
             speed: AtomicU64::new(0),
@@ -742,7 +766,6 @@ impl TransferManager {
         if !probe.contains("__ZTOK__") {
             return Err(anyhow!("远端未找到 tar 命令，无法打包下载"));
         }
-        let remote_tmp = format!("/tmp/ztshell-{}.tar.gz", uuid::Uuid::new_v4());
         let file_name = Path::new(&local_path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -756,11 +779,7 @@ impl TransferManager {
             local_path,
             remote_dir.clone(),
             0,
-            Some(ArchiveJob {
-                remote_dir,
-                names,
-                remote_tmp,
-            }),
+            Some(ArchiveJob { remote_dir, names }),
         );
         self.register(task.clone());
         spawn_file_runner(app.clone(), task);
@@ -862,6 +881,7 @@ impl TransferManager {
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             );
+            task.notify_control();
             if task
                 .status
                 .compare_exchange(ST_PAUSED, ST_PENDING, Ordering::SeqCst, Ordering::SeqCst)
@@ -881,7 +901,7 @@ impl TransferManager {
         self.emit_changed(app);
     }
 
-    /// 删除任务（级联子树）：取消执行并从列表移除，打包任务附带清理远端临时包
+    /// 删除任务（级联子树）：取消执行并从列表移除，同时清理已登记的远端临时包
     pub fn remove(&self, app: &AppHandle, ids: Option<Vec<String>>) {
         let targets = self.collect_targets(ids, true);
         let removed: HashSet<String> = targets.iter().map(|t| t.id.clone()).collect();
@@ -889,15 +909,25 @@ impl TransferManager {
             task.control.store(CTL_CANCEL, Ordering::SeqCst);
             task.generation.fetch_add(1, Ordering::SeqCst);
             task.status.store(ST_CANCELLED, Ordering::SeqCst);
+            task.notify_control();
+            if task.archive.is_some() {
+                task.archive_ready.store(false, Ordering::SeqCst);
+                let manager = app.state::<SessionManager>();
+                let operation_id = format!("transfer-pack:{}", task.id);
+                let _ = manager.cancel_operation(&task.session_id, &operation_id);
+            }
             self.tasks.remove(&task.id);
             self.children.remove(&task.id);
-            // 打包任务删除时清理远端临时压缩包
-            if let Some(job) = task.archive.clone() {
-                let app = app.clone();
-                let session_id = task.session_id.clone();
-                tauri::async_runtime::spawn(async move {
-                    cleanup_remote_tmp(&app, &session_id, &job.remote_tmp).await;
-                });
+            // 已发布的临时包路径不会再被旧打包尝试覆盖，可以立即清理。
+            if task.archive.is_some() {
+                let archive_path = task.archive_path.lock().unwrap().take();
+                if let Some(remote_tmp) = archive_path {
+                    let app = app.clone();
+                    let session_id = task.session_id.clone();
+                    tauri::async_runtime::spawn(async move {
+                        cleanup_remote_tmp(&app, &session_id, &remote_tmp).await;
+                    });
+                }
             }
         }
         // 维护展示顺序与父子索引
@@ -943,6 +973,7 @@ impl TransferManager {
             // 让可能尚未退出的旧执行体失效，再由新连接创建新的执行体。
             task.generation.fetch_add(1, Ordering::SeqCst);
             task.control.store(CTL_NONE, Ordering::SeqCst);
+            task.notify_control();
             error.clear();
             drop(error);
             if task.is_dir {
@@ -1131,6 +1162,7 @@ fn mark_task_interrupted(task: &TaskState) -> bool {
             *error = SESSION_INTERRUPTED_MESSAGE.to_string();
             task.speed.store(0, Ordering::SeqCst);
             task.eta_secs.store(-1, Ordering::SeqCst);
+            task.notify_control();
             return true;
         }
     }
@@ -1146,11 +1178,13 @@ fn request_pause(task: &TaskState) {
                     .compare_exchange(ST_PENDING, ST_PAUSED, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
                 {
+                    task.notify_control();
                     return;
                 }
             }
             ST_RUNNING | ST_PACKING => {
                 task.control.store(CTL_PAUSE, Ordering::SeqCst);
+                task.notify_control();
                 return;
             }
             _ => return,
@@ -1370,6 +1404,98 @@ fn check_control(task: &TaskState, generation: u64) -> bool {
     }
 }
 
+/// 判断活动执行体是否收到暂停、取消或代际失效请求。
+fn task_control_requested(task: &TaskState, generation: u64) -> bool {
+    task.generation.load(Ordering::SeqCst) != generation
+        || task.control.load(Ordering::SeqCst) != CTL_NONE
+        || !matches!(task.status(), ST_RUNNING | ST_PACKING)
+}
+
+/// 等待任务控制状态变化，并在需要停止当前执行体时返回。
+async fn wait_for_task_control(task: &TaskState, generation: u64) {
+    let mut changes = task.control_tx.subscribe();
+    while !task_control_requested(task, generation) {
+        if changes.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// 在任务控制通知与有界异步操作之间竞争，None 表示当前执行体应停止。
+async fn await_with_control<F>(
+    task: &TaskState,
+    generation: u64,
+    max_wait: Duration,
+    operation: F,
+) -> Option<Result<F::Output, Elapsed>>
+where
+    F: Future,
+{
+    tokio::select! {
+        biased;
+        _ = wait_for_task_control(task, generation) => None,
+        result = timeout(max_wait, operation) => Some(result),
+    }
+}
+
+/// 将带业务错误的有界操作统一转换为可中断结果。
+async fn await_result_with_control<F, T, E, M>(
+    task: &TaskState,
+    generation: u64,
+    max_wait: Duration,
+    operation: F,
+    timeout_message: &'static str,
+    map_error: M,
+) -> Result<Option<T>>
+where
+    F: Future<Output = std::result::Result<T, E>>,
+    M: FnOnce(E) -> Error,
+{
+    match await_with_control(task, generation, max_wait, operation).await {
+        None => {
+            let _ = check_control(task, generation);
+            Ok(None)
+        }
+        Some(Err(_)) => Err(anyhow!(timeout_message)),
+        Some(Ok(Err(error))) => Err(map_error(error)),
+        Some(Ok(Ok(value))) => Ok(Some(value)),
+    }
+}
+
+/// 判断当前执行体是否已被取消或因会话变化失效，但忽略等待打包完成的暂停请求。
+fn task_cancelled(task: &TaskState, generation: u64) -> bool {
+    task.generation.load(Ordering::SeqCst) != generation
+        || task.control.load(Ordering::SeqCst) == CTL_CANCEL
+        || matches!(task.status(), ST_FAILED | ST_CANCELLED)
+}
+
+/// 等待删除、断线或重试令当前执行体失效。
+async fn wait_for_task_cancellation(task: &TaskState, generation: u64) {
+    let mut changes = task.control_tx.subscribe();
+    while !task_cancelled(task, generation) {
+        if changes.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// 获取当前会话的 SFTP 客户端，允许暂停、取消或代际变化中断等待。
+async fn sftp_with_control(
+    manager: &SessionManager,
+    task: &TaskState,
+    generation: u64,
+) -> Result<Option<Arc<SftpSession>>> {
+    await_result_with_control(
+        task,
+        generation,
+        SFTP_REQUEST_TIMEOUT,
+        manager.sftp(&task.session_id),
+        "建立 SFTP 会话超时",
+        |error| error,
+    )
+    .await
+}
+
 /// 可中断的重试等待：期间响应暂停/取消，返回 false 表示应终止
 async fn sleep_with_control(task: &TaskState, generation: u64, ms: u64) -> bool {
     let steps = ms / 100;
@@ -1441,11 +1567,41 @@ fn spawn_dir_creator(app: AppHandle, task: Arc<TaskState>) {
 /// 启动文件传输任务执行体：受并发信号量约束，失败自动重试
 fn spawn_file_runner(app: AppHandle, task: Arc<TaskState>) {
     tauri::async_runtime::spawn(async move {
-        let _runner_guard = task.runner_lock.lock().await;
         let generation = task.generation.load(Ordering::SeqCst);
+        let mut control_changes = task.control_tx.subscribe();
+        let _runner_guard = loop {
+            if task.generation.load(Ordering::SeqCst) != generation || task.status() != ST_PENDING {
+                return;
+            }
+            tokio::select! {
+                biased;
+                changed = control_changes.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+                guard = task.runner_lock.lock() => break guard,
+            }
+        };
         let semaphore = app.state::<TransferManager>().semaphore.clone();
-        let Ok(_permit) = semaphore.acquire_owned().await else {
-            return;
+        let _permit = loop {
+            if task.generation.load(Ordering::SeqCst) != generation || task.status() != ST_PENDING {
+                return;
+            }
+            tokio::select! {
+                biased;
+                changed = control_changes.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+                permit = semaphore.clone().acquire_owned() => {
+                    let Ok(permit) = permit else {
+                        return;
+                    };
+                    break permit;
+                }
+            }
         };
         // 排队期间可能被暂停或删除；CAS 置为运行中，防止快速暂停/继续时多个执行体同时进入
         if task.generation.load(Ordering::SeqCst) != generation
@@ -1482,6 +1638,10 @@ fn spawn_file_runner(app: AppHandle, task: Arc<TaskState>) {
                 // 被暂停或取消，状态已在检查点落地
                 Ok(false) => break,
                 Err(e) => {
+                    // 暂停或取消可能在最后一次网络等待期间到达，优先落地控制请求。
+                    if !check_control(&task, generation) {
+                        break;
+                    }
                     attempt += 1;
                     if attempt >= MAX_ATTEMPTS {
                         mark_runner_failed(&task, generation, &e.to_string());
@@ -1521,7 +1681,9 @@ fn spawn_file_runner(app: AppHandle, task: Arc<TaskState>) {
 /// 执行一次上传：返回 Ok(true) 完成、Ok(false) 被暂停/取消、Err 出错待重试
 async fn run_upload_once(app: &AppHandle, task: &Arc<TaskState>, generation: u64) -> Result<bool> {
     let manager = app.state::<SessionManager>();
-    let sftp = manager.sftp(&task.session_id).await?;
+    let Some(sftp) = sftp_with_control(&manager, task, generation).await? else {
+        return Ok(false);
+    };
     let tm = app.state::<TransferManager>();
     ensure_remote_dir(
         &tm,
@@ -1611,37 +1773,49 @@ async fn run_download_once(
     generation: u64,
 ) -> Result<bool> {
     let manager = app.state::<SessionManager>();
-    let sftp = manager.sftp(&task.session_id).await?;
+    let Some(sftp) = sftp_with_control(&manager, task, generation).await? else {
+        return Ok(false);
+    };
     stream_download(&sftp, task, &task.remote_path.clone(), generation).await
 }
 
-/// 下载核心：远端文件流式写入本地，任务曾运行过时按本地已落盘字节续传
+/// 下载核心：远端文件流式写入本地，任务曾运行过时按已落盘字节续传
 async fn stream_download(
     sftp: &SftpSession,
     task: &Arc<TaskState>,
     remote_path: &str,
     generation: u64,
 ) -> Result<bool> {
-    let total = sftp
-        .metadata(remote_path)
-        .await
-        .map_err(|e| anyhow!("读取远端文件信息失败：{}", format_sftp_error(&e)))?
-        .size
-        .unwrap_or(0);
+    let Some(metadata) = await_result_with_control(
+        task,
+        generation,
+        SFTP_REQUEST_TIMEOUT,
+        sftp.metadata(remote_path),
+        "读取远端文件信息超时",
+        |error| anyhow!("读取远端文件信息失败：{}", format_sftp_error(&error)),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    let total = metadata.size.unwrap_or(0);
     task.total.store(total, Ordering::SeqCst);
 
+    if !check_control(task, generation) {
+        return Ok(false);
+    }
     if let Some(parent) = Path::new(&task.local_path).parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|e| anyhow!("创建本地目录失败：{}", e))?;
+            .map_err(|error| anyhow!("创建本地目录失败：{}", error))?;
     }
 
     // 断点定位：按本地已落盘字节续传
     let mut offset = 0u64;
     if task.started_once.load(Ordering::SeqCst) {
-        if let Ok(meta) = tokio::fs::metadata(&task.local_path).await {
-            if meta.len() <= total {
-                offset = meta.len();
+        if let Ok(metadata) = tokio::fs::metadata(&task.local_path).await {
+            if metadata.len() <= total {
+                offset = metadata.len();
             }
         }
     }
@@ -1651,10 +1825,18 @@ async fn stream_download(
         return Ok(true);
     }
 
-    let mut remote = sftp
-        .open_with_flags(remote_path, OpenFlags::READ)
-        .await
-        .map_err(|e| anyhow!("打开远端文件失败：{}", format_sftp_error(&e)))?;
+    let Some(mut remote) = await_result_with_control(
+        task,
+        generation,
+        SFTP_REQUEST_TIMEOUT,
+        sftp.open_with_flags(remote_path, OpenFlags::READ),
+        "打开远端文件超时",
+        |error| anyhow!("打开远端文件失败：{}", format_sftp_error(&error)),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
     // 不截断打开以支持续传，首次运行由 set_len(0) 显式清空
     let mut local = tokio::fs::OpenOptions::new()
         .create(true)
@@ -1662,49 +1844,68 @@ async fn stream_download(
         .truncate(false)
         .open(&task.local_path)
         .await
-        .map_err(|e| anyhow!("打开本地文件失败：{}", e))?;
+        .map_err(|error| anyhow!("打开本地文件失败：{}", error))?;
     if offset > 0 {
-        remote
-            .seek(std::io::SeekFrom::Start(offset))
-            .await
-            .map_err(|e| anyhow!("定位远端文件失败：{}", e))?;
+        let Some(_) = await_result_with_control(
+            task,
+            generation,
+            SFTP_REQUEST_TIMEOUT,
+            remote.seek(std::io::SeekFrom::Start(offset)),
+            "定位远端文件超时",
+            |error| anyhow!("定位远端文件失败：{}", error),
+        )
+        .await?
+        else {
+            let _ = timeout(SFTP_CLOSE_TIMEOUT, remote.shutdown()).await;
+            return Ok(false);
+        };
         local
             .seek(std::io::SeekFrom::Start(offset))
             .await
-            .map_err(|e| anyhow!("定位本地文件失败：{}", e))?;
+            .map_err(|error| anyhow!("定位本地文件失败：{}", error))?;
     } else {
         local
             .set_len(0)
             .await
-            .map_err(|e| anyhow!("清空本地文件失败：{}", e))?;
+            .map_err(|error| anyhow!("清空本地文件失败：{}", error))?;
     }
     task.transferred.store(offset, Ordering::SeqCst);
 
     let mut buf = vec![0u8; CHUNK_SIZE];
     loop {
         if !check_control(task, generation) {
-            let _ = local.flush().await;
-            let _ = remote.shutdown().await;
+            let _ = timeout(SFTP_CLOSE_TIMEOUT, local.flush()).await;
+            let _ = timeout(SFTP_CLOSE_TIMEOUT, remote.shutdown()).await;
             return Ok(false);
         }
-        let n = remote
-            .read(&mut buf)
-            .await
-            .map_err(|e| anyhow!("读取远端文件失败：{}", e))?;
+        let Some(n) = await_result_with_control(
+            task,
+            generation,
+            SFTP_REQUEST_TIMEOUT,
+            remote.read(&mut buf),
+            "读取远端文件超时",
+            |error| anyhow!("读取远端文件失败：{}", error),
+        )
+        .await?
+        else {
+            let _ = timeout(SFTP_CLOSE_TIMEOUT, local.flush()).await;
+            let _ = timeout(SFTP_CLOSE_TIMEOUT, remote.shutdown()).await;
+            return Ok(false);
+        };
         if n == 0 {
             break;
         }
         local
             .write_all(&buf[..n])
             .await
-            .map_err(|e| anyhow!("写入本地文件失败：{}", e))?;
+            .map_err(|error| anyhow!("写入本地文件失败：{}", error))?;
         task.transferred.fetch_add(n as u64, Ordering::SeqCst);
     }
     local
         .flush()
         .await
-        .map_err(|e| anyhow!("刷新本地文件失败：{}", e))?;
-    let _ = remote.shutdown().await;
+        .map_err(|error| anyhow!("刷新本地文件失败：{}", error))?;
+    let _ = timeout(SFTP_CLOSE_TIMEOUT, remote.shutdown()).await;
     // 远端提前收到 EOF 说明连接异常中断，交给重试按断点续传
     if task.transferred.load(Ordering::SeqCst) < total {
         return Err(anyhow!("传输中断，数据不完整"));
@@ -1714,29 +1915,55 @@ async fn stream_download(
 
 /// 执行一次打包下载：远端 tar 打包 -> 下载压缩包 -> 清理远端临时包
 ///
-/// 上次打包成功但下载中断时（临时包大小与记录一致），跳过打包直接续传下载；
-/// 打包阶段的 exec 不可中断，暂停/取消会在打包结束后的检查点落地
+/// 已完成的临时包大小与记录一致时跳过打包，暂停会在打包完成后阻止下载；
+/// 每次打包尝试使用独立路径，确认成功后才登记为下载文件，避免断线后的旧进程污染重试结果。
 async fn run_archive_once(app: &AppHandle, task: &Arc<TaskState>, generation: u64) -> Result<bool> {
     let job = task
         .archive
         .clone()
         .ok_or_else(|| anyhow!("打包任务信息缺失"))?;
     let manager = app.state::<SessionManager>();
-    let sftp = manager.sftp(&task.session_id).await?;
+    let Some(sftp) = sftp_with_control(&manager, task, generation).await? else {
+        return Ok(false);
+    };
 
-    // 判断是否可以复用上次打好的压缩包续传下载
-    let mut packed = false;
+    // 独立记录远端包状态，不能借用 started_once，否则重新打包后可能续接旧本地残片。
+    let existing_path = task.archive_path.lock().unwrap().clone();
     let recorded_total = task.total.load(Ordering::SeqCst);
-    if task.started_once.load(Ordering::SeqCst) && recorded_total > 0 {
-        if let Ok(meta) = sftp.metadata(&job.remote_tmp).await {
-            if meta.size.unwrap_or(0) == recorded_total {
-                packed = true;
+    let packed = if task.archive_ready.load(Ordering::SeqCst) && recorded_total > 0 {
+        if let Some(remote_tmp) = existing_path.as_deref() {
+            match await_with_control(
+                task,
+                generation,
+                ARCHIVE_METADATA_TIMEOUT,
+                sftp.metadata(remote_tmp),
+            )
+            .await
+            {
+                None => {
+                    let _ = check_control(task, generation);
+                    return Ok(false);
+                }
+                Some(Ok(Ok(metadata))) => metadata.size == Some(recorded_total),
+                Some(Ok(Err(_))) | Some(Err(_)) => false,
             }
+        } else {
+            false
         }
-    }
+    } else {
+        false
+    };
 
-    if !packed {
-        if task.generation.load(Ordering::SeqCst) != generation {
+    let download_path = if packed {
+        existing_path.ok_or_else(|| anyhow!("远端打包结果路径缺失"))?
+    } else {
+        task.archive_ready.store(false, Ordering::SeqCst);
+        let stale_path = task.archive_path.lock().unwrap().take();
+        if let Some(stale_path) = stale_path {
+            cleanup_remote_tmp(app, &task.session_id, &stale_path).await;
+        }
+        // 远端打包尚未开始时，暂停请求可以立即落地。
+        if !check_control(task, generation) {
             return Ok(false);
         }
         if task
@@ -1752,26 +1979,96 @@ async fn run_archive_once(app: &AppHandle, task: &Arc<TaskState>, generation: u6
         let names = job
             .names
             .iter()
-            .map(|n| shell_quote(n))
+            .map(|name| shell_quote(name))
             .collect::<Vec<_>>()
             .join(" ");
+        let attempt_tmp = format!("/tmp/ztshell-{}.tar.gz", uuid::Uuid::new_v4());
         let command = format!(
-            "cd {} && tar -czf {} -- {} >/dev/null 2>&1 && printf __ZTOK__ || printf __ZTFAIL__",
+            "cd {} && tar -czf {} -- {} >/dev/null 2>&1 && printf __ZTOK__ || {{ rm -f -- {}; printf __ZTFAIL__; }}",
             shell_quote(&job.remote_dir),
-            shell_quote(&job.remote_tmp),
-            names
+            shell_quote(&attempt_tmp),
+            names,
+            shell_quote(&attempt_tmp)
         );
-        let output = manager.exec(&task.session_id, &command).await?;
+        let operation_id = format!("transfer-pack:{}", task.id);
+        let mut operation = manager.begin_operation(&task.session_id, &operation_id)?;
+        // 注册中断入口后重新检查，覆盖删除或暂停恰好发生在注册前的竞态。
         if !check_control(task, generation) {
-            if task.generation.load(Ordering::SeqCst) == generation {
-                cleanup_remote_tmp(app, &task.session_id, &job.remote_tmp).await;
+            return Ok(false);
+        }
+        let output = match manager
+            .exec_cancellable(&task.session_id, &command, operation.cancellation())
+            .await
+        {
+            Ok(output) => output,
+            Err(error) => {
+                drop(operation);
+                cleanup_remote_tmp(app, &task.session_id, &attempt_tmp).await;
+                if !check_control(task, generation) {
+                    return Ok(false);
+                }
+                return Err(error);
             }
+        };
+        drop(operation);
+        if task.generation.load(Ordering::SeqCst) != generation {
+            cleanup_remote_tmp(app, &task.session_id, &attempt_tmp).await;
             return Ok(false);
         }
         if !output.contains("__ZTOK__") {
+            cleanup_remote_tmp(app, &task.session_id, &attempt_tmp).await;
+            if !check_control(task, generation) {
+                return Ok(false);
+            }
             return Err(anyhow!("远端打包失败，请检查文件权限"));
         }
+        let packed_metadata = tokio::select! {
+            biased;
+            _ = wait_for_task_cancellation(task, generation) => None,
+            result = timeout(ARCHIVE_METADATA_TIMEOUT, sftp.metadata(&attempt_tmp)) => {
+                Some(result)
+            }
+        };
+        let packed_total = match packed_metadata {
+            None => {
+                cleanup_remote_tmp(app, &task.session_id, &attempt_tmp).await;
+                return Ok(false);
+            }
+            Some(Ok(Ok(metadata))) => metadata.size.unwrap_or(0),
+            Some(Ok(Err(error))) => {
+                cleanup_remote_tmp(app, &task.session_id, &attempt_tmp).await;
+                if !check_control(task, generation) {
+                    return Ok(false);
+                }
+                return Err(anyhow!(
+                    "读取远端打包结果失败：{}",
+                    format_sftp_error(&error)
+                ));
+            }
+            Some(Err(_)) => {
+                cleanup_remote_tmp(app, &task.session_id, &attempt_tmp).await;
+                if !check_control(task, generation) {
+                    return Ok(false);
+                }
+                return Err(anyhow!("读取远端打包结果超时"));
+            }
+        };
         if task.generation.load(Ordering::SeqCst) != generation {
+            cleanup_remote_tmp(app, &task.session_id, &attempt_tmp).await;
+            return Ok(false);
+        }
+
+        // 只有当前执行代际可以发布下载路径；删除竞态由后续状态检查负责回收。
+        *task.archive_path.lock().unwrap() = Some(attempt_tmp.clone());
+        task.total.store(packed_total, Ordering::SeqCst);
+        task.archive_ready.store(true, Ordering::SeqCst);
+        // 暂停只阻止后续下载，完整的远端包留待继续时复用。
+        if !check_control(task, generation) {
+            if task.status() == ST_CANCELLED {
+                task.archive_ready.store(false, Ordering::SeqCst);
+                task.archive_path.lock().unwrap().take();
+                cleanup_remote_tmp(app, &task.session_id, &attempt_tmp).await;
+            }
             return Ok(false);
         }
         if task
@@ -1781,12 +2078,18 @@ async fn run_archive_once(app: &AppHandle, task: &Arc<TaskState>, generation: u6
         {
             return Ok(false);
         }
-    }
+        attempt_tmp
+    };
 
-    let finished = stream_download(&sftp, task, &job.remote_tmp, generation).await?;
+    if !check_control(task, generation) {
+        return Ok(false);
+    }
+    let finished = stream_download(&sftp, task, &download_path, generation).await?;
     if finished && task.generation.load(Ordering::SeqCst) == generation {
         // 下载完成后清理远端临时压缩包
-        cleanup_remote_tmp(app, &task.session_id, &job.remote_tmp).await;
+        cleanup_remote_tmp(app, &task.session_id, &download_path).await;
+        task.archive_ready.store(false, Ordering::SeqCst);
+        task.archive_path.lock().unwrap().take();
     }
     Ok(finished)
 }
@@ -1794,8 +2097,8 @@ async fn run_archive_once(app: &AppHandle, task: &Arc<TaskState>, generation: u6
 /// 清理远端临时压缩包（失败忽略，/tmp 会由系统回收）
 async fn cleanup_remote_tmp(app: &AppHandle, session_id: &str, remote_tmp: &str) {
     let manager = app.state::<SessionManager>();
-    let command = format!("rm -f {}", shell_quote(remote_tmp));
-    let _ = manager.exec(session_id, &command).await;
+    let command = format!("rm -f -- {}", shell_quote(remote_tmp));
+    let _ = timeout(REMOTE_CLEANUP_TIMEOUT, manager.exec(session_id, &command)).await;
 }
 
 #[cfg(test)]
@@ -1804,6 +2107,7 @@ mod tests {
 
     /// 构造不依赖 Tauri 运行时的最小任务对象。
     fn task_with_status(status: u8) -> TaskState {
+        let (control_tx, _) = watch::channel(0);
         TaskState {
             id: "task-test".to_string(),
             parent_id: None,
@@ -1814,8 +2118,11 @@ mod tests {
             local_path: "C:/test.bin".to_string(),
             remote_path: "/tmp/test.bin".to_string(),
             archive: None,
+            archive_ready: AtomicBool::new(false),
+            archive_path: Mutex::new(None),
             status: AtomicU8::new(status),
             control: AtomicU8::new(CTL_NONE),
+            control_tx,
             transferred: AtomicU64::new(0),
             total: AtomicU64::new(10),
             speed: AtomicU64::new(1),
@@ -1877,6 +2184,40 @@ mod tests {
 
         assert_eq!(task.status(), ST_PAUSED);
         assert_eq!(task.control.load(Ordering::SeqCst), CTL_NONE);
+    }
+
+    /// 运行中的任务收到暂停请求时应唤醒正在等待的异步操作。
+    #[tokio::test]
+    async fn pause_notifies_waiting_runner() {
+        let task = Arc::new(task_with_status(ST_RUNNING));
+        let waiting_task = task.clone();
+        let waiter = tokio::spawn(async move {
+            wait_for_task_control(&waiting_task, 0).await;
+        });
+        tokio::task::yield_now().await;
+
+        request_pause(&task);
+
+        assert!(timeout(Duration::from_secs(1), waiter).await.is_ok());
+        assert!(!check_control(&task, 0));
+        assert_eq!(task.status(), ST_PAUSED);
+    }
+
+    /// 打包完成后的暂停只改变任务状态，不应使已完成的远端包失效。
+    #[test]
+    fn pause_after_packing_keeps_archive_ready() {
+        let task = task_with_status(ST_PACKING);
+        task.archive_ready.store(true, Ordering::SeqCst);
+        *task.archive_path.lock().unwrap() = Some("/tmp/archive-test.tar.gz".to_string());
+        task.control.store(CTL_PAUSE, Ordering::SeqCst);
+
+        assert!(!check_control(&task, 0));
+        assert_eq!(task.status(), ST_PAUSED);
+        assert!(task.archive_ready.load(Ordering::SeqCst));
+        assert_eq!(
+            task.archive_path.lock().unwrap().as_deref(),
+            Some("/tmp/archive-test.tar.gz")
+        );
     }
 
     /// 打包阶段达到重试上限时也必须进入失败状态，不能卡在打包中。
