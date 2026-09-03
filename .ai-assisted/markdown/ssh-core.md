@@ -3,7 +3,7 @@
 ## 职责与入口
 
 - `ssh/manager.rs` 的 `SessionManager` 负责建立、查找和释放 SSH 会话，并协调 SFTP、隧道和文件操作取消。
-- `ssh/session.rs` 实现认证、交互式终端与一次性远端命令；命令层入口为 `ssh_connect`、`ssh_disconnect`、`terminal_*`。
+- `ssh/session.rs` 实现认证、交互式终端与 SSH channel 生命周期；`ssh/remote_command.rs` 负责 POSIX 远端命令的进程组隔离和取消协议。命令层入口为 `ssh_connect`、`ssh_disconnect`、`terminal_*`。
 - `ssh/host_keys.rs` 按目标主机与端口持久化服务端主机密钥，并处理首次信任与密钥更新。
 - `ssh/types.rs` 定义连接、代理、隧道和建连结果；前端对应类型位于 `src/types.ts`。
 

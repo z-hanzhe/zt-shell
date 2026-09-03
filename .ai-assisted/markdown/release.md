@@ -2,6 +2,7 @@
 
 ## 入口与产物
 
+- `.github/workflows/ci.yml` 在代码推送和拉取请求时于 Linux 运行 Rust 格式检查、测试与 Clippy；远端进程组取消测试依赖该环境执行。
 - `.github/workflows/release.yml` 在推送标签时执行发布流程。
 - 工作流构建 Windows x64、macOS Intel、macOS Apple Silicon 和 Linux x64 安装包，并创建或更新对应标签的发布草稿。
 - 产物包括 Windows MSI/NSIS、macOS DMG，以及 Linux DEB/RPM/AppImage。

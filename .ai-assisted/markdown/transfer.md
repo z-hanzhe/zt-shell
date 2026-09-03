@@ -2,7 +2,7 @@
 
 ## 职责与入口
 
-- `ssh/transfer.rs` 的 `TransferManager` 负责上传、下载、打包下载和任务控制。
+- `ssh/transfer.rs` 的 `TransferManager` 负责上传、下载、打包下载和任务编排；`ssh/transfer/control.rs` 集中管理任务状态转换，`ssh/transfer/archive.rs` 管理打包参数与已验证归档所有权。
 - Tauri 入口为 `transfer_*` 命令；前端状态入口是 `stores/transfers.ts`，展示与交互入口是 `TransferPanel.vue`。
 - `FileManager.vue` 与终端拖拽上传只负责创建任务，实际传输统一由传输管理器执行。
 

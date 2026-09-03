@@ -11,8 +11,8 @@ use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use super::manager::SessionManager;
+use super::remote_command::shell_quote;
 use super::session::{wait_for_cancellation, OPERATION_CANCELLED_MESSAGE};
-use super::transfer::shell_quote;
 use super::types::FileEntry;
 
 /// 批量删除命令中的单个远端条目

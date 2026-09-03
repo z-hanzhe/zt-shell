@@ -11,11 +11,10 @@ use crate::ssh::host_keys::HostKeyStore;
 use crate::ssh::manager::SessionManager;
 use crate::ssh::monitor::{self, MonitorData};
 use crate::ssh::process::{self, ProcessDetail, ProcessListItem};
+use crate::ssh::remote_command::shell_quote;
 use crate::ssh::session::{wait_for_cancellation, OPERATION_CANCELLED_MESSAGE};
 use crate::ssh::sftp::{self, RemoveEntryArg};
-use crate::ssh::transfer::{
-    self, RemoteItemArg, TransferCreateResult, TransferManager, TransferTaskDto,
-};
+use crate::ssh::transfer::{RemoteItemArg, TransferCreateResult, TransferManager, TransferTaskDto};
 use crate::ssh::types::{ConnectOutcome, ConnectionConfig, FileEntry, HostKeyApproval};
 
 /// 统一将内部错误转为字符串返回给前端
@@ -292,7 +291,7 @@ pub async fn sftp_remove_dir(
     if !map_err(manager.is_sudo(&session_id).await)? {
         let command = format!(
             "rm -rf -- {} && printf __ZTOK__ || printf __ZTFAIL__",
-            transfer::shell_quote(&path)
+            shell_quote(&path)
         );
         let output = map_err(manager.exec(&session_id, &command).await)?;
         if !output.contains("__ZTOK__") {
@@ -493,7 +492,7 @@ pub async fn sftp_check_writable(
     }
     let command = format!(
         "test -w {} && printf __ZTOK__ || printf __ZTNO__",
-        transfer::shell_quote(&path)
+        shell_quote(&path)
     );
     let output = map_err(manager.exec(&session_id, &command).await)?;
     Ok(output.contains("__ZTOK__"))

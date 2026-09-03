@@ -13,10 +13,10 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, watch, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
-use uuid::Uuid;
 
 use super::host_keys::{HostKeyStore, HostKeyVerification};
 use super::proxy::connect_through_proxy;
+use super::remote_command::CancellableCommandPlan;
 use super::tunnel::{forward_remote_tunnel_channel, RemoteTunnelRegistry, RemoteTunnelTarget};
 use super::types::{AuthType, ConnectionConfig, HostKeyApproval, HostKeyChallenge};
 
@@ -333,10 +333,10 @@ impl SshSession {
         tokio::spawn(async move {
             while let Some(msg) = read_half.wait().await {
                 match msg {
-                    ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
-                        if on_data.send(Response::new(data.to_vec())).is_err() {
-                            break;
-                        }
+                    ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. }
+                        if on_data.send(Response::new(data.to_vec())).is_err() =>
+                    {
+                        break;
                     }
                     ChannelMsg::Eof | ChannelMsg::Close => break,
                     _ => {}
@@ -381,13 +381,15 @@ impl SshSession {
         command: &str,
         cancellation: &mut watch::Receiver<bool>,
     ) -> Result<String> {
-        let operation_dir = format!("/tmp/ztshell-operation-{}", Uuid::new_v4());
-        let wrapped_command = build_cancellable_command(command, &operation_dir);
-        let cancel_command = build_remote_cancel_command(&operation_dir);
+        let plan = CancellableCommandPlan::new(command);
         let output = self
-            .exec_command_inner(&wrapped_command, Some(cancellation), Some(&cancel_command))
+            .exec_command_inner(
+                plan.wrapped_command(),
+                Some(cancellation),
+                Some(plan.cancel_command()),
+            )
             .await?;
-        if output.contains("__ZTCONTROLFAIL__") {
+        if plan.is_control_failure(&output) {
             return Err(anyhow!("远端无法建立安全的进程组控制环境"));
         }
         Ok(output)
@@ -583,67 +585,6 @@ impl SshSession {
     }
 }
 
-/// 转义传给远端 POSIX shell 的单个参数。
-fn quote_shell_value(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-/// 将远端命令包装到 SSH 独立进程组，由组长在回收子进程前完成取消。
-fn build_cancellable_command(command: &str, operation_dir: &str) -> String {
-    let cancel_dir = format!("{}/cancel", operation_dir);
-    let done_dir = format!("{}/done", operation_dir);
-    let inner_command = format!(
-        "( {} ); ZT_STATUS=$?; mkdir -m 700 {}; exit \"$ZT_STATUS\"",
-        command,
-        quote_shell_value(&done_dir)
-    );
-    format!(
-        concat!(
-            "umask 077; ZT_OPERATION_DIR={}; ZT_CANCEL_DIR={}; ZT_DONE_DIR={}; ",
-            "ZT_COMMAND={}; ZT_STOP_REQUESTED=0; ",
-            "if ! mkdir -m 700 \"$ZT_OPERATION_DIR\" 2>/dev/null; then ",
-            "printf __ZTCONTROLFAIL__; exit 125; fi; ",
-            "ZT_PGID=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' '); ",
-            "case \"$ZT_PGID\" in ''|*[!0-9]*) ",
-            "rm -rf \"$ZT_OPERATION_DIR\"; printf __ZTCONTROLFAIL__; exit 125;; esac; ",
-            "if [ \"$ZT_PGID\" != \"$$\" ]; then ",
-            "rm -rf \"$ZT_OPERATION_DIR\"; printf __ZTCONTROLFAIL__; exit 125; fi; ",
-            "trap 'ZT_STOP_REQUESTED=1' TERM HUP INT; ",
-            "if [ -d \"$ZT_CANCEL_DIR\" ]; then ",
-            "rm -rf \"$ZT_OPERATION_DIR\"; exit 143; fi; ",
-            "sh -c \"$ZT_COMMAND\" & ZT_PID=$!; ",
-            "while [ ! -d \"$ZT_DONE_DIR\" ]; do ",
-            "if [ \"$ZT_STOP_REQUESTED\" -eq 1 ] || [ -d \"$ZT_CANCEL_DIR\" ]; then ",
-            "trap '' TERM HUP INT; kill -TERM \"-$ZT_PGID\" 2>/dev/null; ",
-            "rm -rf \"$ZT_OPERATION_DIR\"; sleep 0.5; ",
-            "kill -KILL \"-$ZT_PGID\" 2>/dev/null; exit 143; fi; ",
-            "sleep 0.1; done; wait \"$ZT_PID\"; ZT_STATUS=$?; ",
-            "trap - TERM HUP INT; rm -rf \"$ZT_OPERATION_DIR\"; exit \"$ZT_STATUS\""
-        ),
-        quote_shell_value(operation_dir),
-        quote_shell_value(&cancel_dir),
-        quote_shell_value(&done_dir),
-        quote_shell_value(&inner_command)
-    )
-}
-
-/// 构建独立取消命令，只在包装器创建的私有目录中投递原子取消标记。
-fn build_remote_cancel_command(operation_dir: &str) -> String {
-    let cancel_dir = format!("{}/cancel", operation_dir);
-    format!(
-        concat!(
-            "ZT_OPERATION_DIR={}; ZT_CANCEL_DIR={}; ZT_TRY=0; ",
-            "while [ \"$ZT_TRY\" -lt 20 ] && [ ! -d \"$ZT_OPERATION_DIR\" ]; do ",
-            "ZT_TRY=$((ZT_TRY + 1)); sleep 0.1; done; ",
-            "if [ -d \"$ZT_OPERATION_DIR\" ]; then ",
-            "mkdir -m 700 \"$ZT_CANCEL_DIR\" 2>/dev/null || ",
-            "[ -d \"$ZT_CANCEL_DIR\" ]; fi"
-        ),
-        quote_shell_value(operation_dir),
-        quote_shell_value(&cancel_dir)
-    )
-}
-
 /// 接管已超时或取消的通道打开请求，关闭稍后才成功返回的空闲通道。
 fn close_late_exec_channel(
     request_task: JoinHandle<std::result::Result<russh::Channel<client::Msg>, russh::Error>>,
@@ -715,9 +656,8 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command as StdCommand;
-
     use russh::server::{self, Auth};
+    use uuid::Uuid;
 
     use super::*;
 
@@ -765,94 +705,6 @@ e+JpiSq66Z6GIt0801skPh20jxOO3F52SoX1IeO5D5PXfZrfSZlw6S8c7bwyp2FHxDewRx
             remark: None,
             tunnels: Vec::new(),
         }
-    }
-
-    /// 可中断命令必须正确转义原命令，并生成私有目录与原子取消标记。
-    #[test]
-    fn builds_remote_process_group_control_commands() {
-        assert_eq!(quote_shell_value("a'b"), "'a'\\''b'");
-
-        let wrapped = build_cancellable_command("printf '%s' test", "/tmp/ztshell-operation-test");
-        assert!(wrapped.contains("umask 077"));
-        assert!(wrapped.contains("mkdir -m 700 \"$ZT_OPERATION_DIR\""));
-        assert!(wrapped.contains("ZT_PGID=$(ps -o pgid="));
-        assert!(wrapped.contains("[ \"$ZT_PGID\" != \"$$\" ]"));
-        assert!(wrapped.contains("trap 'ZT_STOP_REQUESTED=1'"));
-        assert!(wrapped.contains("kill -KILL \"-$ZT_PGID\""));
-        assert!(wrapped.contains("'/tmp/ztshell-operation-test'"));
-        assert!(wrapped.contains("printf '\\''%s'\\'' test"));
-
-        let cancel = build_remote_cancel_command("/tmp/ztshell-operation-test");
-        assert!(cancel.contains("mkdir -m 700 \"$ZT_CANCEL_DIR\""));
-        assert!(!cancel.contains("kill -"));
-        assert!(!cancel.contains("> \"$ZT_CANCEL_DIR\""));
-
-        for command in [&wrapped, &cancel] {
-            if let Ok(status) = StdCommand::new("sh").args(["-n", "-c", command]).status() {
-                assert!(status.success(), "远端控制命令应符合 POSIX shell 语法");
-            }
-        }
-    }
-
-    /// Linux 上的取消标记应令包装器终止完整子进程组。
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn cancels_wrapped_remote_process_group() {
-        let operation_id = Uuid::new_v4();
-        let operation_dir = format!("/tmp/ztshell-test-operation-{}", operation_id);
-        let process_group_file = format!("/tmp/ztshell-test-pgid-{}", operation_id);
-        let command = format!(
-            "ps -o pgid= -p $$ | tr -d ' ' > {}; sleep 30",
-            quote_shell_value(&process_group_file)
-        );
-        let wrapped = build_cancellable_command(&command, &operation_dir);
-        let cancel = build_remote_cancel_command(&operation_dir);
-        let mut process = tokio::process::Command::new("setsid")
-            .arg("sh")
-            .arg("-c")
-            .arg(wrapped)
-            .spawn()
-            .expect("应能启动可中断测试命令");
-
-        for _ in 0..100 {
-            if tokio::fs::metadata(&process_group_file).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let process_group = tokio::fs::read_to_string(&process_group_file)
-            .await
-            .expect("测试命令应发布进程组")
-            .trim()
-            .to_string();
-        assert!(process_group
-            .chars()
-            .all(|character| character.is_ascii_digit()));
-
-        let cancel_status = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(cancel)
-            .status()
-            .await
-            .expect("应能执行取消命令");
-        assert!(cancel_status.success());
-        timeout(Duration::from_secs(5), process.wait())
-            .await
-            .expect("包装命令应在取消后及时退出")
-            .expect("应能取得包装命令退出状态");
-
-        let process_target = format!("-{}", process_group);
-        let still_running = tokio::process::Command::new("kill")
-            .args(["-0", "--", &process_target])
-            .status()
-            .await
-            .expect("应能检查测试进程状态")
-            .success();
-        assert!(!still_running, "取消后不应遗留远端子进程");
-        assert!(tokio::fs::metadata(&operation_dir).await.is_err());
-
-        let _ = tokio::fs::remove_file(process_group_file).await;
-        let _ = tokio::fs::remove_dir_all(operation_dir).await;
     }
 
     /// 真实 SSH 握手必须先返回确认，精确授权同一公钥后才能完成认证

@@ -5,6 +5,7 @@ pub mod manager;
 pub mod monitor;
 pub mod process;
 pub mod proxy;
+pub(crate) mod remote_command;
 pub mod session;
 pub mod sftp;
 pub mod transfer;
