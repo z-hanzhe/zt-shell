@@ -48,6 +48,12 @@ import {
   EDITOR_SESSION_CLOSED_EVENT,
 } from "../editorProtocol";
 import { genId } from "../utils";
+import {
+  applyUiScale,
+  DEFAULT_UI_SCALE,
+  UI_SCALE_CHANGED_EVENT,
+  type UiScaleChangedPayload,
+} from "../uiScale";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
 import TitleBar from "./TitleBar.vue";
@@ -141,6 +147,7 @@ window.MonacoEnvironment = {
 const FILE_SIZE_CONFIRM_THRESHOLD = 1024 * 1024;
 const search = new URLSearchParams(window.location.search);
 const startupRequestId = search.get("startupRequestId") ?? "";
+const startupUiScale = search.get("uiScale") ?? DEFAULT_UI_SCALE;
 const appWindow = getCurrentWindow();
 
 /** 编辑器挂载容器 */
@@ -187,6 +194,7 @@ let unlistenCommitCloseSession: UnlistenFn | undefined;
 let unlistenCancelCloseSession: UnlistenFn | undefined;
 let unlistenPrepareClose: UnlistenFn | undefined;
 let unlistenReleaseClosePreparation: UnlistenFn | undefined;
+let unlistenUiScale: UnlistenFn | undefined;
 let sessionCloseQueue = Promise.resolve();
 let tabsResizeObserver: ResizeObserver | undefined;
 
@@ -996,7 +1004,28 @@ onMounted(async () => {
   window.addEventListener("pointerdown", handleGlobalPointerDown);
   window.addEventListener("resize", closeTabMenu);
   window.addEventListener("blur", closeTabMenu);
+  try {
+    await applyUiScale(startupUiScale);
+  } catch (error) {
+    console.warn("应用文本编辑器界面缩放失败", error);
+  }
   setupEditor();
+
+  try {
+    unlistenUiScale = await listen<UiScaleChangedPayload>(
+      UI_SCALE_CHANGED_EVENT,
+      (event) => {
+        void applyUiScale(event.payload.scale)
+          .then(() => {
+            closeTabMenu();
+            editor.value?.layout();
+          })
+          .catch((error) => console.warn("同步文本编辑器界面缩放失败", error));
+      }
+    );
+  } catch (error) {
+    console.warn("监听文本编辑器界面缩放失败", error);
+  }
 
   try {
     unlistenOpenDocument = await listen<EditorOpenRequestPayload>(
@@ -1111,6 +1140,7 @@ onBeforeUnmount(() => {
   unlistenCloseSession?.();
   unlistenCommitCloseSession?.();
   unlistenCancelCloseSession?.();
+  unlistenUiScale?.();
   unlistenCloseRequested?.();
   window.removeEventListener("keydown", preventBrowserShortcut, true);
   window.removeEventListener("contextmenu", preventNativeContextMenu);

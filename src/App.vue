@@ -29,8 +29,12 @@ import { useTransfersStore } from "./stores/transfers";
 import { useWorkspacesStore } from "./stores/workspaces";
 import type { ConnectionConfig } from "./types";
 import type { AppSettings } from "./stores/settings";
-import { closeAllTextEditorWindows } from "./editorWindows";
+import {
+  closeAllTextEditorWindows,
+  syncTextEditorUiScale,
+} from "./editorWindows";
 import { isLiveSessionStatus } from "./sessionClose";
+import { applyUiScale } from "./uiScale";
 
 const connectionsStore = useConnectionsStore();
 const proxiesStore = useProxiesStore();
@@ -256,9 +260,37 @@ function onRejectHostKey() {
   sessionsStore.rejectHostKey(session.id);
 }
 
+/** 界面缩放串行队列，避免实时预览的异步调用发生乱序 */
+let uiScaleUpdateQueue: Promise<void> = Promise.resolve();
+
+/** 将界面缩放应用到主窗口并同步当前编辑器窗口 */
+function applyAppUiScale(uiScale: number): Promise<void> {
+  const task = uiScaleUpdateQueue.then(async () => {
+    const appliedScale = await applyUiScale(uiScale);
+    if (isTauri()) await syncTextEditorUiScale(appliedScale);
+  });
+  uiScaleUpdateQueue = task.catch((error) => {
+    console.warn("应用界面缩放失败", error);
+  });
+  return uiScaleUpdateQueue;
+}
+
+/** 实时预览设置弹窗中选择的界面缩放 */
+function onPreviewUiScale(uiScale: number) {
+  void applyAppUiScale(uiScale);
+}
+
+/** 关闭设置弹窗并恢复已保存的界面缩放 */
+function closeSettings() {
+  showSettings.value = false;
+  void applyAppUiScale(settingsStore.settings.uiScale);
+}
+
 /** 保存设置 */
 async function onSaveSettings(settings: AppSettings) {
   await settingsStore.update(settings);
+  await applyAppUiScale(settingsStore.settings.uiScale);
+  showSettings.value = false;
 }
 
 /** 将文件管理器地址栏路径同步到当前终端 */
@@ -337,6 +369,7 @@ function onCancelClose() {
 
 onMounted(async () => {
   attachBrowserGuards();
+  const settingsInitTask = settingsStore.init();
   // 加载本地持久化的连接与设置、初始化传输事件监听（浏览器预览环境下会失败，忽略即可）
   try {
     await Promise.all([
@@ -346,7 +379,7 @@ onMounted(async () => {
         await proxiesStore.init();
         markConnectionDataReady();
       })(),
-      settingsStore.init(),
+      settingsInitTask,
       transfersStore.init(),
     ]);
   } catch (e) {
@@ -354,6 +387,8 @@ onMounted(async () => {
     if (isTauri()) storageError.value = `无法加载本地连接数据：${String(e)}`;
     else markConnectionDataReady();
   }
+  await settingsInitTask.catch(() => undefined);
+  await applyAppUiScale(settingsStore.settings.uiScale);
   // 拦截窗口关闭：存在连接中的会话时先二次确认（非 Tauri 环境忽略）
   try {
     unlistenCloseRequested = await getCurrentWindow().onCloseRequested(async (event) => {
@@ -468,7 +503,8 @@ onBeforeUnmount(() => {
       v-if="showSettings"
       :settings="settingsStore.settings"
       @save="onSaveSettings"
-      @close="showSettings = false"
+      @preview-ui-scale="onPreviewUiScale"
+      @close="closeSettings"
     />
 
     <!-- 关闭软件前确认（存在连接中的会话时） -->

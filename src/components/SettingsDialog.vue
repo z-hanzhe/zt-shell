@@ -4,6 +4,7 @@
  */
 import { reactive, watch } from "vue";
 import type { AppSettings } from "../stores/settings";
+import { UI_SCALE_OPTIONS } from "../uiScale";
 import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 
@@ -14,6 +15,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "save", settings: AppSettings): void;
+  (e: "preview-ui-scale", scale: number): void;
   (e: "close"): void;
 }>();
 
@@ -28,10 +30,14 @@ watch(
   { immediate: true }
 );
 
+watch(
+  () => form.uiScale,
+  (scale) => emit("preview-ui-scale", scale)
+);
+
 /** 保存设置 */
 function submit() {
   emit("save", { ...form });
-  emit("close");
 }
 
 // 组件挂载即为打开状态，ESC 关闭
@@ -49,8 +55,7 @@ const { isTop: isTopModal } = useEscClose(
   >
     <div
       ref="dialogRef"
-      class="modal dialog-draggable"
-      style="width: 420px"
+      class="modal dialog-draggable settings-modal"
       role="dialog"
       :aria-modal="isTopModal ? 'true' : 'false'"
     >
@@ -60,6 +65,17 @@ const { isTop: isTopModal } = useEscClose(
       </div>
       <div class="modal-body">
         <div class="set-grid">
+          <label>界面缩放</label>
+          <select v-model.number="form.uiScale" class="input settings-select">
+            <option
+              v-for="option in UI_SCALE_OPTIONS"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+
           <label>终端字号</label>
           <input class="input" type="number" min="8" max="32" v-model.number="form.fontSize" />
 
@@ -85,6 +101,9 @@ const { isTop: isTopModal } = useEscClose(
 </template>
 
 <style scoped>
+.settings-modal {
+  width: min(420px, calc(100vw - 24px));
+}
 .set-grid {
   display: grid;
   grid-template-columns: 100px 1fr;
@@ -95,11 +114,26 @@ const { isTop: isTopModal } = useEscClose(
   color: var(--text-secondary);
   text-align: right;
 }
+.settings-select {
+  width: 100%;
+  cursor: pointer;
+}
 .switch {
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--text-primary);
   cursor: pointer;
+}
+@media (max-height: 700px) {
+  .modal-body {
+    padding: 8px 14px;
+  }
+  .set-grid {
+    gap: 6px 12px;
+  }
+  .modal-footer {
+    padding: 6px 14px;
+  }
 }
 </style>

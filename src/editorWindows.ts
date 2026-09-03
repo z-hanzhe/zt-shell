@@ -23,6 +23,11 @@ import {
   EDITOR_SESSION_CLOSE_READY_EVENT,
   EDITOR_WINDOW_LABEL,
 } from "./editorProtocol";
+import {
+  getCurrentUiScale,
+  UI_SCALE_CHANGED_EVENT,
+  type UiScaleChangedPayload,
+} from "./uiScale";
 
 export type { TextEditorWindowOptions } from "./editorProtocol";
 
@@ -103,6 +108,12 @@ async function emitToExistingEditor(eventName: string, payload: unknown): Promis
     if (await WebviewWindow.getByLabel(EDITOR_WINDOW_LABEL)) throw error;
     return false;
   }
+}
+
+/** 将界面缩放同步到当前存在的文本编辑器窗口 */
+export async function syncTextEditorUiScale(scale: number): Promise<void> {
+  const payload: UiScaleChangedPayload = { scale };
+  await emitToExistingEditor(UI_SCALE_CHANGED_EVENT, payload);
 }
 
 /**
@@ -212,6 +223,7 @@ async function createEditorWindow(options: TextEditorWindowOptions): Promise<voi
     sessionName: options.sessionName,
     path: options.path,
     size: String(options.size),
+    uiScale: String(getCurrentUiScale()),
   });
   let editorWindow: WebviewWindow | undefined;
 
