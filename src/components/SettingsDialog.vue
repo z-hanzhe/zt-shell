@@ -5,6 +5,10 @@
 import { reactive, watch } from "vue";
 import type { AppSettings } from "../stores/settings";
 import { UI_SCALE_OPTIONS } from "../uiScale";
+import {
+  MAX_EDITOR_FONT_SIZE,
+  MIN_EDITOR_FONT_SIZE,
+} from "../editorProtocol";
 import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 
@@ -79,6 +83,15 @@ const { isTop: isTopModal } = useEscClose(
           <label>终端字号</label>
           <input class="input" type="number" min="8" max="32" v-model.number="form.fontSize" />
 
+          <label>编辑器字号</label>
+          <input
+            v-model.number="form.editorFontSize"
+            class="input"
+            type="number"
+            :min="MIN_EDITOR_FONT_SIZE"
+            :max="MAX_EDITOR_FONT_SIZE"
+          />
+
           <label>字体</label>
           <input class="input" v-model="form.fontFamily" />
 
@@ -130,7 +143,10 @@ const { isTop: isTopModal } = useEscClose(
     padding: 8px 14px;
   }
   .set-grid {
-    gap: 6px 12px;
+    gap: 4px 12px;
+  }
+  .settings-modal .input {
+    height: 24px;
   }
   .modal-footer {
     padding: 6px 14px;

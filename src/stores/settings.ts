@@ -6,6 +6,10 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { DEFAULT_UI_SCALE, normalizeUiScale } from "../uiScale";
+import {
+  DEFAULT_EDITOR_FONT_SIZE,
+  normalizeEditorFontSize,
+} from "../editorProtocol";
 
 /** 应用设置项 */
 export interface AppSettings {
@@ -13,6 +17,8 @@ export interface AppSettings {
   uiScale: number;
   /** 终端字号 */
   fontSize: number;
+  /** 文本编辑器基础字号 */
+  editorFontSize: number;
   /** 终端字体 */
   fontFamily: string;
   /** 光标闪烁 */
@@ -26,6 +32,7 @@ function defaults(): AppSettings {
   return {
     uiScale: DEFAULT_UI_SCALE,
     fontSize: 14,
+    editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
     fontFamily: '"Consolas", "Cascadia Mono", "Courier New", monospace',
     cursorBlink: true,
     monitorInterval: 3,
@@ -47,13 +54,21 @@ export const useSettingsStore = defineStore("settings", () => {
     const saved = await store.get<AppSettings>(STORE_KEY);
     if (saved) {
       const merged = { ...defaults(), ...saved };
-      settings.value = { ...merged, uiScale: normalizeUiScale(merged.uiScale) };
+      settings.value = {
+        ...merged,
+        uiScale: normalizeUiScale(merged.uiScale),
+        editorFontSize: normalizeEditorFontSize(merged.editorFontSize),
+      };
     }
   }
 
   /** 更新并持久化设置 */
   async function update(next: AppSettings) {
-    const normalized = { ...next, uiScale: normalizeUiScale(next.uiScale) };
+    const normalized = {
+      ...next,
+      uiScale: normalizeUiScale(next.uiScale),
+      editorFontSize: normalizeEditorFontSize(next.editorFontSize),
+    };
     settings.value = normalized;
     if (store) {
       await store.set(STORE_KEY, normalized);

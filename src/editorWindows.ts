@@ -11,10 +11,12 @@ import type {
   TextEditorWindowOptions,
 } from "./editorProtocol";
 import {
+  DEFAULT_EDITOR_FONT_SIZE,
   EDITOR_CANCEL_CLOSE_SESSION_EVENT,
   EDITOR_CLOSE_SESSION_EVENT,
   EDITOR_CLOSE_PREPARED_EVENT,
   EDITOR_COMMIT_CLOSE_SESSION_EVENT,
+  EDITOR_FONT_SIZE_CHANGED_EVENT,
   EDITOR_OPENED_EVENT,
   EDITOR_OPEN_EVENT,
   EDITOR_PREPARE_CLOSE_EVENT,
@@ -22,6 +24,8 @@ import {
   EDITOR_RELEASE_CLOSE_PREPARATION_EVENT,
   EDITOR_SESSION_CLOSE_READY_EVENT,
   EDITOR_WINDOW_LABEL,
+  normalizeEditorFontSize,
+  type EditorFontSizeChangedPayload,
 } from "./editorProtocol";
 import {
   getCurrentUiScale,
@@ -35,6 +39,7 @@ const EDITOR_WINDOW_PREFIX = "editor-";
 const EDITOR_RESPONSE_TIMEOUT = 8000;
 let editorOperationQueue = Promise.resolve();
 let requestSequence = 0;
+let currentEditorFontSize = DEFAULT_EDITOR_FONT_SIZE;
 /** 主窗口内已进入关闭准备的会话引用计数 */
 const closePreparationCounts = new Map<string, number>();
 
@@ -114,6 +119,13 @@ async function emitToExistingEditor(eventName: string, payload: unknown): Promis
 export async function syncTextEditorUiScale(scale: number): Promise<void> {
   const payload: UiScaleChangedPayload = { scale };
   await emitToExistingEditor(UI_SCALE_CHANGED_EVENT, payload);
+}
+
+/** 记录编辑器基础字号，并同步到当前存在的文本编辑器窗口 */
+export async function syncTextEditorFontSize(fontSize: number): Promise<void> {
+  currentEditorFontSize = normalizeEditorFontSize(fontSize);
+  const payload: EditorFontSizeChangedPayload = { fontSize: currentEditorFontSize };
+  await emitToExistingEditor(EDITOR_FONT_SIZE_CHANGED_EVENT, payload);
 }
 
 /**
@@ -224,6 +236,7 @@ async function createEditorWindow(options: TextEditorWindowOptions): Promise<voi
     path: options.path,
     size: String(options.size),
     uiScale: String(getCurrentUiScale()),
+    editorFontSize: String(currentEditorFontSize),
   });
   let editorWindow: WebviewWindow | undefined;
 

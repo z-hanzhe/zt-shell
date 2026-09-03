@@ -1,3 +1,26 @@
+/** 文本编辑器默认字号 */
+export const DEFAULT_EDITOR_FONT_SIZE = 13;
+/** 文本编辑器设置允许的最小字号 */
+export const MIN_EDITOR_FONT_SIZE = 8;
+/** 文本编辑器设置允许的最大字号 */
+export const MAX_EDITOR_FONT_SIZE = 32;
+
+/** 将外部输入规范为文本编辑器支持的整数字号 */
+export function normalizeEditorFontSize(value: unknown): number {
+  if (
+    typeof value !== "number" &&
+    (typeof value !== "string" || value.trim() === "")
+  ) {
+    return DEFAULT_EDITOR_FONT_SIZE;
+  }
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return DEFAULT_EDITOR_FONT_SIZE;
+  return Math.min(
+    Math.max(Math.round(parsed), MIN_EDITOR_FONT_SIZE),
+    MAX_EDITOR_FONT_SIZE
+  );
+}
+
 /** 文本编辑文档打开参数 */
 export interface TextEditorWindowOptions {
   /** 会话标识 */
@@ -66,6 +89,12 @@ export interface EditorSavedPayload {
   path: string;
 }
 
+/** 编辑器字号变更事件载荷 */
+export interface EditorFontSizeChangedPayload {
+  /** 设置中持久化的编辑器基础字号 */
+  fontSize: number;
+}
+
 /** 单例编辑器工作区窗口标签 */
 export const EDITOR_WINDOW_LABEL = "editor-workspace";
 /** 编辑器工作区就绪事件 */
@@ -92,3 +121,5 @@ export const EDITOR_CLOSE_PREPARED_EVENT = "editor://close-prepared";
 export const EDITOR_RELEASE_CLOSE_PREPARATION_EVENT = "editor://release-close-preparation";
 /** 文档保存完成事件 */
 export const EDITOR_SAVED_EVENT = "editor://saved";
+/** 编辑器基础字号变更事件 */
+export const EDITOR_FONT_SIZE_CHANGED_EVENT = "editor://font-size-changed";

@@ -31,6 +31,7 @@ import type { ConnectionConfig } from "./types";
 import type { AppSettings } from "./stores/settings";
 import {
   closeAllTextEditorWindows,
+  syncTextEditorFontSize,
   syncTextEditorUiScale,
 } from "./editorWindows";
 import { isLiveSessionStatus } from "./sessionClose";
@@ -286,9 +287,20 @@ function closeSettings() {
   void applyAppUiScale(settingsStore.settings.uiScale);
 }
 
+/** 应用编辑器基础字号并同步当前独立编辑器窗口 */
+async function applyTextEditorFontSize(fontSize: number): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await syncTextEditorFontSize(fontSize);
+  } catch (error) {
+    console.warn("应用文本编辑器字号失败", error);
+  }
+}
+
 /** 保存设置 */
 async function onSaveSettings(settings: AppSettings) {
   await settingsStore.update(settings);
+  await applyTextEditorFontSize(settingsStore.settings.editorFontSize);
   await applyAppUiScale(settingsStore.settings.uiScale);
   showSettings.value = false;
 }
@@ -388,6 +400,7 @@ onMounted(async () => {
     else markConnectionDataReady();
   }
   await settingsInitTask.catch(() => undefined);
+  await applyTextEditorFontSize(settingsStore.settings.editorFontSize);
   await applyAppUiScale(settingsStore.settings.uiScale);
   // 拦截窗口关闭：存在连接中的会话时先二次确认（非 Tauri 环境忽略）
   try {

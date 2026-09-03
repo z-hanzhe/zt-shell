@@ -27,6 +27,7 @@ import { hasOpenModal } from "../composables/useEscClose";
 import type {
   EditorCloseSessionRequestPayload,
   EditorClosePreparedPayload,
+  EditorFontSizeChangedPayload,
   EditorOpenRequestPayload,
   EditorPrepareCloseRequestPayload,
   EditorReleaseClosePreparationPayload,
@@ -34,10 +35,12 @@ import type {
   TextEditorWindowOptions,
 } from "../editorProtocol";
 import {
+  DEFAULT_EDITOR_FONT_SIZE,
   EDITOR_CANCEL_CLOSE_SESSION_EVENT,
   EDITOR_CLOSE_SESSION_EVENT,
   EDITOR_CLOSE_PREPARED_EVENT,
   EDITOR_COMMIT_CLOSE_SESSION_EVENT,
+  EDITOR_FONT_SIZE_CHANGED_EVENT,
   EDITOR_OPENED_EVENT,
   EDITOR_OPEN_EVENT,
   EDITOR_PREPARE_CLOSE_EVENT,
@@ -46,6 +49,7 @@ import {
   EDITOR_SAVED_EVENT,
   EDITOR_SESSION_CLOSE_READY_EVENT,
   EDITOR_SESSION_CLOSED_EVENT,
+  normalizeEditorFontSize,
 } from "../editorProtocol";
 import { genId } from "../utils";
 import {
@@ -148,6 +152,9 @@ const FILE_SIZE_CONFIRM_THRESHOLD = 1024 * 1024;
 const search = new URLSearchParams(window.location.search);
 const startupRequestId = search.get("startupRequestId") ?? "";
 const startupUiScale = search.get("uiScale") ?? DEFAULT_UI_SCALE;
+let configuredEditorFontSize = normalizeEditorFontSize(
+  search.get("editorFontSize") ?? DEFAULT_EDITOR_FONT_SIZE
+);
 const appWindow = getCurrentWindow();
 
 /** 编辑器挂载容器 */
@@ -195,6 +202,7 @@ let unlistenCancelCloseSession: UnlistenFn | undefined;
 let unlistenPrepareClose: UnlistenFn | undefined;
 let unlistenReleaseClosePreparation: UnlistenFn | undefined;
 let unlistenUiScale: UnlistenFn | undefined;
+let unlistenEditorFontSize: UnlistenFn | undefined;
 let sessionCloseQueue = Promise.resolve();
 let tabsResizeObserver: ResizeObserver | undefined;
 
@@ -312,18 +320,28 @@ function initialDocumentOptions(): TextEditorWindowOptions | undefined {
 function setupEditor(): void {
   if (!editorContainer.value) return;
   editor.value?.dispose();
+  monaco.editor.EditorZoom.setZoomLevel(0);
   editor.value = monaco.editor.create(editorContainer.value, {
     model: null,
     theme: "vs-dark",
     automaticLayout: true,
     minimap: { enabled: true },
     fontFamily: 'Consolas, "Cascadia Mono", monospace',
-    fontSize: 13,
+    fontSize: configuredEditorFontSize,
+    mouseWheelZoom: true,
     tabSize: 2,
     scrollBeyondLastLine: false,
     wordWrap: "off",
     readOnly: true,
   });
+}
+
+/** 应用设置中的基础字号，并清除当前窗口内的临时滚轮缩放 */
+function applyConfiguredEditorFontSize(value: unknown): void {
+  configuredEditorFontSize = normalizeEditorFontSize(value);
+  monaco.editor.EditorZoom.setZoomLevel(0);
+  editor.value?.updateOptions({ fontSize: configuredEditorFontSize });
+  editor.value?.layout();
 }
 
 /** 保存当前标签的光标和滚动位置 */
@@ -1028,6 +1046,15 @@ onMounted(async () => {
   }
 
   try {
+    unlistenEditorFontSize = await listen<EditorFontSizeChangedPayload>(
+      EDITOR_FONT_SIZE_CHANGED_EVENT,
+      (event) => applyConfiguredEditorFontSize(event.payload.fontSize)
+    );
+  } catch (error) {
+    console.warn("监听文本编辑器字号失败", error);
+  }
+
+  try {
     unlistenOpenDocument = await listen<EditorOpenRequestPayload>(
       EDITOR_OPEN_EVENT,
       async (event) => {
@@ -1141,6 +1168,7 @@ onBeforeUnmount(() => {
   unlistenCommitCloseSession?.();
   unlistenCancelCloseSession?.();
   unlistenUiScale?.();
+  unlistenEditorFontSize?.();
   unlistenCloseRequested?.();
   window.removeEventListener("keydown", preventBrowserShortcut, true);
   window.removeEventListener("contextmenu", preventNativeContextMenu);
