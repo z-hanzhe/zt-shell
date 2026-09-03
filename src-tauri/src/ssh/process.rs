@@ -208,7 +208,7 @@ fn decode_hex(value: &str) -> Result<Vec<u8>> {
         return Err(anyhow!("远端进程详情编码长度无效"));
     }
     let mut bytes = Vec::with_capacity(value.len() / 2);
-    for pair in value.as_bytes().chunks_exact(2) {
+    for pair in value.as_bytes().as_chunks::<2>().0 {
         let pair = std::str::from_utf8(pair).map_err(|_| anyhow!("远端进程详情编码无效"))?;
         bytes.push(u8::from_str_radix(pair, 16).map_err(|_| anyhow!("远端进程详情编码无效"))?);
     }

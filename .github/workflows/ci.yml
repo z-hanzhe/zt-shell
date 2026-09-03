@@ -2,6 +2,8 @@ name: 代码质量检查
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
 
 permissions:
