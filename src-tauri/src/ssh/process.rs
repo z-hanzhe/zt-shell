@@ -1,6 +1,6 @@
 //! 远端 Linux 进程列表、详情与操作
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -13,6 +13,10 @@ use super::manager::SessionManager;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
 /// 进程列表脚本执行失败标记
 const LIST_ERROR_MARKER: &str = "__ZT_PROCESS_LIST_ERROR__";
+/// 进程列表脚本采集器元数据前缀
+const LIST_META_PREFIX: &str = "__ZT_PROCESS_META__";
+/// 进程列表脚本可执行路径区块标记
+const LIST_EXE_MARKER: &str = "__ZT_PROCESS_EXE__";
 /// 进程列表脚本完整结束标记
 const LIST_DONE_MARKER: &str = "__ZT_PROCESS_LIST_DONE__";
 /// 进程详情查询时目标已失效的标记
@@ -29,30 +33,91 @@ const TERMINATE_DENIED_MARKER: &str = "__ZT_PROCESS_TERMINATE_DENIED__";
 /// 查询完整进程列表的远端脚本
 const PROCESS_LIST_SCRIPT: &str = r#"
 LC_ALL=C; export LC_ALL
+: __ZT_PROCESS_COLLECTOR__
+printf 'ztshell-proc' > /proc/self/comm 2>/dev/null || true
+collector_pid=$$
+printf '__ZT_PROCESS_META__\037%s\n' "$collector_pid"
 # procps-ng 4.x 不支持 --delimiter，命令行必须放在最后一列以保留其中的空格。
 raw="$(ps -ww -e --sort=-pcpu \
-  -o pid= -o user:64= -o rss= -o pcpu= -o args= 2>/dev/null)" || {
+  -o pid= -o ppid= -o user= -o rss= -o pcpu= -o args= 2>/dev/null)" || {
   printf '__ZT_PROCESS_LIST_ERROR__\n'
   exit
 }
 
 printf '%s\n' "$raw" |
-while read -r pid user rss cpu command; do
-  [ -n "$pid" ] || continue
+awk '
+function next_field(value) {
+  sub(/^[[:space:]]*/, "", remaining)
+  value = remaining
+  sub(/[[:space:]].*$/, "", value)
+  sub(/^[^[:space:]]+/, "", remaining)
+  return value
+}
+{
+  remaining = $0
+  pid = next_field()
+  ppid = next_field()
+  user = next_field()
+  rss = next_field()
+  cpu = next_field()
+  sub(/^[[:space:]]*/, "", remaining)
+  command = remaining
 
-  start_time=0
-  if IFS= read -r stat_line 2>/dev/null < "/proc/$pid/stat"; then
-    stat_rest=${stat_line##*) }
-    set -- $stat_rest
-    start_time=${20:-0}
-  fi
-  name=""
-  IFS= read -r name 2>/dev/null < "/proc/$pid/comm" || true
-  executable="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+  start_time = 0
+  stat_path = "/proc/" pid "/stat"
+  if ((getline stat_line < stat_path) > 0) {
+    sub(/^.*\) /, "", stat_line)
+    split(stat_line, stat_fields, /[[:space:]]+/)
+    start_time = stat_fields[20]
+  }
+  close(stat_path)
 
-  printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
-    "$pid" "$user" "$rss" "$cpu" "$start_time" "$name" "$executable" "$command"
-done
+  name = ""
+  comm_path = "/proc/" pid "/comm"
+  if ((getline name < comm_path) <= 0) name = ""
+  close(comm_path)
+
+  printf "%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n", \
+    pid, ppid, user, rss, cpu, start_time, name, command
+}' || {
+  printf '__ZT_PROCESS_LIST_ERROR__\n'
+  exit
+}
+
+printf '__ZT_PROCESS_EXE__\n'
+if find /proc/self/exe -maxdepth 0 -printf '' >/dev/null 2>&1; then
+  find /proc -mindepth 2 -maxdepth 2 -path '/proc/[0-9]*/exe' \
+    -printf '%h\037%l\n' 2>/dev/null |
+  awk -F '\037' '
+  {
+    process_path = $1
+    executable = substr($0, length(process_path) + 2)
+    pid = process_path
+    sub(/^\/proc\//, "", pid)
+
+    start_time = 0
+    stat_path = "/proc/" pid "/stat"
+    if ((getline stat_line < stat_path) > 0) {
+      sub(/^.*\) /, "", stat_line)
+      split(stat_line, stat_fields, /[[:space:]]+/)
+      start_time = stat_fields[20]
+    }
+    close(stat_path)
+    printf "%s\037%s\037%s\n", pid, start_time, executable
+  }' || true
+else
+  for proc_dir in /proc/[0-9]*; do
+    pid=${proc_dir#/proc/}
+    start_time=0
+    if IFS= read -r stat_line 2>/dev/null < "$proc_dir/stat"; then
+      stat_rest=${stat_line##*) }
+      set -- $stat_rest
+      start_time=${20:-0}
+    fi
+    executable="$(readlink "$proc_dir/exe" 2>/dev/null || true)"
+    printf '%s\037%s\037%s\n' "$pid" "$start_time" "$executable"
+  done
+fi
 printf '__ZT_PROCESS_LIST_DONE__\n'
 "#;
 
@@ -163,6 +228,54 @@ pub struct ProcessDetail {
     pub environment: Vec<ProcessEnvironmentVariable>,
 }
 
+/// 进程列表解析阶段使用的原始条目
+struct RawProcessListItem {
+    pid: u32,
+    ppid: u32,
+    user: String,
+    mem_bytes: u64,
+    cpu: f64,
+    start_time: u64,
+    name: String,
+    command: String,
+}
+
+/// 判断进程名称与命令行是否共同匹配 ZTShell 采集器标记
+fn is_collector_process(name: &str, command: &str) -> bool {
+    match name {
+        "ztshell-mon" => command.contains("__ZT_MONITOR_COLLECTOR__"),
+        "ztshell-proc" => command.contains("__ZT_PROCESS_COLLECTOR__"),
+        _ => false,
+    }
+}
+
+/// 找出 ZTShell 采集器进程及其全部子进程
+pub(crate) fn collector_process_ids(
+    processes: impl IntoIterator<Item = (u32, u32, bool)>,
+    explicit_roots: impl IntoIterator<Item = u32>,
+) -> HashSet<u32> {
+    let rows: Vec<(u32, u32, bool)> = processes.into_iter().collect();
+    let mut excluded: HashSet<u32> = explicit_roots.into_iter().filter(|pid| *pid > 1).collect();
+    for (pid, _, is_collector) in &rows {
+        if *is_collector {
+            excluded.insert(*pid);
+        }
+    }
+
+    loop {
+        let mut changed = false;
+        for (pid, ppid, _) in &rows {
+            if excluded.contains(ppid) && excluded.insert(*pid) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    excluded
+}
+
 /// 将列表脚本输出解析为结构化进程条目
 fn parse_process_list(raw: &str) -> Result<Vec<ProcessListItem>> {
     if raw.lines().any(|line| line.trim() == LIST_ERROR_MARKER) {
@@ -172,11 +285,42 @@ fn parse_process_list(raw: &str) -> Result<Vec<ProcessListItem>> {
         return Err(anyhow!("远端进程列表返回不完整"));
     }
 
-    let mut processes = Vec::new();
+    let mut raw_processes = Vec::new();
+    let mut executables: HashMap<(u32, u64), String> = HashMap::new();
+    let mut collector_roots = Vec::new();
+    let mut reading_executables = false;
     for line in raw.lines() {
-        if line.trim() == LIST_DONE_MARKER {
+        let trimmed = line.trim();
+        if trimmed == LIST_DONE_MARKER {
             break;
         }
+        if trimmed == LIST_EXE_MARKER {
+            reading_executables = true;
+            continue;
+        }
+        if let Some(meta) = line.strip_prefix(LIST_META_PREFIX) {
+            collector_roots.extend(
+                meta.split('\u{1f}')
+                    .filter_map(|value| value.trim().parse::<u32>().ok())
+                    .take(1),
+            );
+            continue;
+        }
+        if reading_executables {
+            let fields: Vec<&str> = line.splitn(3, '\u{1f}').collect();
+            if fields.len() != 3 {
+                continue;
+            }
+            let pid = fields[0].trim().trim_start_matches("/proc/").parse::<u32>();
+            let start_time = fields[1].trim().parse::<u64>();
+            if let (Ok(pid), Ok(start_time)) = (pid, start_time) {
+                if start_time > 0 {
+                    executables.insert((pid, start_time), fields[2].to_string());
+                }
+            }
+            continue;
+        }
+
         let fields: Vec<&str> = line.splitn(8, '\u{1f}').collect();
         if fields.len() != 8 {
             continue;
@@ -187,18 +331,44 @@ fn parse_process_list(raw: &str) -> Result<Vec<ProcessListItem>> {
         if pid == 0 {
             continue;
         }
-        processes.push(ProcessListItem {
+        raw_processes.push(RawProcessListItem {
             pid,
-            user: fields[1].trim().to_string(),
-            mem_bytes: fields[2].trim().parse::<u64>().unwrap_or(0) * 1024,
-            cpu: fields[3].trim().parse::<f64>().unwrap_or(0.0),
-            start_time: fields[4].trim().parse::<u64>().unwrap_or(0),
-            name: fields[5].trim().to_string(),
-            executable: fields[6].trim().to_string(),
+            ppid: fields[1].trim().parse::<u32>().unwrap_or(0),
+            user: fields[2].trim().to_string(),
+            mem_bytes: fields[3].trim().parse::<u64>().unwrap_or(0) * 1024,
+            cpu: fields[4].trim().parse::<f64>().unwrap_or(0.0),
+            start_time: fields[5].trim().parse::<u64>().unwrap_or(0),
+            name: fields[6].trim().to_string(),
             command: fields[7].trim().to_string(),
         });
     }
-    Ok(processes)
+
+    let excluded = collector_process_ids(
+        raw_processes.iter().map(|process| {
+            (
+                process.pid,
+                process.ppid,
+                is_collector_process(&process.name, &process.command),
+            )
+        }),
+        collector_roots,
+    );
+    Ok(raw_processes
+        .into_iter()
+        .filter(|process| !excluded.contains(&process.pid))
+        .map(|process| ProcessListItem {
+            pid: process.pid,
+            user: process.user,
+            mem_bytes: process.mem_bytes,
+            cpu: process.cpu,
+            start_time: process.start_time,
+            name: process.name,
+            executable: executables
+                .remove(&(process.pid, process.start_time))
+                .unwrap_or_default(),
+            command: process.command,
+        })
+        .collect())
 }
 
 /// 将十六进制文本还原为原始字节
@@ -353,11 +523,11 @@ mod tests {
         output
     }
 
-    /// 列表解析应保留完整命令行并将 RSS 从 KiB 转为字节
+    /// 列表解析应保留完整命令行、批量路径结果并将 RSS 从 KiB 转为字节
     #[test]
     fn parses_complete_process_list() {
         let raw = format!(
-            " 42\x1falice\x1f 2048\x1f12.5\x1f9876\x1fpython\x1f/usr/bin/python3\x1fpython main.py\x1f--flag\n{LIST_DONE_MARKER}\n"
+            "{LIST_META_PREFIX}\x1f900\n 42\x1f1\x1falice\x1f 2048\x1f12.5\x1f9876\x1fpython\x1fpython main.py\x1f--flag\n{LIST_EXE_MARKER}\n/proc/42\x1f9876\x1f/usr/bin/python3\n{LIST_DONE_MARKER}\n"
         );
 
         let processes = parse_process_list(&raw).unwrap();
@@ -371,6 +541,52 @@ mod tests {
         assert_eq!(processes[0].name, "python");
         assert_eq!(processes[0].executable, "/usr/bin/python3");
         assert_eq!(processes[0].command, "python main.py\x1f--flag");
+    }
+
+    /// 列表解析应递归排除当前及并发运行的 ZTShell 采集器进程树
+    #[test]
+    fn filters_collector_process_trees() {
+        let raw = format!(
+            "{LIST_META_PREFIX}\x1f100\n\
+             101\x1f100\x1froot\x1f10\x1f80\x1f1\x1fps\x1fps -e\n\
+             100\x1f99\x1froot\x1f20\x1f40\x1f2\x1fztshell-proc\x1fsh -c : __ZT_PROCESS_COLLECTOR__\n\
+             201\x1f200\x1froot\x1f10\x1f60\x1f3\x1fawk\x1fawk collector\n\
+             200\x1f1\x1froot\x1f20\x1f30\x1f4\x1fztshell-mon\x1fsh -c : __ZT_MONITOR_COLLECTOR__\n\
+             300\x1f1\x1falice\x1f30\x1f5\x1f5\x1fps\x1fps legitimate-job\n\
+             400\x1f1\x1falice\x1f30\x1f4\x1f6\x1fztshell-mon\x1f/usr/bin/ztshell-mon --serve\n\
+             401\x1f400\x1falice\x1f30\x1f3\x1f7\x1fworker\x1fworker --serve\n\
+             {LIST_EXE_MARKER}\n/proc/300\x1f5\x1f/usr/bin/ps\n{LIST_DONE_MARKER}\n"
+        );
+
+        let processes = parse_process_list(&raw).unwrap();
+
+        assert_eq!(processes.len(), 3);
+        assert_eq!(processes[0].pid, 300);
+        assert_eq!(processes[0].executable, "/usr/bin/ps");
+        assert_eq!(processes[1].pid, 400);
+        assert_eq!(processes[2].pid, 401);
+    }
+
+    /// 可执行路径的启动时钟不匹配时不得拼接到旧 PID 快照
+    #[test]
+    fn rejects_executable_from_reused_pid() {
+        let raw = format!(
+            "42\x1f1\x1falice\x1f2048\x1f12.5\x1f9876\x1fpython\x1fpython old.py\n\
+             {LIST_EXE_MARKER}\n/proc/42\x1f9877\x1f/usr/bin/new-process\n{LIST_DONE_MARKER}\n"
+        );
+
+        let processes = parse_process_list(&raw).unwrap();
+
+        assert_eq!(processes.len(), 1);
+        assert!(processes[0].executable.is_empty());
+    }
+
+    /// PID 1 不得成为过滤根，避免异常执行环境隐藏全部系统进程
+    #[test]
+    fn never_filters_from_init_process() {
+        let excluded = collector_process_ids([(2, 1, false)], [1]);
+
+        assert!(excluded.is_empty());
     }
 
     /// 列表解析应跳过竞态期间产生的不完整行
@@ -389,6 +605,8 @@ mod tests {
             .filter(|line| !line.trim_start().starts_with('#'))
             .all(|line| !line.contains("--delimiter")));
         assert!(PROCESS_LIST_SCRIPT.contains("-o args="));
+        assert!(PROCESS_LIST_SCRIPT.contains("find /proc -mindepth 2"));
+        assert!(PROCESS_LIST_SCRIPT.contains("__ZT_PROCESS_COLLECTOR__"));
     }
 
     /// 缺少结束标记时应拒绝使用不完整列表

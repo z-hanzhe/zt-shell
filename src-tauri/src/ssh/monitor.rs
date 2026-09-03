@@ -1,7 +1,7 @@
 //! 远程系统监控数据采集与解析
 //!
-//! 通过一条自包含的远程命令读取 /proc 与 df/ps 输出（对 CPU 与网卡各采样两次），
-//! 在 Rust 侧解析为结构化监控数据，避免维护服务端状态
+//! 通过一条自包含的远程命令读取 `/proc` 与少量 `df`/`ps` 输出，
+//! 在 Rust 侧按相邻采样计算 CPU 与网卡速率，避免远端驻留服务与采样等待
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -11,42 +11,151 @@ use serde::Serialize;
 use tokio::time::timeout;
 
 use super::manager::SessionManager;
+use super::process::collector_process_ids;
 
 /// 单次监控采集允许的最长时间
 const MONITOR_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// 采集监控数据的远程命令。两次采样间隔 0.5 秒用于计算 CPU 与网卡速率
-const MONITOR_SCRIPT: &str = r#"
+/// 采集监控数据的远程命令。高频数据只取一次累计值，由 Rust 按相邻轮次计算速率
+const MONITOR_SCRIPT: &str = r####"
 LC_ALL=C; export LC_ALL
-echo '###HOST###'; hostname 2>/dev/null
-echo '###OS###'; (grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
-echo '###KERNELNAME###'; uname -s 2>/dev/null
-echo '###KERNEL###'; uname -r 2>/dev/null
-echo '###ARCH###'; uname -m 2>/dev/null
-echo '###UPTIME###'; cat /proc/uptime 2>/dev/null
-echo '###CPUCOUNT###'; (getconf _NPROCESSORS_ONLN 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null)
-echo '###CPUINFO###'; awk -F: '
+: __ZT_MONITOR_COLLECTOR__
+printf 'ztshell-mon' > /proc/self/comm 2>/dev/null || true
+printf '###MONITOR_META###\n%s\n' "$$"
+awk -F: '
+function print_file(path, line) {
+  while ((getline line < path) > 0) print line
+  close(path)
+}
+function print_first(path, line) {
+  if ((getline line < path) > 0) print line
+  close(path)
+}
+function count_cpu_range(spec, ranges, parts, count, range_count, part_count, idx) {
+  count = 0
+  range_count = split(spec, ranges, ",")
+  for (idx = 1; idx <= range_count; idx++) {
+    part_count = split(ranges[idx], parts, "-")
+    if (part_count == 2) count += parts[2] - parts[1] + 1
+    else if (parts[1] != "") count++
+  }
+  return count
+}
+BEGIN {
+  print "###HOST###"
+  print_first("/proc/sys/kernel/hostname")
+
+  print "###OS###"
+  while ((getline line < "/etc/os-release") > 0) {
+    if (line ~ /^PRETTY_NAME=/) {
+      sub(/^PRETTY_NAME=/, "", line)
+      if (line ~ /^\".*\"$/) {
+        sub(/^\"/, "", line)
+        sub(/\"$/, "", line)
+      }
+      print line
+      break
+    }
+  }
+  close("/etc/os-release")
+
+  print "###KERNELNAME###"
+  print_first("/proc/sys/kernel/ostype")
+  print "###KERNEL###"
+  print_first("/proc/sys/kernel/osrelease")
+  print "###UPTIME###"
+  uptime_ok = (getline uptime_line < "/proc/uptime") > 0
+  if (uptime_ok) print uptime_line
+  close("/proc/uptime")
+
+  cpu_count = 0
+  cpu_info_count = 0
+  while ((getline cpu_line < "/proc/cpuinfo") > 0) {
+    split(cpu_line, pair, ":")
+    key = tolower(pair[1])
+    gsub(/^[ \t]+|[ \t]+$/, "", key)
+    value = pair[2]
+    if (key == "processor" && value !~ /[[:alpha:]]/) {
+      cpu_count++
+      continue
+    }
+    if ((key == "model name" || key == "hardware" || key == "model" || key == "processor" ||
+         key == "cpu mhz" || key == "clock" || key == "cache size" || key == "bogomips") &&
+        !seen[key]++) {
+      cpu_info[++cpu_info_count] = cpu_line
+    }
+  }
+  close("/proc/cpuinfo")
+  if (cpu_count == 0 && (getline online < "/sys/devices/system/cpu/online") > 0) {
+    cpu_count = count_cpu_range(online)
+  }
+  close("/sys/devices/system/cpu/online")
+  print "###CPUCOUNT###"
+  print cpu_count
+  print "###CPUINFO###"
+  for (idx = 1; idx <= cpu_info_count; idx++) print cpu_info[idx]
+
+  print "###LOADAVG###"
+  print_first("/proc/loadavg")
+  print "###MEM###"
+  print_file("/proc/meminfo")
+  print "###STAT###"
+  stat_ok = (getline stat_line < "/proc/stat") > 0
+  if (stat_ok) print stat_line
+  close("/proc/stat")
+  print "###NET###"
+  net_line_count = 0
+  while ((getline net_line < "/proc/net/dev") > 0) {
+    print net_line
+    net_line_count++
+  }
+  close("/proc/net/dev")
+  print "###NETTIME###"
+  print uptime_line
+  if (!uptime_ok || !stat_ok || net_line_count == 0) exit 1
+}' </dev/null 2>/dev/null || {
+  printf '###ERROR###\n'
+  exit 1
+}
+printf '###ARCH###\n'; uname -m 2>/dev/null
+printf '###PHYS###\n'
+for path in /sys/class/net/*; do
+  [ -e "$path/device" ] && printf '%s\n' "${path##*/}"
+done 2>/dev/null
+printf '###DISK###\n'; df -kP 2>/dev/null
+printf '###PROC###\n'
+ps -ww -e --sort=-pcpu \
+  -o pid= -o ppid= -o pcpu= -o pmem= -o rss= -o args= 2>/dev/null |
+awk '
+function next_field(value) {
+  sub(/^[[:space:]]*/, "", remaining)
+  value = remaining
+  sub(/[[:space:]].*$/, "", value)
+  sub(/^[^[:space:]]+/, "", remaining)
+  return value
+}
+NR > 64 { exit }
 {
-  key=tolower($1); gsub(/^[ \t]+|[ \t]+$/, "", key)
-  value=$2
-  if (key == "processor" && value !~ /[[:alpha:]]/) next
-  if ((key == "model name" || key == "hardware" || key == "model" || key == "processor" ||
-       key == "cpu mhz" || key == "clock" || key == "cache size" || key == "bogomips") && !seen[key]++) print
-}' /proc/cpuinfo 2>/dev/null
-echo '###LOADAVG###'; cat /proc/loadavg 2>/dev/null
-echo '###MEM###'; cat /proc/meminfo 2>/dev/null
-echo '###PHYS###'; for i in /sys/class/net/*; do [ -e "$i/device" ] && basename "$i"; done 2>/dev/null
-echo '###DISK###'; df -kP 2>/dev/null
-echo '###PROC###'; ps -eo pid,comm,%cpu,%mem,rss --sort=-%cpu 2>/dev/null | head -16
-echo '###STAT1###'; head -1 /proc/stat 2>/dev/null
-echo '###NET1###'; cat /proc/net/dev 2>/dev/null
-echo '###NETTIME1###'; cat /proc/uptime 2>/dev/null
-sleep 0.5
-echo '###STAT2###'; head -1 /proc/stat 2>/dev/null
-echo '###NET2###'; cat /proc/net/dev 2>/dev/null
-echo '###NETTIME2###'; cat /proc/uptime 2>/dev/null
-echo '###END###'
-"#;
+  remaining = $0
+  pid = next_field()
+  ppid = next_field()
+  cpu = next_field()
+  mem = next_field()
+  rss = next_field()
+  sub(/^[[:space:]]*/, "", remaining)
+  command = remaining
+
+  name = ""
+  comm_path = "/proc/" pid "/comm"
+  if ((getline name < comm_path) <= 0) name = ""
+  close(comm_path)
+  collector = (name == "ztshell-mon" && command ~ /__ZT_MONITOR_COLLECTOR__/) ||
+              (name == "ztshell-proc" && command ~ /__ZT_PROCESS_COLLECTOR__/)
+  printf "%s\037%s\037%s\037%s\037%s\037%d\037%s\n", \
+    pid, ppid, cpu, mem, rss, collector, name
+}'
+printf '###END###\n'
+"####;
 
 /// 网卡监控数据
 #[derive(Debug, Clone, Serialize)]
@@ -212,6 +321,34 @@ struct CpuTimes {
     steal: u64,
 }
 
+impl CpuTimes {
+    /// 返回参与占用率计算的累计时钟总量
+    fn total(self) -> u64 {
+        self.user
+            + self.nice
+            + self.system
+            + self.idle
+            + self.io_wait
+            + self.irq
+            + self.soft_irq
+            + self.steal
+    }
+}
+
+/// 一轮远端采样中用于下一轮差值计算的累计值
+#[derive(Debug, Clone, Default)]
+struct MonitorSnapshot {
+    cpu: CpuTimes,
+    net: HashMap<String, (u64, u64)>,
+    timestamp: f64,
+}
+
+/// 绑定到 SSH 会话的监控运行时状态
+#[derive(Debug, Default)]
+pub(crate) struct MonitorRuntimeState {
+    previous: Option<MonitorSnapshot>,
+}
+
 /// 从 `/proc/stat` 首行解析 CPU 各类别累计时间
 fn parse_stat(line: &str) -> CpuTimes {
     let nums: Vec<u64> = line
@@ -246,14 +383,7 @@ fn calculate_cpu_usage(first: CpuTimes, second: CpuTimes) -> (f64, CpuUsageBreak
         soft_irq: second.soft_irq.saturating_sub(first.soft_irq),
         steal: second.steal.saturating_sub(first.steal),
     };
-    let total = delta.user
-        + delta.nice
-        + delta.system
-        + delta.idle
-        + delta.io_wait
-        + delta.irq
-        + delta.soft_irq
-        + delta.steal;
+    let total = delta.total();
     if total == 0 {
         return (0.0, CpuUsageBreakdown::default());
     }
@@ -420,108 +550,191 @@ fn parse_disks(raw: &str) -> (Vec<DiskUsage>, Vec<DiskUsage>) {
     (disks, file_systems)
 }
 
-/// 采集并解析一次监控数据
-pub async fn collect(manager: &SessionManager, session_id: &str) -> Result<MonitorData> {
-    let raw = timeout(MONITOR_TIMEOUT, manager.exec(session_id, MONITOR_SCRIPT))
-        .await
-        .map_err(|_| anyhow!("监控数据采集超时"))??;
-    let sections = split_sections(&raw);
-    let get = |k: &str| sections.get(k).cloned().unwrap_or_default();
+/// 侧栏进程快照解析时使用的父子关系与资源数据
+struct MonitorProcessRow {
+    pid: u32,
+    ppid: u32,
+    is_collector: bool,
+    name: String,
+    cpu: f64,
+    mem: f64,
+    mem_bytes: u64,
+}
+
+/// 解析采集脚本自身的进程标识
+fn parse_monitor_roots(raw: &str) -> Vec<u32> {
+    raw.split_whitespace()
+        .filter_map(|value| value.parse().ok())
+        .filter(|pid| *pid > 0)
+        .take(1)
+        .collect()
+}
+
+/// 解析 `ps` 输出，名称位于固定数值列之后，允许名称本身包含空格
+fn parse_monitor_processes(raw: &str) -> Vec<MonitorProcessRow> {
+    raw.lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.splitn(7, '\u{1f}').collect();
+            if fields.len() != 7 {
+                return None;
+            }
+            let pid = fields[0].trim().parse().ok()?;
+            if pid == 0 {
+                return None;
+            }
+            Some(MonitorProcessRow {
+                pid,
+                ppid: fields[1].trim().parse().unwrap_or(0),
+                cpu: fields[2].trim().parse().unwrap_or(0.0),
+                mem: fields[3].trim().parse().unwrap_or(0.0),
+                mem_bytes: fields[4].trim().parse::<u64>().unwrap_or(0) * 1024,
+                is_collector: fields[5].trim() == "1",
+                name: fields[6].trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+/// 将一轮远端原始输出与上一轮累计值合成为可展示数据
+fn parse_monitor_data(
+    raw: &str,
+    previous: Option<&MonitorSnapshot>,
+) -> Result<(MonitorData, MonitorSnapshot)> {
+    let sections = split_sections(raw);
+    if sections.contains_key("ERROR") || !sections.contains_key("END") {
+        return Err(anyhow!("远端监控核心数据返回不完整"));
+    }
+    let get = |key: &str| sections.get(key).map(String::as_str).unwrap_or_default();
 
     let mut data = MonitorData {
-        hostname: get("HOST"),
-        os: get("OS"),
-        kernel_name: get("KERNELNAME"),
-        kernel: get("KERNEL"),
-        architecture: get("ARCH"),
+        hostname: get("HOST").to_string(),
+        os: get("OS").to_string(),
+        kernel_name: get("KERNELNAME").to_string(),
+        kernel: get("KERNEL").to_string(),
+        architecture: get("ARCH").to_string(),
         cpu_count: get("CPUCOUNT").trim().parse().unwrap_or(0),
         ..Default::default()
     };
 
-    let (cpu_model, cpu_frequency_mhz, cpu_cache, cpu_bogo_mips) = parse_cpu_info(&get("CPUINFO"));
+    let (cpu_model, cpu_frequency_mhz, cpu_cache, cpu_bogo_mips) = parse_cpu_info(get("CPUINFO"));
     data.cpu_model = cpu_model;
     data.cpu_frequency_mhz = cpu_frequency_mhz;
     data.cpu_cache = cpu_cache;
     data.cpu_bogo_mips = cpu_bogo_mips;
 
-    // 运行时长
-    if let Some(first) = get("UPTIME").split_whitespace().next() {
-        data.uptime = first.parse::<f64>().unwrap_or(0.0) as u64;
-    }
+    let timestamp = get("NETTIME")
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or_else(|| anyhow!("远端监控时间数据无效"))?;
+    data.uptime = parse_leading_number(get("UPTIME")) as u64;
 
-    // 负载
     let load: Vec<f64> = get("LOADAVG")
         .split_whitespace()
         .take(3)
-        .filter_map(|n| n.parse().ok())
+        .filter_map(|value| value.parse().ok())
         .collect();
-    for (i, v) in load.into_iter().enumerate().take(3) {
-        data.load_avg[i] = v;
+    for (index, value) in load.into_iter().enumerate().take(3) {
+        data.load_avg[index] = value;
     }
 
-    // CPU 使用率（两次采样求差）
-    let (cpu_usage, cpu_usage_breakdown) =
-        calculate_cpu_usage(parse_stat(&get("STAT1")), parse_stat(&get("STAT2")));
-    data.cpu_usage = cpu_usage;
-    data.cpu_usage_breakdown = cpu_usage_breakdown;
+    let cpu = parse_stat(get("STAT"));
+    if cpu.total() == 0 {
+        return Err(anyhow!("远端 CPU 累计数据无效"));
+    }
+    if let Some(previous) = previous.filter(|sample| timestamp > sample.timestamp) {
+        (data.cpu_usage, data.cpu_usage_breakdown) = calculate_cpu_usage(previous.cpu, cpu);
+    }
 
-    // 内存
     let mem = get("MEM");
-    data.mem_total = mem_field(&mem, "MemTotal");
-    data.mem_available = mem_field(&mem, "MemAvailable");
+    data.mem_total = mem_field(mem, "MemTotal");
+    if data.mem_total == 0 {
+        return Err(anyhow!("远端内存数据无效"));
+    }
+    data.mem_available = mem_field(mem, "MemAvailable");
     data.mem_used = data.mem_total.saturating_sub(data.mem_available);
-    data.swap_total = mem_field(&mem, "SwapTotal");
-    let swap_free = mem_field(&mem, "SwapFree");
+    data.swap_total = mem_field(mem, "SwapTotal");
+    let swap_free = mem_field(mem, "SwapFree");
     data.swap_used = data.swap_total.saturating_sub(swap_free);
 
-    // 网卡速率（优先采用远端单调时钟的实际采样间隔）
-    let net1 = parse_net(&get("NET1"));
-    let net2 = parse_net(&get("NET2"));
-    // 物理网卡名集合
+    let net = parse_net(get("NET"));
+    if net.is_empty() {
+        return Err(anyhow!("远端网卡累计数据无效"));
+    }
     let phys: HashSet<String> = get("PHYS")
         .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
         .collect();
-    let net_time1 = parse_leading_number(&get("NETTIME1"));
-    let net_time2 = parse_leading_number(&get("NETTIME2"));
-    let interval = if net_time2 > net_time1 {
-        net_time2 - net_time1
-    } else {
-        0.5
-    };
-    for (name, (rx2, tx2)) in &net2 {
-        let (rx1, tx1) = net1.get(name).copied().unwrap_or((*rx2, *tx2));
+    let interval = previous
+        .filter(|sample| timestamp > sample.timestamp)
+        .map(|sample| timestamp - sample.timestamp)
+        .unwrap_or(0.0);
+    for (name, (rx_total, tx_total)) in &net {
+        let (rx_rate, tx_rate) = previous
+            .and_then(|sample| sample.net.get(name))
+            .filter(|_| interval > 0.0)
+            .map(|(previous_rx, previous_tx)| {
+                (
+                    (rx_total.saturating_sub(*previous_rx) as f64 / interval) as u64,
+                    (tx_total.saturating_sub(*previous_tx) as f64 / interval) as u64,
+                )
+            })
+            .unwrap_or((0, 0));
         data.net_interfaces.push(NetInterface {
             name: name.clone(),
-            rx_rate: ((rx2.saturating_sub(rx1)) as f64 / interval) as u64,
-            tx_rate: ((tx2.saturating_sub(tx1)) as f64 / interval) as u64,
-            rx_total: *rx2,
-            tx_total: *tx2,
+            rx_rate,
+            tx_rate,
+            rx_total: *rx_total,
+            tx_total: *tx_total,
             is_physical: phys.contains(name),
         });
     }
-    data.net_interfaces.sort_by(|a, b| a.name.cmp(&b.name));
+    data.net_interfaces
+        .sort_by(|left, right| left.name.cmp(&right.name));
 
-    // 磁盘与完整文件系统
-    (data.disks, data.file_systems) = parse_disks(&get("DISK"));
+    (data.disks, data.file_systems) = parse_disks(get("DISK"));
 
-    // 进程（首行为表头）
-    for line in get("PROC").lines().skip(1) {
-        let f: Vec<&str> = line.split_whitespace().collect();
-        if f.len() < 5 {
-            continue;
-        }
-        data.processes.push(ProcessInfo {
-            pid: f[0].parse().unwrap_or(0),
-            name: f[1].to_string(),
-            cpu: f[2].parse().unwrap_or(0.0),
-            mem: f[3].parse().unwrap_or(0.0),
-            // ps 的 rss 单位为 KiB，转字节
-            mem_bytes: f[4].parse::<u64>().unwrap_or(0) * 1024,
-        });
-    }
+    let process_rows = parse_monitor_processes(get("PROC"));
+    let excluded = collector_process_ids(
+        process_rows
+            .iter()
+            .map(|process| (process.pid, process.ppid, process.is_collector)),
+        parse_monitor_roots(get("MONITOR_META")),
+    );
+    data.processes = process_rows
+        .into_iter()
+        .filter(|process| !excluded.contains(&process.pid))
+        .take(15)
+        .map(|process| ProcessInfo {
+            pid: process.pid,
+            name: process.name,
+            cpu: process.cpu,
+            mem: process.mem,
+            mem_bytes: process.mem_bytes,
+        })
+        .collect();
 
+    Ok((
+        data,
+        MonitorSnapshot {
+            cpu,
+            net,
+            timestamp,
+        },
+    ))
+}
+
+/// 采集并解析一次监控数据
+pub async fn collect(manager: &SessionManager, session_id: &str) -> Result<MonitorData> {
+    let state = manager.monitor_state(session_id)?;
+    let mut state = state.lock().await;
+    let raw = timeout(MONITOR_TIMEOUT, manager.exec(session_id, MONITOR_SCRIPT))
+        .await
+        .map_err(|_| anyhow!("监控数据采集超时"))??;
+    let (data, snapshot) = parse_monitor_data(&raw, state.previous.as_ref())?;
+    state.previous = Some(snapshot);
     Ok(data)
 }
 
@@ -607,6 +820,70 @@ bogomips : 6374.42"#;
         let interfaces = parse_net(raw);
 
         assert_eq!(interfaces.get("lo"), Some(&(100, 200)));
+    }
+
+    /// 相邻采样应计算 CPU 与网卡速率，并排除采集器产生的进程
+    #[test]
+    fn calculates_rates_across_monitor_samples() {
+        let first_raw = "###UPTIME###\n10.00 0.00\n\
+                         ###NETTIME###\n10.00 0.00\n\
+                         ###STAT###\ncpu 100 0 100 800 0 0 0 0\n\
+                         ###MEM###\nMemTotal: 1000 kB\nMemAvailable: 600 kB\n\
+                         ###NET###\neth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0\n\
+                         ###PHYS###\neth0\n\
+                         ###MONITOR_META###\n900\n\
+                         ###PROC###\n900\x1f800\x1f300\x1f0.1\x1f10\x1f1\x1fztshell-mon\n\
+                         901\x1f900\x1f200\x1f0.1\x1f10\x1f0\x1fps\n\
+                         42\x1f1\x1f12.5\x1f1.5\x1f2048\x1f0\x1fapp worker\n\
+                         ###END###\n";
+        let (first, first_snapshot) = parse_monitor_data(first_raw, None).unwrap();
+
+        assert_eq!(first.cpu_usage, 0.0);
+        assert_eq!(first.net_interfaces[0].rx_rate, 0);
+        assert_eq!(first.processes.len(), 1);
+        assert_eq!(first.processes[0].pid, 42);
+        assert_eq!(first.processes[0].name, "app worker");
+
+        let second_raw = "###UPTIME###\n13.00 0.00\n\
+                          ###NETTIME###\n13.00 0.00\n\
+                          ###STAT###\ncpu 120 0 130 850 0 0 0 0\n\
+                          ###MEM###\nMemTotal: 1000 kB\nMemAvailable: 600 kB\n\
+                          ###NET###\neth0: 1300 0 0 0 0 0 0 0 2600 0 0 0 0 0 0 0\n\
+                          ###PHYS###\neth0\n\
+                          ###PROC###\n42\x1f1\x1f10.0\x1f1.5\x1f2048\x1f0\x1fapp worker\n\
+                          ###END###\n";
+        let (second, _) = parse_monitor_data(second_raw, Some(&first_snapshot)).unwrap();
+
+        assert_approx_eq(second.cpu_usage, 50.0);
+        assert_approx_eq(second.cpu_usage_breakdown.user, 20.0);
+        assert_approx_eq(second.cpu_usage_breakdown.system, 30.0);
+        assert_eq!(second.net_interfaces[0].rx_rate, 100);
+        assert_eq!(second.net_interfaces[0].tx_rate, 200);
+    }
+
+    /// 缺少核心累计值的采样必须报错，调用方因而不会覆盖上一轮基线
+    #[test]
+    fn rejects_sample_without_cpu_counters() {
+        let raw = "###UPTIME###\n13.00 0.00\n\
+                   ###NETTIME###\n13.00 0.00\n\
+                   ###MEM###\nMemTotal: 1000 kB\nMemAvailable: 600 kB\n\
+                   ###NET###\nlo: 100 0 0 0 0 0 0 0 100 0 0 0 0 0 0 0\n\
+                   ###END###\n";
+
+        let error = parse_monitor_data(raw, None).unwrap_err();
+
+        assert_eq!(error.to_string(), "远端 CPU 累计数据无效");
+    }
+
+    /// 高频采样脚本不得在远端等待第二次 CPU 或网络读数
+    #[test]
+    fn monitor_script_uses_single_snapshot() {
+        assert!(!MONITOR_SCRIPT.contains("sleep "));
+        assert!(!MONITOR_SCRIPT.contains("STAT1"));
+        assert!(!MONITOR_SCRIPT.contains("NET1"));
+        assert!(!MONITOR_SCRIPT.contains("head "));
+        assert!(MONITOR_SCRIPT.contains("###ERROR###"));
+        assert!(MONITOR_SCRIPT.contains("__ZT_MONITOR_COLLECTOR__"));
     }
 
     /// 完整文件系统应保留虚拟挂载，侧栏摘要仍只包含实际磁盘

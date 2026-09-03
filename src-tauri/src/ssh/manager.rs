@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::host_keys::HostKeyStore;
+use super::monitor::MonitorRuntimeState;
 use super::proxy;
 use super::session::{SessionConnectOutcome, SshSession, TerminalCommand};
 use super::transfer::TransferManager;
@@ -37,6 +38,8 @@ struct SessionEntry {
     sudo_active: Mutex<bool>,
     /// sudo 提权 SFTP 会话（启用提权时惰性建立）
     sudo_sftp: Mutex<Option<Arc<SftpSession>>>,
+    /// 当前会话的监控累计值，用于按相邻采样计算 CPU 与网卡速率
+    monitor_state: Arc<Mutex<MonitorRuntimeState>>,
     /// 本会话启动的本地/动态隧道监听任务
     tunnel_tasks: Mutex<Vec<JoinHandle<()>>>,
     /// 本会话全部隧道连接的取消信号
@@ -130,6 +133,7 @@ impl SessionManager {
             sftp: Mutex::new(None),
             sudo_active: Mutex::new(false),
             sudo_sftp: Mutex::new(None),
+            monitor_state: Arc::new(Mutex::new(MonitorRuntimeState::default())),
             tunnel_tasks: Mutex::new(tunnel_result.tasks),
             tunnel_cancel_tx,
         });
@@ -242,6 +246,14 @@ impl SessionManager {
     pub async fn exec(&self, session_id: &str, command: &str) -> Result<String> {
         let entry = self.entry(session_id)?;
         entry.session.exec_command(command).await
+    }
+
+    /// 获取指定会话的监控累计状态，状态随 SSH 会话释放
+    pub(crate) fn monitor_state(
+        &self,
+        session_id: &str,
+    ) -> Result<Arc<Mutex<MonitorRuntimeState>>> {
+        Ok(self.entry(session_id)?.monitor_state.clone())
     }
 
     /// 在远端执行允许中断的一次性命令
