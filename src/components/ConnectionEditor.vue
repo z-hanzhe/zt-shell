@@ -7,7 +7,6 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type {
   ConnectionConfig,
   ConnectionSecretChanges,
-  SecretChange,
   TunnelConfig,
 } from "../types";
 import { genId } from "../utils";
@@ -15,7 +14,6 @@ import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 import Icon from "./Icon.vue";
 import ProxySettings from "./ProxySettings.vue";
-import SecretInput from "./SecretInput.vue";
 import TunnelSettings from "./TunnelSettings.vue";
 
 const props = withDefaults(
@@ -46,8 +44,6 @@ const settingSections: Array<{ id: SettingsSectionId; label: string }> = [
 const activeSection = ref<SettingsSectionId>("connection");
 /** 连接编辑弹窗拖动控制器 */
 const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag();
-/** 私钥口令修改意图 */
-const passphraseChange = ref<SecretChange>({ mode: "keep" });
 
 /** 表单默认值 */
 function defaults(): ConnectionConfig {
@@ -60,6 +56,7 @@ function defaults(): ConnectionConfig {
     authType: "password",
     password: "",
     privateKeyPath: "",
+    passphrase: "",
     proxyId: null,
     remark: "",
     tunnels: [],
@@ -80,8 +77,6 @@ watch(
   () => props.model,
   (m) => {
     Object.assign(form, defaults(), m ?? {}, { tunnels: cloneTunnels(m?.tunnels) });
-    delete form.passphrase;
-    passphraseChange.value = { mode: "keep" };
     activeSection.value = "connection";
   },
   { immediate: true }
@@ -100,15 +95,6 @@ async function selectPrivateKey() {
   }
 }
 
-/** 接收固定掩码输入框的私钥口令修改 */
-function onPassphraseChange(action: SecretChange["mode"], value?: string) {
-  if (action === "set") {
-    passphraseChange.value = value !== undefined ? { mode: "set", value } : { mode: "keep" };
-    return;
-  }
-  passphraseChange.value = { mode: action };
-}
-
 /** 提交保存 */
 function submit() {
   if (props.saving) return;
@@ -125,7 +111,9 @@ function submit() {
     password: form.password
       ? { mode: "set", value: form.password }
       : { mode: "clear" },
-    passphrase: passphraseChange.value,
+    passphrase: form.passphrase
+      ? { mode: "set", value: form.passphrase }
+      : { mode: "clear" },
   });
 }
 
@@ -229,11 +217,11 @@ const { isTop: isTopModal } = useEscClose(
                   </button>
                 </div>
                 <label>私钥口令</label>
-                <SecretInput
-                  :has-secret="form.hasPassphrase === true"
-                  :reset-key="`${form.id}:passphrase`"
+                <input
+                  v-model="form.passphrase"
+                  class="input"
+                  type="password"
                   placeholder="无口令可留空"
-                  @change="onPassphraseChange"
                 />
               </template>
 

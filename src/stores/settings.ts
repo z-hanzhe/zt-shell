@@ -1,9 +1,11 @@
 /**
- * 应用设置 store：终端与监控相关的偏好，持久化到本地
+ * 应用设置 store：终端、监控与下载相关偏好，持久化到本地
  */
 
 import { defineStore } from "pinia";
 import { ref } from "vue";
+import { isTauri } from "@tauri-apps/api/core";
+import { downloadDir } from "@tauri-apps/api/path";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import { DEFAULT_UI_SCALE, normalizeUiScale } from "../uiScale";
 import {
@@ -23,20 +25,39 @@ export interface AppSettings {
   fontFamily: string;
   /** 光标闪烁 */
   cursorBlink: boolean;
+  /** 本地下载目录 */
+  downloadPath: string;
   /** 监控采集间隔（秒） */
   monitorInterval: number;
 }
 
-/** 默认设置 */
-function defaults(): AppSettings {
+/** 生成默认设置 */
+function defaults(downloadPath = ""): AppSettings {
   return {
     uiScale: DEFAULT_UI_SCALE,
     fontSize: 14,
     editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
     fontFamily: '"Consolas", "Cascadia Mono", "Courier New", monospace',
     cursorBlink: true,
+    downloadPath,
     monitorInterval: 3,
   };
+}
+
+/** 解析当前系统的标准下载目录，浏览器预览或系统不支持时返回空 */
+async function resolveDefaultDownloadPath(): Promise<string> {
+  if (!isTauri()) return "";
+  try {
+    return await downloadDir();
+  } catch (error) {
+    console.warn("读取系统下载目录失败", error);
+    return "";
+  }
+}
+
+/** 解析包含当前系统下载目录的完整默认设置 */
+export async function createDefaultAppSettings(): Promise<AppSettings> {
+  return defaults(await resolveDefaultDownloadPath());
 }
 
 const STORE_FILE = "settings.json";
@@ -50,14 +71,20 @@ export const useSettingsStore = defineStore("settings", () => {
 
   /** 加载设置 */
   async function init() {
+    const defaultSettings = await createDefaultAppSettings();
+    settings.value = defaultSettings;
     store = await load(STORE_FILE, { defaults: {}, autoSave: true });
-    const saved = await store.get<AppSettings>(STORE_KEY);
+    const saved = await store.get<Partial<AppSettings>>(STORE_KEY);
     if (saved) {
-      const merged = { ...defaults(), ...saved };
+      const merged = { ...defaultSettings, ...saved };
       settings.value = {
         ...merged,
         uiScale: normalizeUiScale(merged.uiScale),
         editorFontSize: normalizeEditorFontSize(merged.editorFontSize),
+        downloadPath:
+          typeof merged.downloadPath === "string" && merged.downloadPath.trim()
+            ? merged.downloadPath.trim()
+            : defaultSettings.downloadPath,
       };
     }
   }
@@ -68,6 +95,7 @@ export const useSettingsStore = defineStore("settings", () => {
       ...next,
       uiScale: normalizeUiScale(next.uiScale),
       editorFontSize: normalizeEditorFontSize(next.editorFontSize),
+      downloadPath: next.downloadPath.trim(),
     };
     settings.value = normalized;
     if (store) {

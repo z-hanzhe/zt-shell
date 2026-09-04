@@ -8,7 +8,7 @@ export const DEFAULT_UI_SCALE = 1;
 export const UI_SCALE_OPTIONS = [
   { value: 0.8, label: "80%" },
   { value: 0.9, label: "90%" },
-  { value: 1, label: "100%（系统默认）" },
+  { value: 1, label: "100%" },
   { value: 1.1, label: "110%" },
   { value: 1.25, label: "125%" },
   { value: 1.5, label: "150%" },

@@ -41,6 +41,7 @@ pub fn run() {
             commands::credentials_set_many,
             commands::credentials_check_many,
             commands::credentials_get_connection_password,
+            commands::credentials_get_connection_passphrase,
             commands::credentials_match_many,
             commands::credentials_delete_many,
             commands::credentials_copy_many,

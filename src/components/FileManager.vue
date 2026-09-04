@@ -22,6 +22,7 @@ import {
   sftpDecompressArchiveToTar,
   sftpSetPermissions,
   sftpSetSudo,
+  pathIsDir,
   transferUpload,
   transferDownload,
   transferPackDownload,
@@ -31,6 +32,7 @@ import { formatShort, formatTime, genId, joinPath, parentPath } from "../utils";
 import { hasOpenModal } from "../composables/useEscClose";
 import { useTransfersStore } from "../stores/transfers";
 import { useSessionsStore } from "../stores/sessions";
+import { useSettingsStore } from "../stores/settings";
 import { openTextEditorWindow } from "../editorWindows";
 import type { EditorSavedPayload } from "../editorProtocol";
 import { EDITOR_SAVED_EVENT } from "../editorProtocol";
@@ -126,6 +128,7 @@ const typeaheadListName = ref("");
 
 const transfersStore = useTransfersStore();
 const sessionsStore = useSessionsStore();
+const settingsStore = useSettingsStore();
 
 /** 鼠标拖拽清理函数 */
 let stopResize: (() => void) | undefined;
@@ -1597,12 +1600,28 @@ async function startUpload(paths: string[]) {
   }
 }
 
-/** 下载选中的文件/文件夹：选择本地保存目录，依次确认超量与同名覆盖 */
+/** 读取并校验设置中的本地下载目录 */
+async function configuredDownloadDirectory(): Promise<string | null> {
+  const directory = settingsStore.settings.downloadPath.trim();
+  if (!directory) {
+    showMessage("下载路径未设置", "请先在设置中配置下载路径");
+    return null;
+  }
+  try {
+    if (await pathIsDir(directory)) return directory;
+    showMessage("下载路径不可用", `设置的下载路径不存在或不是文件夹：${directory}`);
+  } catch (error) {
+    showMessage("下载路径检查失败", String(error));
+  }
+  return null;
+}
+
+/** 下载选中的文件/文件夹：使用设置的下载目录，依次确认超量与同名覆盖 */
 async function onDownloadSelected() {
   const targets = selectedEntries.value;
   if (targets.length === 0) return;
-  const dir = await openDialog({ directory: true, title: "选择保存位置" });
-  if (!dir || Array.isArray(dir)) return;
+  const directory = await configuredDownloadDirectory();
+  if (!directory) return;
   const items = targets.map((entry) => ({
     path: joinPath(cwd.value, entry.name),
     isDir: entry.isDir,
@@ -1611,7 +1630,13 @@ async function onDownloadSelected() {
   let overwrite = false;
   try {
     for (;;) {
-      const result = await transferDownload(props.sessionId, items, dir, force, overwrite);
+      const result = await transferDownload(
+        props.sessionId,
+        items,
+        directory,
+        force,
+        overwrite
+      );
       if (result.needConfirm) {
         if (!(await showConfirm("下载确认", buildTransferConfirmMessage(result), "坚持传输", true))) return;
         force = true;

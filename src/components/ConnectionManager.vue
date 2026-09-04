@@ -8,6 +8,7 @@ import Icon from "./Icon.vue";
 import AppDialog from "./AppDialog.vue";
 import ConnectionEditor from "./ConnectionEditor.vue";
 import {
+  credentialsGetConnectionPassphrase,
   credentialsGetConnectionPassword,
   credentialsMatchMany,
   pickConnectionImportFile,
@@ -671,17 +672,26 @@ function onNewConnection(parentId: string | null) {
   editing.value = null;
 }
 
-/** 读取已保存的登录密码并打开编辑弹窗 */
+/** 读取已保存的登录密码和私钥口令并打开编辑弹窗 */
 async function onEdit() {
   const connection = selectedConn.value;
   if (!connection) return;
   try {
-    const password = connection.hasPassword
-      ? await credentialsGetConnectionPassword(connection.id)
-      : null;
-    editing.value = { ...connection, password: password ?? "" };
+    const [password, passphrase] = await Promise.all([
+      connection.hasPassword
+        ? credentialsGetConnectionPassword(connection.id)
+        : Promise.resolve(null),
+      connection.hasPassphrase
+        ? credentialsGetConnectionPassphrase(connection.id)
+        : Promise.resolve(null),
+    ]);
+    editing.value = {
+      ...connection,
+      password: password ?? "",
+      passphrase: passphrase ?? "",
+    };
   } catch (error) {
-    await showInfo("读取失败", `无法读取连接密码：${String(error)}`);
+    await showInfo("读取失败", `无法读取连接凭据：${String(error)}`);
   }
 }
 

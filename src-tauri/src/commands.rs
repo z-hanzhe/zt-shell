@@ -55,6 +55,19 @@ pub async fn credentials_get_connection_password(
     )
 }
 
+/// 读取连接编辑器使用的私钥口令
+#[tauri::command]
+pub async fn credentials_get_connection_passphrase(
+    credentials: State<'_, CredentialManager>,
+    id: String,
+) -> CmdResult<Option<String>> {
+    map_err(
+        credentials
+            .get_optional(CredentialKind::ConnectionPassphrase, &id)
+            .await,
+    )
+}
+
 /// 批量比较代理密码，结果顺序与输入一致且不返回已存明文
 #[tauri::command]
 pub async fn credentials_match_many(
@@ -161,7 +174,7 @@ pub async fn terminal_resize(
     map_err(manager.resize_terminal(&session_id, cols, rows).await)
 }
 
-/// 判断本地路径是否为目录（供终端拖拽上传前校验，仅允许单文件）
+/// 判断本地路径是否为目录
 #[tauri::command]
 pub async fn path_is_dir(path: String) -> CmdResult<bool> {
     Ok(std::path::Path::new(&path).is_dir())

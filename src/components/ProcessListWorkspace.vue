@@ -165,7 +165,7 @@ function setSort(key: SortKey): void {
     return;
   }
   sortState.key = key;
-  sortState.direction = "asc";
+  sortState.direction = "desc";
 }
 
 /** 返回当前表头的排序方向标记 */

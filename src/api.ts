@@ -52,6 +52,11 @@ export function credentialsGetConnectionPassword(id: string): Promise<string | n
   return invoke("credentials_get_connection_password", { id });
 }
 
+/** 读取连接编辑器使用的私钥口令 */
+export function credentialsGetConnectionPassphrase(id: string): Promise<string | null> {
+  return invoke("credentials_get_connection_passphrase", { id });
+}
+
 /** 批量比较代理密码，结果顺序与输入一致且不返回已存明文 */
 export function credentialsMatchMany(changes: CredentialMatch[]): Promise<boolean[]> {
   return invoke("credentials_match_many", { changes });
@@ -116,7 +121,7 @@ export function terminalResize(
   return invoke("terminal_resize", { sessionId, cols, rows });
 }
 
-/** 判断本地路径是否为目录（终端拖拽上传前校验，仅允许单文件） */
+/** 判断本地路径是否为目录 */
 export function pathIsDir(path: string): Promise<boolean> {
   return invoke("path_is_dir", { path });
 }
