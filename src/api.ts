@@ -341,10 +341,11 @@ export function transferPackDownload(
   sessionId: string,
   remoteDir: string,
   names: string[],
-  localPath: string
-): Promise<void> {
+  localPath: string,
+  overwrite: boolean
+): Promise<TransferCreateResult> {
   return runTransferCreation(sessionId, () =>
-    invoke("transfer_pack_download", { sessionId, remoteDir, names, localPath })
+    invoke("transfer_pack_download", { sessionId, remoteDir, names, localPath, overwrite })
   );
 }
 

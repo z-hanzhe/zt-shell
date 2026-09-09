@@ -566,10 +566,11 @@ pub async fn transfer_pack_download(
     remote_dir: String,
     names: Vec<String>,
     local_path: String,
-) -> CmdResult<()> {
+    overwrite: bool,
+) -> CmdResult<TransferCreateResult> {
     map_err(
         transfers
-            .create_pack_download(&app, &session_id, remote_dir, names, local_path)
+            .create_pack_download(&app, &session_id, remote_dir, names, local_path, overwrite)
             .await,
     )
 }

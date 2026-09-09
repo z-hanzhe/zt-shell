@@ -16,6 +16,7 @@ import Icon from "./Icon.vue";
 import AppDialog from "./AppDialog.vue";
 import { terminalOpen, terminalWrite, terminalResize, pathIsDir, transferUpload } from "../api";
 import { useSettingsStore } from "../stores/settings";
+import { useEscClose } from "../composables/useEscClose";
 
 const props = defineProps<{
   /** 会话标识 */
@@ -61,6 +62,16 @@ const contextMenu = reactive({ open: false, x: 0, y: 0 });
 const search = reactive({ open: false, keyword: "", current: 0, total: 0 });
 /** 查找输入框引用 */
 const searchInput = ref<HTMLInputElement>();
+
+// 菜单优先消费 Escape，关闭后归还终端焦点；模态弹窗仍优先处理。
+useEscClose(
+  () => contextMenu.open,
+  () => {
+    closeContextMenu();
+    term.value?.focus();
+  },
+  () => -1
+);
 
 /** 系统文件拖入终端上传的悬停提示（仅单文件时显示） */
 const dropHover = ref(false);

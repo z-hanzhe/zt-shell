@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -20,6 +21,7 @@ use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::time::{error::Elapsed, timeout};
@@ -258,6 +260,38 @@ fn remote_parent(path: &str) -> String {
         Some(idx) => trimmed[..idx].to_string(),
         None => "/".to_string(),
     }
+}
+
+/// 校验打包下载的本地目标，仅普通文件允许在用户确认后覆盖。
+async fn pack_download_needs_overwrite(local_path: &Path, overwrite: bool) -> Result<bool> {
+    let parent = local_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| anyhow!("下载目标缺少有效的父目录"))?;
+    let parent_metadata = fs::metadata(parent)
+        .await
+        .map_err(|error| anyhow!("下载目录不可用：{}，{}", parent.display(), error))?;
+    if !parent_metadata.is_dir() {
+        return Err(anyhow!("下载路径不是文件夹：{}", parent.display()));
+    }
+    let metadata = match fs::symlink_metadata(local_path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(anyhow!("检查下载目标失败：{}", error)),
+    };
+    if metadata.is_dir() {
+        return Err(anyhow!(
+            "下载目标已存在同名文件夹，无法保存压缩包：{}。请更改下载路径或移走该文件夹后重试。",
+            local_path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(anyhow!(
+            "下载目标不是普通文件，无法覆盖：{}",
+            local_path.display()
+        ));
+    }
+    Ok(!overwrite)
 }
 
 impl TransferManager {
@@ -690,9 +724,23 @@ impl TransferManager {
         remote_dir: String,
         names: Vec<String>,
         local_path: String,
-    ) -> Result<()> {
+        overwrite: bool,
+    ) -> Result<TransferCreateResult> {
         if names.is_empty() {
             return Err(anyhow!("未选择需要打包的文件"));
+        }
+        let file_name = Path::new(&local_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "archive.tar.gz".to_string());
+        // 未确认覆盖时只返回冲突，不执行远端命令或登记传输任务。
+        if pack_download_needs_overwrite(Path::new(&local_path), overwrite).await? {
+            return Ok(TransferCreateResult {
+                need_confirm: false,
+                file_count: 1,
+                active_count: 0,
+                exist_names: vec![file_name],
+            });
         }
         let manager = app.state::<SessionManager>();
         // 先探测远端 tar 命令是否可用，失败时立刻反馈
@@ -705,10 +753,6 @@ impl TransferManager {
         if !probe.contains("__ZTOK__") {
             return Err(anyhow!("远端未找到 tar 命令，无法打包下载"));
         }
-        let file_name = Path::new(&local_path)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "archive.tar.gz".to_string());
         let task = self.new_task(
             session_id,
             None,
@@ -723,7 +767,7 @@ impl TransferManager {
         self.register(task.clone());
         spawn_file_runner(app.clone(), task);
         self.emit_changed(app);
-        Ok(())
+        Ok(TransferCreateResult::created(1))
     }
 
     /// 列出全部任务（按创建顺序）
@@ -1884,6 +1928,59 @@ async fn cleanup_remote_tmp(app: &AppHandle, session_id: &str, remote_tmp: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env::temp_dir;
+    use tokio::fs;
+    use uuid::Uuid;
+
+    /// 同名文件必须确认覆盖，同名文件夹不可覆盖，检查过程不得改动已有内容。
+    #[tokio::test]
+    async fn pack_download_checks_conflicts_without_changing_local_entries() {
+        let directory = temp_dir().join(format!("ztshell-download-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).await.unwrap();
+        let target = directory.join("archive.tar.gz");
+        assert!(!pack_download_needs_overwrite(&target, false).await.unwrap());
+        assert!(!target.exists());
+
+        fs::write(&target, b"existing archive").await.unwrap();
+        assert!(pack_download_needs_overwrite(&target, false).await.unwrap());
+        assert!(!pack_download_needs_overwrite(&target, true).await.unwrap());
+        assert_eq!(fs::read(&target).await.unwrap(), b"existing archive");
+
+        fs::remove_file(&target).await.unwrap();
+        fs::create_dir(&target).await.unwrap();
+        let child = target.join("keep.txt");
+        fs::write(&child, b"keep").await.unwrap();
+        for overwrite in [false, true] {
+            let error = pack_download_needs_overwrite(&target, overwrite)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("同名文件夹"));
+        }
+        assert_eq!(fs::read(&child).await.unwrap(), b"keep");
+        fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    /// 下载目录缺失或变成文件时，即使已确认覆盖也不能放行。
+    #[tokio::test]
+    async fn pack_download_rejects_invalid_download_directory() {
+        let directory = temp_dir().join(format!("ztshell-download-{}", Uuid::new_v4()));
+        let target = directory.join("archive.tar.gz");
+        for overwrite in [false, true] {
+            assert!(pack_download_needs_overwrite(&target, overwrite)
+                .await
+                .is_err());
+        }
+        assert!(!directory.exists());
+
+        fs::write(&directory, b"not a directory").await.unwrap();
+        for overwrite in [false, true] {
+            assert!(pack_download_needs_overwrite(&target, overwrite)
+                .await
+                .is_err());
+        }
+        assert_eq!(fs::read(&directory).await.unwrap(), b"not a directory");
+        fs::remove_file(directory).await.unwrap();
+    }
 
     /// 构造不依赖 Tauri 运行时的最小任务对象。
     fn task_with_status(status: u8) -> TaskState {

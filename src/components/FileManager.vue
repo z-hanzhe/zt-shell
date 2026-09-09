@@ -3,7 +3,8 @@
  * 右下文件管理器：SFTP 目录浏览（左目录树 + 右文件列表），支持上传下载增删改
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { join as joinLocalPath } from "@tauri-apps/api/path";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import AppDialog from "./AppDialog.vue";
@@ -1620,10 +1621,12 @@ async function configuredDownloadDirectory(): Promise<string | null> {
 async function onDownloadSelected() {
   const targets = selectedEntries.value;
   if (targets.length === 0) return;
+  const sessionId = props.sessionId;
+  const remoteDir = cwd.value;
   const directory = await configuredDownloadDirectory();
   if (!directory) return;
   const items = targets.map((entry) => ({
-    path: joinPath(cwd.value, entry.name),
+    path: joinPath(remoteDir, entry.name),
     isDir: entry.isDir,
   }));
   let force = false;
@@ -1631,7 +1634,7 @@ async function onDownloadSelected() {
   try {
     for (;;) {
       const result = await transferDownload(
-        props.sessionId,
+        sessionId,
         items,
         directory,
         force,
@@ -1658,17 +1661,25 @@ async function onDownloadSelected() {
 async function onPackDownload() {
   const targets = selectedEntries.value;
   if (targets.length === 0) return;
-  const dirName = cwd.value.split("/").filter(Boolean).pop() ?? "archive";
+  const sessionId = props.sessionId;
+  const remoteDir = cwd.value;
+  const names = targets.map((entry) => entry.name);
+  const directory = await configuredDownloadDirectory();
+  if (!directory) return;
+  const dirName = remoteDir.split("/").filter(Boolean).pop() ?? "archive";
   const defaultName = targets.length === 1 ? `${targets[0].name}.tar.gz` : `${dirName}.tar.gz`;
-  const localPath = await saveDialog({ defaultPath: defaultName, title: "选择保存位置" });
-  if (!localPath) return;
+  let overwrite = false;
   try {
-    await transferPackDownload(
-      props.sessionId,
-      cwd.value,
-      targets.map((entry) => entry.name),
-      localPath
-    );
+    const localPath = await joinLocalPath(directory, defaultName);
+    for (;;) {
+      const result = await transferPackDownload(sessionId, remoteDir, names, localPath, overwrite);
+      if (result.existNames.length > 0) {
+        if (!(await confirmOverwrite(result.existNames))) return;
+        overwrite = true;
+        continue;
+      }
+      break;
+    }
   } catch (e) {
     showMessage("打包下载失败", String(e));
   }
@@ -2414,7 +2425,9 @@ defineExpose({ setPathFromTerminal });
           v-if="contextMenu.open"
           class="context-menu"
           :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+          @pointerdown.stop.prevent
           @click.stop
+          @contextmenu.stop.prevent
         >
           <div
             v-for="(item, itemIndex) in contextMenuItems"
