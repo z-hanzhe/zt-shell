@@ -735,8 +735,8 @@ e+JpiSq66Z6GIt0801skPh20jxOO3F52SoX1IeO5D5PXfZrfSZlw6S8c7bwyp2FHxDewRx
     /// 关闭功能后 SSH 认证仍成功，但所有监控及普通、提权 SFTP 入口均被拒绝
     #[tokio::test]
     async fn disabled_features_do_not_open_remote_channels() {
-        let key = decode_secret_key(TEST_SERVER_KEY, Some("blabla"))
-            .expect("测试服务私钥应加载成功");
+        let key =
+            decode_secret_key(TEST_SERVER_KEY, Some("blabla")).expect("测试服务私钥应加载成功");
         let server_config = Arc::new(server::Config {
             keys: vec![key],
             ..Default::default()
@@ -788,16 +788,31 @@ e+JpiSq66Z6GIt0801skPh20jxOO3F52SoX1IeO5D5PXfZrfSZlw6S8c7bwyp2FHxDewRx
             "SFTP 功能未开启"
         );
         assert_eq!(
-            manager.set_sudo(&config.id, true).await.unwrap_err().to_string(),
+            manager
+                .set_sudo(&config.id, true)
+                .await
+                .unwrap_err()
+                .to_string(),
             "SFTP 功能未开启"
         );
-        assert!(!manager.is_sudo(&config.id).await.expect("应保持普通权限状态"));
+        assert!(!manager
+            .is_sudo(&config.id)
+            .await
+            .expect("应保持普通权限状态"));
         assert_eq!(
-            monitor::collect(&manager, &config.id).await.err().unwrap().to_string(),
+            monitor::collect(&manager, &config.id)
+                .await
+                .err()
+                .unwrap()
+                .to_string(),
             "性能监控功能未开启"
         );
         assert_eq!(
-            process::list(&manager, &config.id).await.err().unwrap().to_string(),
+            process::list(&manager, &config.id)
+                .await
+                .err()
+                .unwrap()
+                .to_string(),
             "性能监控功能未开启"
         );
         manager.disconnect(&config.id);
