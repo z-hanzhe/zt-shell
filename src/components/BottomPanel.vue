@@ -13,6 +13,10 @@ const props = defineProps<{
   sessionId: string;
   /** 会话是否已连接 */
   connected: boolean;
+  /** 当前会话是否启用 SFTP */
+  sftpEnabled: boolean;
+  /** 底部区域是否可见，收起时停止响应面板快捷键 */
+  active: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -73,16 +77,17 @@ defineExpose({ setFilePath });
         ref="fileManagerRef"
         v-show="activeTab === 'files'"
         :session-id="sessionId"
-        :connected="connected"
-        :active="activeTab === 'files'"
+        :connected="connected && sftpEnabled"
+        :sftp-enabled="sftpEnabled"
+        :active="active && activeTab === 'files'"
         @sync-terminal-path="emit('sync-terminal-path', $event)"
         @sync-file-path="emit('sync-file-path')"
       />
       <TransferPanel
         v-show="activeTab === 'transfers'"
         :session-id="sessionId"
-        :connected="connected"
-        :active="activeTab === 'transfers'"
+        :connected="connected && sftpEnabled"
+        :active="active && activeTab === 'transfers'"
       />
     </div>
   </div>

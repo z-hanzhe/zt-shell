@@ -72,6 +72,10 @@ export interface ConnectionConfig {
   remark?: string;
   /** 当前连接的隧道列表，运行时每个会话独立启动 */
   tunnels?: TunnelConfig[];
+  /** 是否启用性能监控，旧配置未指定时默认开启，仅在本机保存 */
+  monitorEnabled?: boolean;
+  /** 是否启用 SFTP，旧配置未指定时默认开启，仅在本机保存 */
+  sftpEnabled?: boolean;
   /** 所属文件夹 id，空或 null 表示位于根目录 */
   parentId?: string | null;
   /** 同级显示顺序，由连接管理器维护 */

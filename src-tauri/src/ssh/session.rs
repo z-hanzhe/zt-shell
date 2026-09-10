@@ -656,10 +656,16 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+
+    use russh::keys::decode_secret_key;
     use russh::server::{self, Auth};
+    use serde_json::{from_value, to_value};
+    use tokio::net::TcpListener;
     use uuid::Uuid;
 
     use super::*;
+    use crate::ssh::{manager::SessionManager, monitor, process, types::ConnectOutcome};
 
     /// 测试 SSH 服务使用的 Ed25519 私钥，口令为 blabla
     const TEST_SERVER_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
@@ -704,7 +710,98 @@ e+JpiSq66Z6GIt0801skPh20jxOO3F52SoX1IeO5D5PXfZrfSZlw6S8c7bwyp2FHxDewRx
             proxy: None,
             remark: None,
             tunnels: Vec::new(),
+            monitor_enabled: true,
+            sftp_enabled: true,
         }
+    }
+
+    /// 功能开关缺失时兼容旧连接，显式关闭时保留关闭状态
+    #[test]
+    fn connection_feature_defaults() {
+        let mut value = to_value(test_connection(22)).expect("连接应可序列化");
+        let object = value.as_object_mut().expect("连接配置应为对象");
+        object.remove("monitorEnabled");
+        object.remove("sftpEnabled");
+        let legacy: ConnectionConfig = from_value(value.clone()).expect("旧配置应可加载");
+        assert!(legacy.monitor_enabled);
+        assert!(legacy.sftp_enabled);
+        value["monitorEnabled"] = false.into();
+        value["sftpEnabled"] = false.into();
+        let disabled: ConnectionConfig = from_value(value).expect("关闭功能的配置应可加载");
+        assert!(!disabled.monitor_enabled);
+        assert!(!disabled.sftp_enabled);
+    }
+
+    /// 关闭功能后 SSH 认证仍成功，但所有监控及普通、提权 SFTP 入口均被拒绝
+    #[tokio::test]
+    async fn disabled_features_do_not_open_remote_channels() {
+        let key = decode_secret_key(TEST_SERVER_KEY, Some("blabla"))
+            .expect("测试服务私钥应加载成功");
+        let server_config = Arc::new(server::Config {
+            keys: vec![key],
+            ..Default::default()
+        });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("测试服务应监听成功");
+        let port = listener.local_addr().expect("应取得监听地址").port();
+        let server_task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.expect("测试连接应接入");
+                let config = server_config.clone();
+                tokio::spawn(async move {
+                    let _ = server::run_stream(config, stream, TestServer).await;
+                });
+            }
+        });
+        let store = HostKeyStore::new(env::temp_dir().join(format!(
+            "zt-shell-disabled-features-{}.json",
+            Uuid::new_v4()
+        )));
+        let mut config = test_connection(port);
+        config.monitor_enabled = false;
+        config.sftp_enabled = false;
+        let manager = SessionManager::default();
+        let first = manager
+            .connect(&config, &store, None)
+            .await
+            .expect("应收到主机密钥确认");
+        let ConnectOutcome::HostKeyConfirmationRequired { challenge } = first else {
+            panic!("测试连接必须先确认主机密钥");
+        };
+        let approval = HostKeyApproval {
+            public_key: challenge.public_key,
+            replace_existing: false,
+            persist: false,
+        };
+        let outcome = manager
+            .connect(&config, &store, Some(&approval))
+            .await
+            .expect("禁用附加功能不应影响 SSH 建连");
+        assert!(matches!(outcome, ConnectOutcome::Connected { .. }));
+        assert_eq!(
+            manager.monitor_state(&config.id).err().unwrap().to_string(),
+            "性能监控功能未开启"
+        );
+        assert_eq!(
+            manager.sftp(&config.id).await.err().unwrap().to_string(),
+            "SFTP 功能未开启"
+        );
+        assert_eq!(
+            manager.set_sudo(&config.id, true).await.unwrap_err().to_string(),
+            "SFTP 功能未开启"
+        );
+        assert!(!manager.is_sudo(&config.id).await.expect("应保持普通权限状态"));
+        assert_eq!(
+            monitor::collect(&manager, &config.id).await.err().unwrap().to_string(),
+            "性能监控功能未开启"
+        );
+        assert_eq!(
+            process::list(&manager, &config.id).await.err().unwrap().to_string(),
+            "性能监控功能未开启"
+        );
+        manager.disconnect(&config.id);
+        server_task.await.expect("测试服务任务应结束");
     }
 
     /// 真实 SSH 握手必须先返回确认，精确授权同一公钥后才能完成认证

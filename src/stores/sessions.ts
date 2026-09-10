@@ -130,7 +130,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     setStatus(current.id, "connected");
     current.activity = false;
     // 连接成功后启动持续监控，与激活的选项卡无关
-    useMonitorStore().start(current.id);
+    if (current.config.monitorEnabled !== false) useMonitorStore().start(current.id);
     return reopenInPlace;
   }
 
@@ -160,7 +160,12 @@ export const useSessionsStore = defineStore("sessions", () => {
     const session: Session = {
       id,
       name: config.name || config.host,
-      config,
+      config: {
+        ...config,
+        tunnels: config.tunnels?.map((tunnel) => ({ ...tunnel })),
+        monitorEnabled: config.monitorEnabled !== false,
+        sftpEnabled: config.sftpEnabled !== false,
+      },
       status: "connecting",
       activity: false,
       extensions: [],

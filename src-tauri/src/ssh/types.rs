@@ -65,6 +65,7 @@ pub struct ProxyConfig {
     pub has_password: bool,
 }
 
+/// 兼容旧配置中未指定的默认开启选项
 fn default_true() -> bool {
     true
 }
@@ -136,6 +137,12 @@ pub struct ConnectionConfig {
     /// 当前连接的隧道列表，运行时每个会话独立启动
     #[serde(default)]
     pub tunnels: Vec<TunnelConfig>,
+    /// 是否启用性能监控，旧配置默认开启
+    #[serde(default = "default_true")]
+    pub monitor_enabled: bool,
+    /// 是否启用 SFTP，旧配置默认开启
+    #[serde(default = "default_true")]
+    pub sftp_enabled: bool,
 }
 
 /// 会话扩展功能条目类别

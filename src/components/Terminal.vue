@@ -23,6 +23,8 @@ const props = defineProps<{
   sessionId: string;
   /** 会话是否已连接（连接成功后再开启终端） */
   connected: boolean;
+  /** 是否允许当前会话使用 SFTP 上传 */
+  sftpEnabled: boolean;
   /** 该终端是否为当前激活选项卡（用于未读输出提示与自动聚焦） */
   active?: boolean;
 }>();
@@ -604,6 +606,10 @@ function isInTerminal(position: { x: number; y: number }): boolean {
  */
 async function handleFileDrop(paths: string[]) {
   if (!props.connected) return;
+  if (!props.sftpEnabled) {
+    showUploadInfo("无法上传", "SFTP 功能未开启");
+    return;
+  }
   if (paths.length !== 1) {
     showUploadInfo("无法上传", "仅支持拖拽单个文件上传，请勿一次拖入多个文件");
     return;
@@ -740,7 +746,9 @@ defineExpose({ fit: doFit, activate, reopen, cdTo, requestCwd });
     </div>
 
     <!-- 拖拽单文件上传悬停提示 -->
-    <div v-if="dropHover" class="term-drop-overlay">松开鼠标上传到终端当前目录</div>
+    <div v-if="dropHover" class="term-drop-overlay">
+      {{ sftpEnabled ? "松开鼠标上传到终端当前目录" : "SFTP 功能未开启" }}
+    </div>
 
     <!-- 上传相关弹窗（覆盖确认 / 提示） -->
     <AppDialog

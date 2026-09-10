@@ -20,6 +20,7 @@ import ConnectionManager from "./components/ConnectionManager.vue";
 import SettingsDialog from "./components/SettingsDialog.vue";
 import AppDialog from "./components/AppDialog.vue";
 import HostKeyDialog from "./components/HostKeyDialog.vue";
+import Icon from "./components/Icon.vue";
 
 import { useConnectionsStore } from "./stores/connections";
 import { useProxiesStore } from "./stores/proxies";
@@ -68,9 +69,11 @@ const bottomPanelRef = ref<InstanceType<typeof BottomPanel>>();
 /** 当前激活会话（用于状态栏与子面板） */
 const active = computed(() => sessionsStore.activeSession);
 const activeConnected = computed(() => active.value?.status === "connected");
+/** 面板可见性独立于会话功能开关，收起时保留内部状态 */
+const panels = reactive({ left: true, bottom: true, right: false });
 /** 连接工具页独占右侧纵向空间，会话页和欢迎页保留底部文件与传输区域 */
 const showBottomRegion = computed(
-  () => !workspacesStore.activeTab || workspacesStore.activeTab.type === "session"
+  () => panels.bottom && (!workspacesStore.activeTab || workspacesStore.activeTab.type === "session")
 );
 /** 当前最早等待确认主机密钥的会话，多个连接按会话顺序逐个处理 */
 const pendingHostKeySession = computed(() =>
@@ -78,23 +81,42 @@ const pendingHostKeySession = computed(() =>
 );
 
 /** 面板尺寸（像素），左宽与底高固定，窗口缩放不改变 */
-const layout = reactive({ leftWidth: 258, bottomHeight: 300 });
+const layout = reactive({ leftWidth: 258, bottomHeight: 300, rightWidth: 258 });
 
 /** 各面板尺寸约束（像素） */
-const LIMITS = { leftMin: 240, leftMax: 520, bottomMin: 120, bottomMax: 700 };
+const LIMITS = { leftMin: 240, leftMax: 520, bottomMin: 120, bottomMax: 700, rightMin: 180, rightMax: 520 };
 
 /** 当前拖拽状态 */
-let dragging: "left" | "bottom" | null = null;
+let dragging: "left" | "bottom" | "right" | null = null;
 let startPos = 0;
 let startSize = 0;
 
 const blockedBrowserKeys = new Set(["F3", "F5", "F7"]);
 
+/** 切换面板；在工具页展开底部区域时先回到其来源会话 */
+function togglePanel(panel: "left" | "bottom" | "right") {
+  if (panel === "bottom") {
+    panels.bottom = !showBottomRegion.value;
+    if (panels.bottom && active.value) sessionsStore.activate(active.value.id);
+  } else {
+    panels[panel] = !panels[panel];
+  }
+  terminalPanelRef.value?.focusActiveWorkspace();
+}
+
+/** 开始拖拽右侧分隔条 */
+function startDragRight(e: MouseEvent) {
+  dragging = "right";
+  startPos = e.clientX;
+  startSize = ((e.currentTarget as HTMLElement).nextElementSibling as HTMLElement).offsetWidth;
+  attachDragListeners();
+}
+
 /** 开始拖拽左侧分隔条 */
 function startDragLeft(e: MouseEvent) {
   dragging = "left";
   startPos = e.clientX;
-  startSize = layout.leftWidth;
+  startSize = ((e.currentTarget as HTMLElement).previousElementSibling as HTMLElement).offsetWidth;
   attachDragListeners();
 }
 
@@ -102,7 +124,7 @@ function startDragLeft(e: MouseEvent) {
 function startDragBottom(e: MouseEvent) {
   dragging = "bottom";
   startPos = e.clientY;
-  startSize = layout.bottomHeight;
+  startSize = ((e.currentTarget as HTMLElement).nextElementSibling as HTMLElement).offsetHeight;
   attachDragListeners();
 }
 
@@ -111,6 +133,9 @@ function onDragMove(e: MouseEvent) {
   if (dragging === "left") {
     const next = startSize + (e.clientX - startPos);
     layout.leftWidth = Math.min(Math.max(next, LIMITS.leftMin), LIMITS.leftMax);
+  } else if (dragging === "right") {
+    const next = startSize - (e.clientX - startPos);
+    layout.rightWidth = Math.min(Math.max(next, LIMITS.rightMin), LIMITS.rightMax);
   } else if (dragging === "bottom") {
     // 底部分隔条向上拖动增高，故取反向
     const next = startSize - (e.clientY - startPos);
@@ -131,7 +156,7 @@ function endDrag() {
 
 /** 绑定全局拖拽监听 */
 function attachDragListeners() {
-  document.body.style.cursor = dragging === "left" ? "col-resize" : "row-resize";
+  document.body.style.cursor = dragging === "bottom" ? "row-resize" : "col-resize";
   document.addEventListener("mousemove", onDragMove);
   document.addEventListener("mouseup", endDrag);
 }
@@ -443,7 +468,7 @@ onBeforeUnmount(() => {
     <!-- 主体：左固定宽 + 右自适应 -->
     <div class="app-body">
       <!-- 左侧监控面板（固定宽） -->
-      <div class="left-pane" :style="{ width: layout.leftWidth + 'px' }">
+      <div id="monitor-pane" v-show="panels.left" class="left-pane" :style="{ width: layout.leftWidth + 'px' }">
         <MonitorPanel
           :session-id="active?.id ?? ''"
           :connected="activeConnected"
@@ -454,7 +479,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- 左右分隔条 -->
-      <div class="splitter splitter-v" @mousedown.prevent="startDragLeft"></div>
+      <div v-show="panels.left" class="splitter splitter-v" @mousedown.prevent="startDragLeft"></div>
 
       <!-- 右侧：上终端（自适应） + 下文件区（固定高） -->
       <div class="right-pane">
@@ -474,6 +499,7 @@ onBeforeUnmount(() => {
 
         <!-- 底部文件区（固定高） -->
         <div
+          id="bottom-pane"
           v-show="showBottomRegion"
           class="bottom-region"
           :style="{ height: layout.bottomHeight + 'px' }"
@@ -482,26 +508,72 @@ onBeforeUnmount(() => {
             ref="bottomPanelRef"
             :session-id="active?.id ?? ''"
             :connected="activeConnected"
+            :sftp-enabled="active?.config.sftpEnabled !== false"
+            :active="showBottomRegion"
             @sync-terminal-path="syncTerminalPath"
             @sync-file-path="syncFilePath"
           />
         </div>
       </div>
+
+      <div v-show="panels.right" class="splitter splitter-v" @mousedown.prevent="startDragRight"></div>
+      <aside
+        id="auxiliary-pane"
+        v-show="panels.right"
+        class="auxiliary-pane"
+        :style="{ width: layout.rightWidth + 'px' }"
+        aria-label="右侧面板"
+      >
+        <div class="auxiliary-title">右侧面板</div>
+        <div class="auxiliary-empty">功能暂未实现</div>
+      </aside>
     </div>
 
     <!-- 底部状态栏 -->
     <div class="statusbar">
       <span>就绪</span>
-      <span v-if="active">
+      <span v-if="active" class="status-connection" :title="`${active.config.name} (${active.config.host}:${active.config.port})`">
         连接：{{ active.config.name }} ({{ active.config.host }}:{{
           active.config.port
         }})
       </span>
       <span v-else>未连接</span>
       <span>UTF-8</span>
-      <span class="status-right">
-        {{ activeConnected ? "SFTP 已连接" : "SFTP 未连接" }}
-      </span>
+      <div class="status-right" role="group" aria-label="面板布局">
+        <button
+          type="button"
+          class="panel-toggle"
+          :title="panels.left ? '收起左侧监控面板' : '展开左侧监控面板'"
+          :aria-label="panels.left ? '收起左侧监控面板' : '展开左侧监控面板'"
+          :aria-pressed="panels.left"
+          aria-controls="monitor-pane"
+          @click="togglePanel('left')"
+        >
+          <Icon name="panelLeft" :size="16" :filled="panels.left" />
+        </button>
+        <button
+          type="button"
+          class="panel-toggle"
+          :title="showBottomRegion ? '收起底部文件管理器' : '展开底部文件管理器'"
+          :aria-label="showBottomRegion ? '收起底部文件管理器' : '展开底部文件管理器'"
+          :aria-pressed="showBottomRegion"
+          aria-controls="bottom-pane"
+          @click="togglePanel('bottom')"
+        >
+          <Icon name="panelBottom" :size="16" :filled="showBottomRegion" />
+        </button>
+        <button
+          type="button"
+          class="panel-toggle"
+          :title="panels.right ? '收起右侧面板' : '展开右侧面板'"
+          :aria-label="panels.right ? '收起右侧面板' : '展开右侧面板'"
+          :aria-pressed="panels.right"
+          aria-controls="auxiliary-pane"
+          @click="togglePanel('right')"
+        >
+          <Icon name="panelRight" :size="16" :filled="panels.right" />
+        </button>
+      </div>
     </div>
 
     <!-- 连接管理器 -->
@@ -573,10 +645,35 @@ onBeforeUnmount(() => {
 }
 
 /* 左侧面板固定宽度 */
-.left-pane {
+.left-pane,
+.auxiliary-pane {
   flex: 0 0 auto;
   min-width: 0;
+  max-width: 30%;
   overflow: hidden;
+}
+.auxiliary-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+}
+.auxiliary-title {
+  display: flex;
+  align-items: center;
+  min-height: var(--tab-height);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.auxiliary-empty {
+  flex: 1;
+  display: grid;
+  place-content: center;
+  padding: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 /* 右侧面板占据剩余空间，纵向布局 */
@@ -598,6 +695,7 @@ onBeforeUnmount(() => {
 /* 底部文件区固定高度 */
 .bottom-region {
   flex: 0 0 auto;
+  max-height: calc(100% - 100px);
   overflow: hidden;
 }
 
@@ -632,7 +730,42 @@ onBeforeUnmount(() => {
   font-size: 11px;
   color: var(--text-muted);
 }
+.statusbar > span {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.statusbar .status-connection {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .statusbar .status-right {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
+}
+.panel-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.panel-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.panel-toggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
 }
 </style>

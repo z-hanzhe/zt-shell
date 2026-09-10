@@ -43,6 +43,8 @@ const props = defineProps<{
   sessionId: string;
   /** 会话是否已连接 */
   connected: boolean;
+  /** 当前会话是否启用 SFTP，用于区分功能关闭与连接中断 */
+  sftpEnabled: boolean;
   /** 是否为当前激活选项卡，决定键盘导航是否响应 */
   active: boolean;
 }>();
@@ -569,6 +571,32 @@ function closeContextMenu() {
 
 /** 全局按键：F5 刷新当前目录，键入触发快速定位，Esc 清空文件列表选择 */
 function onFileKeyDown(event: KeyboardEvent) {
+  if (event.key === "F2" || event.key === "Delete") {
+    const target = event.target;
+    const list = fileListRef.value;
+    if (
+      event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey ||
+      !props.active || !props.connected || loading.value ||
+      dialog.open || contextMenu.open || hasOpenModal() ||
+      selectedEntries.value.length === 0 ||
+      (event.key === "F2" && selectedEntries.value.length !== 1) ||
+      !list || list.offsetParent === null ||
+      !(target instanceof HTMLElement) ||
+      target.closest("input, textarea, select, [contenteditable], .xterm") ||
+      (!list.contains(target) && !(target === document.body && activeZone === "list"))
+    ) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelTypeahead();
+    if (event.key === "Delete") {
+      // 单选和多选均通过现有确认弹窗删除，保留文件夹内容提醒。
+      void onDeleteSelected();
+    } else {
+      // 仅处理文件列表的单选条目，复用右键菜单的重命名流程。
+      void onRename(selectedEntries.value[0]);
+    }
+    return;
+  }
   if (event.key === "F5") {
     // App 层已拦截浏览器刷新，这里借 F5 刷新文件管理；终端聚焦时 F5 归终端使用
     const target = event.target as HTMLElement;
@@ -683,7 +711,7 @@ const typeaheadMatches = computed<string[]>(() => {
 
 /** 处理键入快速定位按键，返回 true 表示按键已被消费 */
 function handleTypeaheadKey(event: KeyboardEvent): boolean {
-  if (!props.connected || dialog.open || contextMenu.open) return false;
+  if (!props.active || !props.connected || dialog.open || contextMenu.open) return false;
   // 存在其他模态弹窗时不响应键入快速定位
   if (hasOpenModal()) return false;
   const target = event.target as HTMLElement;
@@ -906,6 +934,7 @@ function onFileListContextMenu(event: MouseEvent) {
 
 /** 定位右键菜单 */
 function openContextMenu(event: MouseEvent) {
+  if (!props.connected) return;
   const menuHeight = contextMenuItems.value.length * CONTEXT_MENU_ITEM_HEIGHT + CONTEXT_MENU_PADDING;
   const maxY = Math.max(
     CONTEXT_MENU_MARGIN,
@@ -2252,6 +2281,10 @@ watch(
       sessionUiStates.delete(id);
       staleSessionIds.delete(id);
       sudoActive.value = false;
+      cwd.value = "/";
+      loading.value = false;
+      error.value = "";
+      closeContextMenu();
       entries.value = [];
       treeChildren.value = {};
     }
@@ -2288,18 +2321,19 @@ defineExpose({ setPathFromTerminal });
   <div class="fm-panel">
     <!-- 工具栏 -->
     <div class="file-toolbar">
-      <button class="ic" title="上级目录" @click="goUp">
+      <button class="ic" title="上级目录" :disabled="!connected" @click="goUp">
         <Icon name="arrowUp" :size="14" />
       </button>
-      <button class="ic" title="刷新" @click="refresh">
+      <button class="ic" title="刷新" :disabled="!connected" @click="refresh">
         <Icon name="refresh" :size="13" />
       </button>
-      <button class="ic" title="新建目录" @click="onNewDir">
+      <button class="ic" title="新建目录" :disabled="!connected" @click="onNewDir">
         <Icon name="plus" :size="14" />
       </button>
       <input
         class="path-input"
         :value="cwd"
+        :disabled="!connected"
         @keyup.enter="goPath(($event.target as HTMLInputElement).value)"
       />
       <button class="ic sync" title="同步地址栏路径到终端" :disabled="!connected" @click="syncPathToTerminal">
@@ -2356,7 +2390,8 @@ defineExpose({ setPathFromTerminal });
           @pointerdown.capture="onListZonePointerDown"
           @contextmenu="onFileListContextMenu"
         >
-        <div v-if="!connected" class="fm-tip">未连接会话</div>
+        <div v-if="!sftpEnabled" class="fm-tip">SFTP 功能未开启</div>
+        <div v-else-if="!connected" class="fm-tip">未连接会话</div>
         <div v-else-if="loading" class="fm-tip">加载中…</div>
         <div v-else-if="error" class="fm-tip error">{{ error }}</div>
         <table v-else>

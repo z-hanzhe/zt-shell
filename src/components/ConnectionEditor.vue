@@ -60,6 +60,8 @@ function defaults(): ConnectionConfig {
     proxyId: null,
     remark: "",
     tunnels: [],
+    monitorEnabled: true,
+    sftpEnabled: true,
     parentId: null,
     order: undefined,
   };
@@ -76,7 +78,11 @@ function cloneTunnels(tunnels: TunnelConfig[] | undefined): TunnelConfig[] {
 watch(
   () => props.model,
   (m) => {
-    Object.assign(form, defaults(), m ?? {}, { tunnels: cloneTunnels(m?.tunnels) });
+    Object.assign(form, defaults(), m ?? {}, {
+      tunnels: cloneTunnels(m?.tunnels),
+      monitorEnabled: m?.monitorEnabled !== false,
+      sftpEnabled: m?.sftpEnabled !== false,
+    });
     activeSection.value = "connection";
   },
   { immediate: true }
@@ -244,9 +250,16 @@ const { isTop: isTopModal } = useEscClose(
             v-model="form.tunnels"
           />
 
-          <section v-else class="setting-pane empty-pane more-pane" aria-label="更多功能">
+          <section v-else class="setting-pane more-pane" aria-label="更多功能">
             <h3>更多功能</h3>
-            <p>更多功能还在筹备中，敬请期待</p>
+            <label class="feature-toggle">
+              <input type="checkbox" v-model="form.monitorEnabled" :disabled="saving" />
+              <span>启用性能监控面板</span>
+            </label>
+            <label class="feature-toggle">
+              <input type="checkbox" v-model="form.sftpEnabled" :disabled="saving" />
+              <span>启用SFTP文件管理器</span>
+            </label>
           </section>
         </div>
       </div>
@@ -390,9 +403,16 @@ const { isTop: isTopModal } = useEscClose(
   resize: vertical;
   line-height: 1.5;
 }
-.more-pane p {
-  margin: 0;
+.feature-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
   color: var(--text-secondary);
-  line-height: 1.7;
+  cursor: pointer;
+}
+.feature-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
 }
 </style>

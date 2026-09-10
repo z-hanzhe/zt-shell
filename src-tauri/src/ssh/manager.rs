@@ -32,6 +32,8 @@ struct SessionEntry {
     login_password: Option<String>,
     /// 终端通道控制发送端（打开终端后写入）
     terminal_tx: Mutex<Option<UnboundedSender<TerminalCommand>>>,
+    /// 当前会话是否允许建立普通或提权 SFTP 通道
+    sftp_enabled: bool,
     /// 普通 SFTP 会话（首次使用文件管理时惰性建立）
     sftp: Mutex<Option<Arc<SftpSession>>>,
     /// 是否启用 sudo 提权文件管理
@@ -39,7 +41,7 @@ struct SessionEntry {
     /// sudo 提权 SFTP 会话（启用提权时惰性建立）
     sudo_sftp: Mutex<Option<Arc<SftpSession>>>,
     /// 当前会话的监控累计值，用于按相邻采样计算 CPU 与网卡速率
-    monitor_state: Arc<Mutex<MonitorRuntimeState>>,
+    monitor_state: Option<Arc<Mutex<MonitorRuntimeState>>>,
     /// 本会话启动的本地/动态隧道监听任务
     tunnel_tasks: Mutex<Vec<JoinHandle<()>>>,
     /// 本会话全部隧道连接的取消信号
@@ -130,10 +132,13 @@ impl SessionManager {
             session,
             login_password: config.password.clone(),
             terminal_tx: Mutex::new(None),
+            sftp_enabled: config.sftp_enabled,
             sftp: Mutex::new(None),
             sudo_active: Mutex::new(false),
             sudo_sftp: Mutex::new(None),
-            monitor_state: Arc::new(Mutex::new(MonitorRuntimeState::default())),
+            monitor_state: config
+                .monitor_enabled
+                .then(|| Arc::new(Mutex::new(MonitorRuntimeState::default()))),
             tunnel_tasks: Mutex::new(tunnel_result.tasks),
             tunnel_cancel_tx,
         });
@@ -253,7 +258,10 @@ impl SessionManager {
         &self,
         session_id: &str,
     ) -> Result<Arc<Mutex<MonitorRuntimeState>>> {
-        Ok(self.entry(session_id)?.monitor_state.clone())
+        self.entry(session_id)?
+            .monitor_state
+            .clone()
+            .ok_or_else(|| anyhow!("性能监控功能未开启"))
     }
 
     /// 在远端执行允许中断的一次性命令
@@ -333,6 +341,9 @@ impl SessionManager {
 
     /// 获取或惰性创建普通 SFTP 会话
     async fn ensure_normal_sftp(entry: &Arc<SessionEntry>) -> Result<Arc<SftpSession>> {
+        if !entry.sftp_enabled {
+            return Err(anyhow!("SFTP 功能未开启"));
+        }
         let mut guard = entry.sftp.lock().await;
         if let Some(sftp) = guard.as_ref() {
             return Ok(sftp.clone());
@@ -348,6 +359,9 @@ impl SessionManager {
 
     /// 获取或惰性创建 sudo 提权 SFTP 会话
     async fn ensure_sudo_sftp(entry: &Arc<SessionEntry>) -> Result<Arc<SftpSession>> {
+        if !entry.sftp_enabled {
+            return Err(anyhow!("SFTP 功能未开启"));
+        }
         let mut guard = entry.sudo_sftp.lock().await;
         if let Some(sftp) = guard.as_ref() {
             return Ok(sftp.clone());

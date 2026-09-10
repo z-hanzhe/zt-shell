@@ -39,6 +39,8 @@ type CopyField = "pid" | "name" | "command" | "executable";
 
 const settingsStore = useSettingsStore();
 const monitorStore = useMonitorStore();
+/** 只有已启动监控的会话才允许进程页采集，来源会话迁移后同样生效 */
+const canMonitor = computed(() => monitorStore.state(props.sessionId) !== null);
 /** 手动刷新动画的最短展示时间 */
 const MANUAL_REFRESH_MIN_DURATION = 200;
 
@@ -272,7 +274,7 @@ function selectAdjacentProcess(process: ProcessListItem, offset: -1 | 1): void {
 
 /** 读取完整进程列表，并保留仍有效的当前选择 */
 async function refreshProcesses(refreshSelectedDetail = false): Promise<void> {
-  if (!props.sessionId || loading.value) return;
+  if (!canMonitor.value || !props.sessionId || loading.value) return;
   const sessionId = props.sessionId;
   const sequence = ++listRequestSequence;
   loading.value = true;
@@ -324,7 +326,7 @@ function stopPolling(): void {
 /** 按应用监控间隔启动进程列表轮询 */
 function startPolling(): void {
   stopPolling();
-  if (!props.active || !props.sessionId) return;
+  if (!canMonitor.value || !props.active || !props.sessionId) return;
   const interval = Math.max(1, settingsStore.settings.monitorInterval) * 1000;
   pollTimer = window.setInterval(() => void refreshProcesses(), interval);
 }
@@ -509,15 +511,15 @@ const detailExecutable = computed(
 const detailWorkingDirectory = computed(() => detail.value?.workingDirectory || "-");
 
 watch(
-  () => [props.sessionId, props.active, settingsStore.settings.monitorInterval] as const,
-  ([sessionId, active]) => {
+  () => [props.sessionId, props.active, settingsStore.settings.monitorInterval, canMonitor.value] as const,
+  ([sessionId, active, , enabled]) => {
     const sessionChanged = sessionId !== currentSessionId;
-    if (sessionChanged) {
+    if (sessionChanged || !enabled) {
       currentSessionId = sessionId;
       resetWorkspaceState();
     }
     stopPolling();
-    if (!active) {
+    if (!active || !enabled) {
       closeContextMenu();
       return;
     }

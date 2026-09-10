@@ -460,6 +460,7 @@ fn validate_process_identity(pid: u32, start_time: u64) -> Result<()> {
 
 /// 查询远端完整进程列表
 pub async fn list(manager: &SessionManager, session_id: &str) -> Result<Vec<ProcessListItem>> {
+    manager.monitor_state(session_id)?;
     let raw = timeout(
         PROCESS_TIMEOUT,
         manager.exec(session_id, PROCESS_LIST_SCRIPT),
@@ -476,6 +477,7 @@ pub async fn detail(
     pid: u32,
     start_time: u64,
 ) -> Result<ProcessDetail> {
+    manager.monitor_state(session_id)?;
     validate_process_identity(pid, start_time)?;
     let command = fill_process_script(PROCESS_DETAIL_SCRIPT, pid, start_time);
     let raw = timeout(PROCESS_TIMEOUT, manager.exec(session_id, &command))
@@ -491,6 +493,7 @@ pub async fn terminate(
     pid: u32,
     start_time: u64,
 ) -> Result<()> {
+    manager.monitor_state(session_id)?;
     validate_process_identity(pid, start_time)?;
     let command = fill_process_script(PROCESS_TERMINATE_SCRIPT, pid, start_time);
     let raw = timeout(PROCESS_TIMEOUT, manager.exec(session_id, &command))

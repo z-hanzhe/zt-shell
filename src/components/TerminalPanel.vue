@@ -842,6 +842,7 @@ defineExpose({
             :ref="(el) => { if (el) termRefs[s.id] = el as any }"
             :session-id="s.id"
             :connected="s.status === 'connected'"
+            :sftp-enabled="s.config.sftpEnabled !== false"
             :active="workspaces.activeId === sessionWorkspaceTabId(s.id)"
             @closed="onTerminalClosed(s.id)"
             @activity="onTerminalActivity(s.id)"

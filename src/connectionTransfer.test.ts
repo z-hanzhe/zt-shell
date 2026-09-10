@@ -619,6 +619,23 @@ test("同层连接名称从第一个可用序号开始递增", () => {
   );
 });
 
+test("功能开关只在本机保存，导入导出继续使用原 V1 契约", () => {
+  const file = buildConnectionExport({ kind: "all" }, {
+    connections: [connection({ monitorEnabled: false, sftpEnabled: false })],
+    folders: [],
+    proxies: [],
+  });
+  assert.equal("monitorEnabled" in file.connections[0], false);
+  assert.equal("sftpEnabled" in file.connections[0], false);
+  const plan = planConnectionImport(
+    parseConnectionExport(serializeConnectionExport(file)),
+    { connections: [], folders: [], proxies: [] },
+    { idFactory: sequentialIdFactory() }
+  );
+  assert.notEqual(plan.connections[0].monitorEnabled, false);
+  assert.notEqual(plan.connections[0].sftpEnabled, false);
+});
+
 test("JSON 解析错误使用中文业务错误", () => {
   assert.throws(() => parseConnectionExport("{invalid"), /导入文件不是有效的 JSON/);
 });

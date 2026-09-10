@@ -10,8 +10,10 @@ const props = withDefaults(
     name: string;
     /** 尺寸（像素） */
     size?: number;
+    /** 是否填充图标中的面板状态区域 */
+    filled?: boolean;
   }>(),
-  { size: 16 }
+  { size: 16, filled: false }
 );
 
 /** 图标路径表，均为 24x24 视窗、stroke 风格 */
@@ -20,6 +22,9 @@ const paths: Record<string, string> = {
     "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z",
   settings:
     "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z",
+  panelLeft: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM9 3v18",
+  panelBottom: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM3 15h18",
+  panelRight: "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM15 3v18",
   plus: "M12 5v14M5 12h14",
   close: "M18 6 6 18M6 6l12 12",
   refresh: "M23 4v6h-6M1 20v-6h6M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15",
@@ -54,6 +59,13 @@ const paths: Record<string, string> = {
   triangleAlert: "M10.3 3.7 2.2 18a2 2 0 0 0 1.7 3h16.2a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01",
 };
 
+/** 面板展开时填充对应区域，其余图标继续只绘制轮廓 */
+const filledPaths: Record<string, string> = {
+  panelLeft: "M5 3h4v18H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z",
+  panelBottom: "M3 15h18v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
+  panelRight: "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4z",
+};
+
 const d = computed(() => paths[props.name] ?? "");
 </script>
 
@@ -69,6 +81,7 @@ const d = computed(() => paths[props.name] ?? "");
     stroke-linejoin="round"
     class="icon"
   >
+    <path v-if="filled && filledPaths[name]" :d="filledPaths[name]" fill="currentColor" stroke="none" />
     <path :d="d" />
   </svg>
 </template>
