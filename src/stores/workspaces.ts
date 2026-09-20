@@ -47,11 +47,19 @@ export interface ProcessListWorkspaceTab {
   connectionId: string;
 }
 
+/** 不依附 SSH 会话的应用设置选项卡 */
+export interface SettingsWorkspaceTab {
+  id: "settings";
+  type: "settings";
+  title: string;
+}
+
 /** 主工作区支持的选项卡联合类型 */
 export type WorkspaceTab =
   | SessionWorkspaceTab
   | SystemInfoWorkspaceTab
-  | ProcessListWorkspaceTab;
+  | ProcessListWorkspaceTab
+  | SettingsWorkspaceTab;
 
 /** 按连接配置复用的工具选项卡 */
 type ConnectionToolWorkspaceTab = SystemInfoWorkspaceTab | ProcessListWorkspaceTab;
@@ -95,7 +103,7 @@ export const useWorkspacesStore = defineStore("workspaces", () => {
   /** 打开或激活按连接复用的工具选项卡 */
   function openConnectionTool(tab: ConnectionToolWorkspaceTab): void {
     const existing = tabs.value.find((item) => item.id === tab.id);
-    if (existing && existing.type !== "session") {
+    if (existing && existing.type !== "session" && existing.type !== "settings") {
       existing.title = tab.title;
       existing.sessionId = tab.sessionId;
       activeId.value = tab.id;
@@ -142,6 +150,14 @@ export const useWorkspacesStore = defineStore("workspaces", () => {
     });
   }
 
+  /** 打开或激活唯一设置页，不修改当前 SSH 会话上下文 */
+  function openSettings(): void {
+    if (!tabs.value.some((tab) => tab.type === "settings")) {
+      tabs.value.push({ id: "settings", type: "settings", title: "设置" });
+    }
+    activeId.value = "settings";
+  }
+
   /** 激活指定工作区选项卡 */
   function activate(id: string): void {
     if (tabs.value.some((tab) => tab.id === id)) activeId.value = id;
@@ -180,7 +196,7 @@ export const useWorkspacesStore = defineStore("workspaces", () => {
   function removeSession(sessionId: string, replacementSessionId?: string): void {
     const ids = new Set([sessionWorkspaceTabId(sessionId)]);
     for (const tab of tabs.value) {
-      if (tab.type === "session" || tab.sessionId !== sessionId) continue;
+      if (tab.type === "session" || tab.type === "settings" || tab.sessionId !== sessionId) continue;
       if (replacementSessionId) tab.sessionId = replacementSessionId;
       else ids.add(tab.id);
     }
@@ -202,6 +218,7 @@ export const useWorkspacesStore = defineStore("workspaces", () => {
     activeId,
     activeTab,
     openSession,
+    openSettings,
     openSystemInfo,
     openProcessList,
     activate,

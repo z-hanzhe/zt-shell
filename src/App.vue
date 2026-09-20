@@ -17,7 +17,6 @@ import MonitorPanel from "./components/MonitorPanel.vue";
 import TerminalPanel from "./components/TerminalPanel.vue";
 import BottomPanel from "./components/BottomPanel.vue";
 import ConnectionManager from "./components/ConnectionManager.vue";
-import SettingsDialog from "./components/SettingsDialog.vue";
 import AppDialog from "./components/AppDialog.vue";
 import HostKeyDialog from "./components/HostKeyDialog.vue";
 import Icon from "./components/Icon.vue";
@@ -28,6 +27,7 @@ import { useSessionsStore } from "./stores/sessions";
 import { useSettingsStore } from "./stores/settings";
 import { useTransfersStore } from "./stores/transfers";
 import { useWorkspacesStore } from "./stores/workspaces";
+import { useUpdatesStore } from "./stores/updates";
 import type { ConnectionConfig } from "./types";
 import type { AppSettings } from "./stores/settings";
 import {
@@ -44,6 +44,7 @@ const sessionsStore = useSessionsStore();
 const settingsStore = useSettingsStore();
 const transfersStore = useTransfersStore();
 const workspacesStore = useWorkspacesStore();
+const updatesStore = useUpdatesStore();
 
 /** 连接管理器弹窗可见性 */
 const showConnManager = ref(false);
@@ -51,8 +52,8 @@ const showConnManager = ref(false);
 const connectionDataReady = ref(false);
 /** 初始化期间是否收到打开连接管理器的请求 */
 const pendingConnectionManagerOpen = ref(false);
-/** 设置弹窗可见性 */
-const showSettings = ref(false);
+/** 安装更新前的退出确认 */
+const showInstallConfirm = ref(false);
 /** 关闭软件前的确认弹窗可见性（存在连接中的会话时） */
 const showCloseConfirm = ref(false);
 /** 打开退出确认时仍处于连接中的会话数量快照 */
@@ -301,15 +302,15 @@ function applyAppUiScale(uiScale: number): Promise<void> {
   return uiScaleUpdateQueue;
 }
 
-/** 实时预览设置弹窗中选择的界面缩放 */
+/** 实时预览设置页中选择的界面缩放 */
 function onPreviewUiScale(uiScale: number) {
   void applyAppUiScale(uiScale);
 }
 
-/** 关闭设置弹窗并恢复已保存的界面缩放 */
-function closeSettings() {
-  showSettings.value = false;
-  void applyAppUiScale(settingsStore.settings.uiScale);
+/** 打开唯一的设置选项卡并转移焦点 */
+function openSettings() {
+  workspacesStore.openSettings();
+  terminalPanelRef.value?.focusActiveWorkspace();
 }
 
 /** 应用编辑器基础字号并同步当前独立编辑器窗口 */
@@ -327,7 +328,6 @@ async function onSaveSettings(settings: AppSettings) {
   await settingsStore.update(settings);
   await applyTextEditorFontSize(settingsStore.settings.editorFontSize);
   await applyAppUiScale(settingsStore.settings.uiScale);
-  showSettings.value = false;
 }
 
 /** 将文件管理器地址栏路径同步到当前终端 */
@@ -404,8 +404,45 @@ function onCancelClose() {
   showCloseConfirm.value = false;
 }
 
+/** 请求安装时锁定更新状态，直到用户确认或取消 */
+function requestInstallUpdate(): void {
+  if (checkingAppClose || updatesStore.busy || updatesStore.phase !== "ready") return;
+  updatesStore.preparingInstall = true;
+  showInstallConfirm.value = true;
+}
+
+/** 取消安装，保留已经下载且验证通过的更新包 */
+function cancelInstallUpdate(): void {
+  showInstallConfirm.value = false;
+  updatesStore.preparingInstall = false;
+}
+
+/** 复用应用退出保护，检查通过后才启动官方安装器 */
+async function confirmInstallUpdate(): Promise<void> {
+  if (checkingAppClose) return;
+  checkingAppClose = true;
+  showInstallConfirm.value = false;
+  try {
+    const targetIds = sessionsStore.sessions.map((session) => session.id);
+    const canClose = await terminalPanelRef.value?.confirmCloseRisks(targetIds);
+    if (canClose !== true) return;
+    await closeAllTextEditorWindows();
+    destroyingWindow = true;
+    await updatesStore.install();
+  } catch (error) {
+    updatesStore.error = `无法完成更新安装：${String(error)}`;
+  } finally {
+    if (updatesStore.phase !== "installing") {
+      await recoverFailedAppClose();
+      checkingAppClose = false;
+      updatesStore.preparingInstall = false;
+    }
+  }
+}
+
 onMounted(async () => {
   attachBrowserGuards();
+  void updatesStore.init();
   const settingsInitTask = settingsStore.init();
   // 加载本地持久化的连接与设置、初始化传输事件监听（浏览器预览环境下会失败，忽略即可）
   try {
@@ -463,7 +500,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="app-root">
     <!-- 顶部自绘标题栏 -->
-    <TitleBar @open-settings="showSettings = true" />
+    <TitleBar :update-available="updatesStore.hasUpdate" @open-settings="openSettings" />
 
     <!-- 主体：左固定宽 + 右自适应 -->
     <div class="app-body">
@@ -486,6 +523,9 @@ onBeforeUnmount(() => {
         <div class="terminal-region">
           <TerminalPanel
             ref="terminalPanelRef"
+            :save-settings="onSaveSettings"
+            @preview-ui-scale="onPreviewUiScale"
+            @install-update="requestInstallUpdate"
             @open-conn-manager="openConnectionManager"
           />
         </div>
@@ -583,13 +623,15 @@ onBeforeUnmount(() => {
       @close="showConnManager = false"
     />
 
-    <!-- 设置 -->
-    <SettingsDialog
-      v-if="showSettings"
-      :settings="settingsStore.settings"
-      @save="onSaveSettings"
-      @preview-ui-scale="onPreviewUiScale"
-      @close="closeSettings"
+    <AppDialog
+      :open="showInstallConfirm"
+      type="confirm"
+      title="安装更新"
+      message="安装更新需要退出程序，所有 SSH 会话将断开。接下来会检查未保存文件和未完成传输，是否继续？"
+      confirm-text="继续安装"
+      window-modal
+      @confirm="confirmInstallUpdate"
+      @cancel="cancelInstallUpdate"
     />
 
     <!-- 关闭软件前确认（存在连接中的会话时） -->

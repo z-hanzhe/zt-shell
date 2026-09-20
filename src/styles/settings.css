@@ -1,0 +1,88 @@
+/* 设置工作区的导航、表单卡片和更新状态共用同一套视觉规则。 */
+.settings-workspace { display: flex; height: 100%; min-width: 0; container-type: inline-size; background: var(--bg-window); }
+.settings-nav { display: flex; flex: 0 0 160px; flex-direction: column; gap: 6px; padding: 24px 12px 16px; border-right: 1px solid var(--border-light); background: var(--bg-panel); }
+.settings-nav-title { padding: 0 12px 14px; color: var(--text-muted); font-size: 11px; letter-spacing: 1px; }
+.settings-nav button { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 9px 12px; border: 1px solid transparent; border-radius: 6px; color: var(--text-secondary); background: transparent; font: inherit; cursor: pointer; text-align: left; }
+.settings-nav button:hover { background: var(--bg-window); border-color: var(--border-light); }
+.settings-nav button.selected { color: var(--accent); background: var(--bg-active); border-color: #b9cee3; box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
+.settings-nav-footer { display: flex; flex-direction: column; gap: 4px; margin-top: auto; padding: 24px 12px 0; color: var(--text-muted); font-size: 11px; }
+.settings-nav-footer span { color: var(--text-muted); opacity: .75; }
+.settings-content { flex: 1; min-width: 0; overflow: auto; }
+.settings-page { width: 100%; max-width: 900px; margin: 0 auto; padding: 30px 32px 24px; }
+.settings-page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 24px; }
+.settings-page-header h1 { margin: 0 0 8px; font-size: 23px; font-weight: 600; letter-spacing: .5px; }
+.settings-page-header p, .update-hero p { margin: 0; color: var(--text-muted); line-height: 1.6; }
+.settings-badge { flex-shrink: 0; padding: 4px 9px; border: 1px solid var(--border-light); border-radius: 20px; color: var(--text-muted); background: var(--bg-window); font-size: 11px; }
+.settings-card { margin-bottom: 18px; border: 1px solid var(--border-light); border-radius: 9px; background: var(--bg-window); overflow: hidden; }
+.settings-card > h2 { display: flex; align-items: center; gap: 9px; margin: 0; padding: 16px 20px; border-bottom: 1px solid var(--border-light); font-size: 13px; font-weight: 600; }
+.settings-card > h2 .icon { color: var(--accent); }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin: 0 20px; padding: 17px 0; border-bottom: 1px solid var(--border-light); }
+.settings-row:last-child { border-bottom: 0; }
+.settings-label { display: flex; flex-direction: column; gap: 6px; min-width: 0; line-height: 1.5; font-size: 13px; }
+.settings-label small { color: var(--text-muted); font-size: 11px; font-weight: 400; }
+.settings-control { width: 150px; min-width: 0; flex-shrink: 0; }
+.settings-row .input { height: 32px; border-radius: 5px; }
+.settings-row-wide { align-items: stretch; flex-direction: column; gap: 10px; }
+.settings-row-wide .settings-control { width: 100%; }
+.settings-number { display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
+.settings-number .input { width: 80px; }
+.settings-path { display: flex; gap: 8px; min-width: 0; }
+.settings-path .input { flex: 1; width: 0; }
+.settings-path .btn { height: 32px; width: 32px; }
+.settings-toggle { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--text-secondary); }
+.settings-toggle input { appearance: none; width: 32px; height: 19px; margin: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--progress-track); cursor: pointer; transition: background .15s; }
+.settings-toggle input::before { display: block; width: 13px; height: 13px; margin: 2px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px #0002; content: ""; transition: transform .15s; }
+.settings-toggle input:checked { background: var(--accent); border-color: var(--accent); }
+.settings-toggle input:checked::before { transform: translateX(13px); }
+.settings-savebar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 14px 0; background: var(--bg-window); border-top: 1px solid var(--border-light); }
+.settings-feedback { flex: 1; color: var(--success); line-height: 1.5; overflow-wrap: anywhere; }
+.settings-feedback.error { color: var(--danger); }
+.settings-hint { color: var(--text-muted); line-height: 1.8; font-size: 12px; }
+.settings-caption { color: var(--text-muted); font-size: 11px; font-weight: 400; }
+.settings-error { padding: 12px 14px; margin: 14px 0; border: 1px solid #eed6d5; border-radius: 6px; background: #fdf5f4; color: var(--danger); line-height: 1.7; overflow-wrap: anywhere; user-select: text; }
+.settings-error p { margin: 4px 0 0; }
+.settings-card > .settings-error { margin: 16px 20px; }
+.settings-row.update-proxy-row { flex-direction: row; align-items: center; }
+.update-proxy-config { flex-shrink: 0; width: 32px; height: 32px; border-radius: 5px; }
+.update-overview { padding: 24px; border-top: 3px solid var(--accent); }
+.update-overview-top { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.update-hero { display: flex; align-items: center; gap: 18px; min-width: 0; }
+.update-check { display: flex; flex-direction: column; align-items: flex-end; gap: 9px; margin-left: auto; text-align: right; flex-shrink: 0; }
+.update-check .btn { height: 32px; border-radius: 5px; }
+.update-check .settings-caption { max-width: 220px; margin: 0; line-height: 1.6; }
+.update-overview > .settings-hint { margin: 16px 0 0; }
+.update-app-icon { display: grid; place-items: center; width: 64px; height: 64px; flex-shrink: 0; border-radius: 16px; background: var(--row-hover); }
+.update-app-icon img { width: 44px; height: 44px; }
+.settings-eyebrow { color: var(--text-muted); font-size: 11px; letter-spacing: 1px; }
+.update-hero-copy { min-width: 0; }
+.update-hero-copy h2 { margin: 5px 0 8px; font-size: 20px; font-weight: 600; }
+.update-arrow { padding: 0 5px; color: var(--text-muted); }
+.update-hero strong { color: var(--accent); }
+.update-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.update-actions .btn { height: 32px; border-radius: 5px; }
+.update-notes { padding: 18px 20px; }
+.update-progress { display: flex; flex-direction: column; gap: 9px; margin: 16px 0; color: var(--text-muted); }
+.update-progress progress { width: 100%; height: 7px; accent-color: var(--accent); }
+.settings-workspace button:focus-visible, .settings-workspace input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@container (max-width: 650px) {
+  .settings-nav { flex-basis: 132px; padding: 20px 8px 12px; }
+  .settings-nav button { gap: 8px; padding: 9px; }
+  .settings-page { padding: 22px 18px 18px; }
+  .settings-row { gap: 12px; margin: 0 16px; }
+  .settings-control { width: 110px; }
+  .settings-savebar { flex-wrap: wrap; }
+  .update-overview { padding: 18px; }
+  .update-hero { gap: 12px; }
+  .update-app-icon { width: 48px; height: 48px; border-radius: 12px; }
+  .update-app-icon img { width: 34px; height: 34px; }
+  .update-hero-copy h2 { font-size: 17px; }
+  .update-overview-top { gap: 14px; }
+  .update-check .settings-caption { max-width: 155px; }
+}
+@container (max-width: 480px) {
+  .settings-row { align-items: stretch; flex-direction: column; }
+  .settings-control { width: 100%; }
+  .update-overview-top { flex-wrap: wrap; }
+  .update-hero { align-items: flex-start; }
+  .update-app-icon { display: none; }
+}

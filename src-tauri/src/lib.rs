@@ -2,6 +2,7 @@ mod commands;
 mod connection_file;
 mod credentials;
 mod ssh;
+mod updater;
 
 use credentials::CredentialManager;
 use ssh::host_keys::HostKeyStore;
@@ -25,6 +26,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::UpdateState::default())
         .manage(CredentialManager::default())
         .manage(SessionManager::default())
         .manage(TransferManager::default())
@@ -36,12 +39,17 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            updater::updater_environment,
+            updater::updater_check,
+            updater::updater_download,
+            updater::updater_install,
             connection_file::pick_connection_import_file,
             connection_file::save_connection_export_file,
             commands::credentials_set_many,
             commands::credentials_check_many,
             commands::credentials_get_connection_password,
             commands::credentials_get_connection_passphrase,
+            commands::credentials_get_proxy_password,
             commands::credentials_match_many,
             commands::credentials_delete_many,
             commands::credentials_copy_many,

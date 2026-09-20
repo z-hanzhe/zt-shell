@@ -1,6 +1,6 @@
 [package]
 name = "zt-shell"
-version = "0.2.7"
+version = "0.2.8"
 description = "跨平台桌面 SSH 客户端"
 authors = ["hanzhe"]
 edition = "2021"
@@ -17,9 +17,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[dev-dependencies]
+# 测试客户端沿用官方更新插件使用的 TLS 加密实现
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+# 官方更新插件负责下载、签名校验与跨平台安装
+tauri-plugin-updater = "2.11"
+# 复用更新插件的 HTTP 客户端，为代理单独设置认证信息
+reqwest = { version = "0.13", default-features = false }
 # 连接配置等数据的本地持久化存储
 tauri-plugin-store = "2"
 # 本地文件选择/保存对话框（上传下载时选择本地路径）

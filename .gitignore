@@ -12,6 +12,23 @@ dist
 dist-ssr
 *.local
 
+# 本地环境与私钥文件；示例配置和公钥可以纳入版本管理
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.key
+*.key.*
+!*.key.pub
+*.pem
+*.p8
+*.p12
+*.pfx
+
+# 发布脚本生成的临时附件与更新清单
+/release-assets/
+/latest.json
+
 .pi
 .codex
 .claude

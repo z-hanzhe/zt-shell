@@ -244,7 +244,8 @@ export const useSessionsStore = defineStore("sessions", () => {
     // 关闭后激活相邻选项卡
     if (activeId.value === id) {
       const next = sessions.value[idx] ?? sessions.value[idx - 1];
-      const workspaceSessionId = workspaces.activeTab?.sessionId;
+      const workspace = workspaces.activeTab;
+      const workspaceSessionId = workspace && "sessionId" in workspace ? workspace.sessionId : undefined;
       activeId.value = sessions.value.some((session) => session.id === workspaceSessionId)
         ? workspaceSessionId ?? ""
         : next?.id ?? "";

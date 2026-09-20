@@ -84,16 +84,30 @@ npm run tauri build
 
 构建结果位于 `src-tauri/target/` 下。发布版本可从 [Releases](https://github.com/z-hanzhe/zt-shell/releases) 获取。
 
+安装包会生成更新签名。本地构建前请在当前终端环境中提供 `ZTSHELL_PRIVATE_KEY` 和 `ZTSHELL_PRIVATE_KEY_PASSWORD`；`npm run tauri` 只会向需要签名的构建、打包和签名命令传递凭据，并为帮助、版本、开发和信息查询清除签名环境变量。私钥只用于构建，不应放入代码或前端环境变量。
+
+涉及签名时使用上述 `npm run tauri` 入口；直接运行 `npx tauri` 或 `cargo tauri` 会绕过项目的凭据保护。不要把私钥或口令直接写在命令行参数中，以免进入终端历史或进程参数。
+
 ## 发布
 
-推送标签后，GitHub Actions 会先校验版本号，再构建 Windows x64、macOS Intel、macOS Apple Silicon 和 Linux x64 安装包，并创建对应的 Release 草稿。
+推送标签后，GitHub Actions 会校验版本号、标签和更新说明，构建并签名 Windows x64、macOS Intel、macOS Apple Silicon 和 Linux x64 安装包。所有平台成功后，工作流汇总 `latest.json` 并自动正式发布 Release。
+
+首次使用须在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 中配置 `ZTSHELL_PRIVATE_KEY` 与 `ZTSHELL_PRIVATE_KEY_PASSWORD` 两个 Repository secrets，分别使用本地同名环境变量中的值。本机用户环境变量不会自动同步到 GitHub Actions。
+
+每次发布前：
+
+1. 同步 `package.json`、`package-lock.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 `src-tauri/Cargo.lock` 的应用版本。
+2. 新建 `release-notes/X.Y.Z.md`，填写该版本的更新说明；这份内容同时用于 Release 和应用内更新页面。
+3. 运行 `npm test` 和 `node scripts/release.mjs validate vX.Y.Z`，再推送对应标签。
 
 ```bash
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-发布前须保持 `package.json`、`package-lock.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 的版本一致。草稿的发布说明与附件需要人工确认后再正式发布。
+标签须为 `X.Y.Z` 或 `vX.Y.Z`，更新源目前只发布稳定版。工作流上传期间使用草稿，附件齐全后自动公开；失败时可重跑，已经正式发布的版本不会被覆盖。
+
+应用启动时静默检查一次更新，设置页可手动检查、配置 HTTP / HTTPS 代理、下载更新或跳过本版本。下载完成后点击“安装并重启”，程序会先执行退出保护。旧版本若尚未包含更新功能，首次仍须手动安装包含此功能的版本。
 
 ## 许可证
 

@@ -14,6 +14,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  frontend-test:
+    name: 前端与发布契约检查
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 检查前端与发布流程
+        run: npm test
+
+      - name: 检查类型与生产构建
+        run: npm run build
+
   rust-test:
     name: Rust 测试（Linux）
     runs-on: ubuntu-22.04

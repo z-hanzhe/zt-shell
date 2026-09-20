@@ -1,4 +1,4 @@
-name: 跨平台打包并创建发布草稿
+name: 跨平台打包并自动发布
 
 run-name: 发布 ${{ github.ref_name }}
 
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   validate-version:
-    name: 校验应用版本
+    name: 校验版本与更新说明
     runs-on: ubuntu-22.04
     steps:
       - name: 检出代码
@@ -25,34 +25,15 @@ jobs:
       - name: 配置 Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "lts/*"
+          node-version: "24"
 
-      - name: 校验各清单版本号一致
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import { execFileSync } from "node:child_process";
-          import { readFileSync } from "node:fs";
+      - name: 校验发布脚本
+        run: node --test scripts/release.test.mjs
 
-          const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
-          const cargoMetadata = JSON.parse(execFileSync(
-            "cargo",
-            ["metadata", "--locked", "--no-deps", "--format-version", "1", "--manifest-path", "src-tauri/Cargo.toml"],
-            { encoding: "utf8" },
-          ));
-          const versions = {
-            "package.json": readJson("package.json").version,
-            "package-lock.json": readJson("package-lock.json").version,
-            "package-lock.json 根包": readJson("package-lock.json").packages[""].version,
-            "src-tauri/tauri.conf.json": readJson("src-tauri/tauri.conf.json").version,
-            "src-tauri/Cargo.toml": cargoMetadata.packages[0].version,
-          };
-
-          if (new Set(Object.values(versions)).size !== 1) {
-            throw new Error(`版本号不一致：${JSON.stringify(versions)}`);
-          }
-          console.log(`应用版本：${Object.values(versions)[0]}`);
-          NODE
+      - name: 校验各清单版本、标签与更新说明
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/release.mjs validate "$RELEASE_TAG"
 
   build:
     name: 打包 ${{ matrix.name }}
@@ -69,11 +50,11 @@ jobs:
           - name: macOS Apple Silicon
             platform: macos-latest
             rust-target: aarch64-apple-darwin
-            args: --target aarch64-apple-darwin --bundles dmg --ci
+            args: --target aarch64-apple-darwin --bundles app,dmg --ci
           - name: macOS Intel
             platform: macos-latest
             rust-target: x86_64-apple-darwin
-            args: --target x86_64-apple-darwin --bundles dmg --ci
+            args: --target x86_64-apple-darwin --bundles app,dmg --ci
           - name: Linux x64
             platform: ubuntu-22.04
             rust-target: x86_64-unknown-linux-gnu
@@ -92,7 +73,7 @@ jobs:
       - name: 配置 Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "lts/*"
+          node-version: "24"
           cache: npm
 
       - name: 配置 Rust stable
@@ -115,53 +96,83 @@ jobs:
       - name: 安装前端依赖
         run: npm ci
 
-      - name: 构建安装包
+      - name: 清理缓存中的旧安装包
+        run: |
+          node -e "require('node:fs').rmSync('src-tauri/target/${{ matrix.rust-target }}/release/bundle', { recursive: true, force: true })"
+
+      - name: 构建并签名安装包
         uses: tauri-apps/tauri-action@v1
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.ZTSHELL_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.ZTSHELL_PRIVATE_KEY_PASSWORD }}
         with:
           args: ${{ matrix.args }}
           retryAttempts: 2
           uploadUpdaterJson: false
-          uploadUpdaterSignatures: false
-          uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: release-[platform]-[arch]-[bundle]
 
-  create-draft:
-    name: 创建发布草稿
+      - name: 校验签名并归档当前平台产物
+        run: node scripts/release.mjs stage "${{ matrix.rust-target }}" release-assets
+
+      - name: 保存当前平台产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.rust-target }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: 汇总更新清单并正式发布
     needs: build
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - name: 下载全部安装包
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: 下载全部签名安装包
         uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: release-assets
           merge-multiple: true
 
-      - name: 创建或更新发布草稿
+      - name: 校验完整产物并生成更新清单
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/release.mjs manifest release-assets "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+
+      - name: 上传完整附件后正式发布
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          version="$(node -p 'JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version')"
+          notes="release-notes/$version.md"
           mapfile -d '' assets < <(find release-assets -type f -print0)
-          if (( ${#assets[@]} < 7 )); then
-            echo "安装包数量不足，预期至少 7 个，实际 ${#assets[@]} 个。" >&2
-            exit 1
-          fi
 
-          if release_is_draft="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+          if release_is_draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
             if [[ "$release_is_draft" != "true" ]]; then
               echo "对应 Release 已正式发布，拒绝覆盖现有附件。" >&2
               exit 1
             fi
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            # 清理失败重跑遗留的草稿附件，避免旧清单或旧安装包混入正式发布。
+            while IFS= read -r asset; do
+              gh release delete-asset "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --yes
+            done < <(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
-              --repo "$GITHUB_REPOSITORY" \
-              --verify-tag \
-              --draft \
-              --title "ZTShell $GITHUB_REF_NAME" \
-              --notes "此草稿由 GitHub Actions 自动创建，请补充发布说明并核对附件后手动发布。"
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --draft \
+              --title "ZTShell $RELEASE_TAG" --notes-file "$notes"
           fi
+
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "ZTShell $RELEASE_TAG" --notes-file "$notes" --draft=false --latest

@@ -2,7 +2,8 @@
 /**
  * 连接代理配置：管理共享代理列表并为当前连接选择代理
  */
-import { computed, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, reactive, ref } from "vue";
+import { credentialsGetProxyPassword } from "../api";
 import type { ProxyConfig, ProxyType, SecretChange } from "../types";
 import { useConnectionsStore } from "../stores/connections";
 import { useProxiesStore } from "../stores/proxies";
@@ -10,7 +11,6 @@ import { useDialogDrag } from "../composables/useDialogDrag";
 import { useEscClose } from "../composables/useEscClose";
 import AppDialog from "./AppDialog.vue";
 import Icon from "./Icon.vue";
-import SecretInput from "./SecretInput.vue";
 
 const props = defineProps<{
   /** 当前连接选择的代理 id */
@@ -39,8 +39,12 @@ const editing = ref<ProxyConfig | null | undefined>(undefined);
 const { dialogRef, onDialogHeaderPointerDown } = useDialogDrag();
 /** 代理表单校验错误 */
 const editorError = ref("");
-/** 代理密码修改意图 */
-const passwordChange = ref<SecretChange>({ mode: "keep" });
+/** 仅在当前编辑表单中保存密码草稿 */
+const password = ref("");
+const loadingPassword = ref(false);
+const passwordLoadFailed = ref(false);
+/** 关闭或切换编辑对象后丢弃过期的密码读取结果 */
+let passwordLoadSequence = 0;
 /** 是否正在保存代理及其系统凭据 */
 const savingProxy = ref(false);
 /** 待删除代理 */
@@ -115,52 +119,71 @@ async function moveSelectedProxy(direction: "up" | "down") {
 
 /** 打开新增代理弹窗 */
 function openCreate() {
+  passwordLoadSequence++;
   Object.assign(draft, proxyDefaults());
   delete draft.password;
-  passwordChange.value = { mode: "keep" };
+  password.value = "";
+  loadingPassword.value = false;
+  passwordLoadFailed.value = false;
   editorError.value = "";
   editing.value = null;
 }
 
-/** 打开选中代理的编辑弹窗 */
+/** 打开选中代理的编辑弹窗并读取已保存的密码 */
 function openEdit() {
   if (!selectedProxy.value) return;
   Object.assign(draft, proxyDefaults(), selectedProxy.value);
   delete draft.password;
-  passwordChange.value = { mode: "keep" };
+  password.value = "";
   editorError.value = "";
   editing.value = { ...selectedProxy.value };
+  void loadPassword();
 }
 
-/** 接收固定掩码输入框的代理密码修改 */
-function onPasswordChange(action: SecretChange["mode"], value?: string) {
-  if (action === "set") {
-    passwordChange.value = value !== undefined ? { mode: "set", value } : { mode: "keep" };
-    return;
+/** 回填当前代理密码，读取失败时保留原凭据并允许重试 */
+async function loadPassword(): Promise<void> {
+  const proxy = editing.value;
+  if (!proxy) return;
+  const sequence = ++passwordLoadSequence;
+  loadingPassword.value = true;
+  passwordLoadFailed.value = false;
+  editorError.value = "";
+  try {
+    const value = proxy.hasPassword ? await credentialsGetProxyPassword(proxy.id) : null;
+    if (sequence !== passwordLoadSequence) return;
+    password.value = value ?? "";
+  } catch (error) {
+    if (sequence !== passwordLoadSequence) return;
+    passwordLoadFailed.value = true;
+    editorError.value = `读取代理密码失败：${String(error)}`;
+  } finally {
+    if (sequence === passwordLoadSequence) loadingPassword.value = false;
   }
-  passwordChange.value = { mode: action };
 }
 
-/** 关闭代理编辑弹窗 */
+/** 关闭代理编辑弹窗并释放密码草稿 */
 function closeEditor() {
+  passwordLoadSequence++;
   editing.value = undefined;
+  password.value = "";
+  loadingPassword.value = false;
+  passwordLoadFailed.value = false;
   editorError.value = "";
 }
+
+onBeforeUnmount(() => {
+  passwordLoadSequence++;
+  password.value = "";
+});
 
 /** 保存代理表单 */
 async function saveProxy() {
-  if (savingProxy.value) return;
+  if (savingProxy.value || loadingPassword.value || passwordLoadFailed.value) return;
   const name = draft.name.trim();
   const host = draft.host.trim();
   const username = draft.username?.trim() ?? "";
   const supportsPassword = draft.proxyType === "socks5" || draft.proxyType === "http";
-  const willHavePassword = supportsPassword && (
-    passwordChange.value.mode === "set"
-      ? Boolean(passwordChange.value.value)
-      : passwordChange.value.mode === "clear"
-        ? false
-        : draft.hasPassword === true
-  );
+  const willHavePassword = supportsPassword && Boolean(password.value);
   if (!name) {
     editorError.value = "请填写代理名称";
     return;
@@ -184,7 +207,9 @@ async function saveProxy() {
   editorError.value = "";
   savingProxy.value = true;
   try {
-    const secretChange: SecretChange = supportsPassword ? passwordChange.value : { mode: "clear" };
+    const secretChange: SecretChange = willHavePassword
+      ? { mode: "set", value: password.value }
+      : { mode: "clear" };
     const id = await proxiesStore.upsert({
       id: draft.id,
       name,
@@ -335,9 +360,9 @@ const { isTop: isTopModal } = useEscClose(
       >
         <div class="modal-header dialog-drag-handle" @pointerdown="onDialogHeaderPointerDown">
           <span>{{ editing ? "编辑代理" : "新增代理" }}</span>
-          <button class="modal-close" title="关闭" @click="closeEditor">×</button>
+          <button class="modal-close" title="关闭" :disabled="savingProxy" @click="closeEditor">×</button>
         </div>
-        <div class="modal-body proxy-form">
+        <fieldset class="modal-body proxy-form" :disabled="savingProxy || loadingPassword">
           <label>名称</label>
           <input class="input" v-model="draft.name" placeholder="代理名称" />
 
@@ -364,19 +389,24 @@ const { isTop: isTopModal } = useEscClose(
             <input class="input" v-model="draft.username" placeholder="选填" />
 
             <label>密码</label>
-            <SecretInput
-              :has-secret="draft.hasPassword === true"
-              :reset-key="`${draft.id}:proxy-password`"
+            <input
+              v-model="password"
+              class="input"
+              type="password"
               placeholder="选填"
-              @change="onPasswordChange"
+              autocomplete="off"
+              :disabled="passwordLoadFailed"
             />
           </template>
 
-          <div v-if="editorError" class="proxy-error">{{ editorError }}</div>
-        </div>
+          <div v-if="editorError" class="proxy-error" role="alert">
+            {{ editorError }}
+            <button v-if="passwordLoadFailed" class="btn password-retry" type="button" @click="loadPassword">重新读取</button>
+          </div>
+        </fieldset>
         <div class="modal-footer">
           <button class="btn" :disabled="savingProxy" @click="closeEditor">取消</button>
-          <button class="btn btn-primary" :disabled="savingProxy" @click="saveProxy">
+          <button class="btn btn-primary" :disabled="savingProxy || loadingPassword || passwordLoadFailed" @click="saveProxy">
             {{ savingProxy ? "保存中" : "保存" }}
           </button>
         </div>
@@ -527,6 +557,9 @@ const { isTop: isTopModal } = useEscClose(
   width: min(440px, calc(100vw - 32px));
 }
 .proxy-form {
+  min-width: 0;
+  margin: 0;
+  border: 0;
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
   align-items: center;
@@ -539,6 +572,10 @@ const { isTop: isTopModal } = useEscClose(
 .proxy-form .input {
   width: 100%;
   min-width: 0;
+}
+.password-retry {
+  display: block;
+  margin-top: 8px;
 }
 .proxy-error {
   grid-column: 2;

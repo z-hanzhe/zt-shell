@@ -68,6 +68,19 @@ pub async fn credentials_get_connection_passphrase(
     )
 }
 
+/// 读取代理编辑器使用的代理密码
+#[tauri::command]
+pub async fn credentials_get_proxy_password(
+    credentials: State<'_, CredentialManager>,
+    id: String,
+) -> CmdResult<Option<String>> {
+    map_err(
+        credentials
+            .get_optional(CredentialKind::ProxyPassword, &id)
+            .await,
+    )
+}
+
 /// 批量比较代理密码，结果顺序与输入一致且不返回已存明文
 #[tauri::command]
 pub async fn credentials_match_many(

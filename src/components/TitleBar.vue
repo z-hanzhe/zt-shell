@@ -18,8 +18,10 @@ const props = withDefaults(
     title?: string;
     /** 是否显示设置按钮 */
     showSettings?: boolean;
+    /** 是否有尚未跳过的新版 */
+    updateAvailable?: boolean;
   }>(),
-  { title: "", showSettings: true }
+  { title: "", showSettings: true, updateAvailable: false }
 );
 
 const emit = defineEmits<{
@@ -80,8 +82,9 @@ onBeforeUnmount(() => {
 
     <!-- 设置按钮：置于窗口三大金刚键左侧 -->
     <div v-if="props.showSettings" class="title-actions">
-      <button class="win-btn" title="设置" @click="emit('open-settings')">
+      <button class="win-btn settings-button" title="设置" :aria-label="props.updateAvailable ? '设置，有新版本' : '设置'" @click="emit('open-settings')">
         <Icon name="settings" :size="15" />
+        <span v-if="props.updateAvailable" class="update-dot" aria-hidden="true"></span>
       </button>
     </div>
 
@@ -152,6 +155,8 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
 }
+.settings-button { position: relative; }
+.settings-button .update-dot { position: absolute; top: 6px; right: 10px; }
 .win-btn:hover {
   background: var(--row-hover);
 }

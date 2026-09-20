@@ -10,6 +10,8 @@ import Icon from "./Icon.vue";
 import Terminal from "./Terminal.vue";
 import SystemInfoWorkspace from "./SystemInfoWorkspace.vue";
 import ProcessListWorkspace from "./ProcessListWorkspace.vue";
+import SettingsWorkspace from "./SettingsWorkspace.vue";
+import type { AppSettings } from "../stores/settings";
 import AppDialog from "./AppDialog.vue";
 import TerminalExtensions from "./TerminalExtensions.vue";
 import { transferList } from "../api";
@@ -29,8 +31,12 @@ import {
   type WorkspaceTab,
 } from "../stores/workspaces";
 
+defineProps<{ saveSettings: (settings: AppSettings) => Promise<void> }>();
+
 const emit = defineEmits<{
   (e: "open-conn-manager"): void;
+  (e: "preview-ui-scale", scale: number): void;
+  (e: "install-update"): void;
 }>();
 
 const store = useSessionsStore();
@@ -178,7 +184,7 @@ function activateTab(tab: WorkspaceTab) {
     store.activate(tab.sessionId);
   } else {
     workspaces.activate(tab.id);
-    store.setActiveContext(tab.sessionId);
+    if ("sessionId" in tab) store.setActiveContext(tab.sessionId);
   }
   focusActiveWorkspace();
 }
@@ -207,7 +213,7 @@ function syncActiveSessionContext() {
   const tab = workspaces.activeTab;
   if (!tab) return;
   if (tab.type === "session") store.activate(tab.sessionId);
-  else store.setActiveContext(tab.sessionId);
+  else if ("sessionId" in tab) store.setActiveContext(tab.sessionId);
 }
 
 /** 将当前激活终端切换到指定目录 */
@@ -232,7 +238,7 @@ watch(
     const tab = workspaces.tabs.find((item) => item.id === id);
     if (tab?.type === "session") {
       store.activate(tab.sessionId);
-    } else if (tab) {
+    } else if (tab && "sessionId" in tab) {
       store.setActiveContext(tab.sessionId);
     }
     focusActiveWorkspace();
@@ -775,9 +781,9 @@ defineExpose({
           <span
             v-else
             class="tab-indicator tab-tool-indicator"
-            :title="tab.type === 'systemInfo' ? '系统信息' : '进程列表'"
+            :title="tab.type === 'settings' ? '设置' : tab.type === 'systemInfo' ? '系统信息' : '进程列表'"
           >
-            <Icon :name="tab.type === 'systemInfo' ? 'server' : 'activity'" :size="12" />
+            <Icon :name="tab.type === 'settings' ? 'settings' : tab.type === 'systemInfo' ? 'server' : 'activity'" :size="12" />
           </span>
           <span class="tab-name" :title="tab.title">{{ tab.title }}</span>
           <button class="tab-close" title="关闭" @click.stop="closeTab(tab.id)">
@@ -862,7 +868,21 @@ defineExpose({
 
       <template v-for="tab in workspaces.tabs" :key="`workspace:${tab.id}`">
         <div
-          v-if="tab.type === 'systemInfo'"
+          v-if="tab.type === 'settings'"
+          v-show="workspaces.activeId === tab.id"
+          class="workspace-slot"
+          :data-workspace-id="tab.id"
+          tabindex="-1"
+        >
+          <SettingsWorkspace
+            :active="workspaces.activeId === tab.id"
+            :save-settings="saveSettings"
+            @preview-ui-scale="emit('preview-ui-scale', $event)"
+            @install-update="emit('install-update')"
+          />
+        </div>
+        <div
+          v-else-if="tab.type === 'systemInfo'"
           v-show="workspaces.activeId === tab.id"
           class="workspace-slot"
           :data-workspace-id="tab.id"

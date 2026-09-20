@@ -2,6 +2,37 @@
  * 与后端 Rust 数据结构对应的前端类型定义
  */
 
+/** 更新源与代理偏好；关闭代理时使用直连 */
+export interface UpdatePreferences {
+  source: "github";
+  useProxy: boolean;
+  proxyUrl: string;
+  /** 代理认证用户名，留空表示不认证 */
+  proxyUsername: string;
+  /** 系统凭据库中的密码引用，不包含密码明文 */
+  proxyCredentialId: string | null;
+}
+
+/** 已发现的可安装版本 */
+export interface UpdateInfo {
+  version: string;
+  currentVersion: string;
+  notes: string;
+  date: string | null;
+}
+
+/** 官方更新插件返回的下载字节进度 */
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
+}
+
+/** 应用更新运行环境 */
+export interface UpdateEnvironment {
+  version: string;
+  canInstall: boolean;
+}
+
 /** 认证方式 */
 export type AuthType = "password" | "privateKey";
 

@@ -17,6 +17,22 @@ function createStore() {
   return useWorkspacesStore();
 }
 
+test("设置页是独立单例，关闭会话和迁移工具页不影响它", () => {
+  const store = createStore();
+  store.openSettings();
+  store.openSession("session-a", "主机 A");
+  store.openSystemInfo("session-a", "connection-a", "生产环境");
+  store.openSettings();
+  store.openSettings();
+  assert.equal(store.tabs.filter((tab) => tab.type === "settings").length, 1);
+  assert.equal(store.activeId, "settings");
+  store.removeSession("session-a");
+  assert.deepEqual(store.tabs.map((tab) => tab.id), ["settings"]);
+  store.close("settings");
+  assert.equal(store.tabs.length, 0);
+  assert.equal(store.activeId, "");
+});
+
 test("同一连接的多个会话共用系统信息选项卡并切换数据来源", () => {
   const store = createStore();
   store.openSession("session-a", "主机 A");

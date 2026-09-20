@@ -19,8 +19,41 @@ import type {
   ProxyConfig,
   TransferCreateResult,
   TransferTask,
+  UpdateEnvironment,
+  UpdateInfo,
+  UpdatePreferences,
+  UpdateProgress,
 } from "./types";
 import { runTransferCreation } from "./transferClose";
+
+/** 读取当前版本与安装能力 */
+export function updaterEnvironment(): Promise<UpdateEnvironment> {
+  return invoke("updater_environment");
+}
+
+/** 使用指定更新源和代理策略检查新版 */
+export function updaterCheck(preferences: UpdatePreferences): Promise<UpdateInfo | null> {
+  return invoke("updater_check", {
+    source: preferences.source,
+    proxy: preferences.useProxy ? {
+      url: preferences.proxyUrl,
+      username: preferences.proxyUsername,
+      credentialId: preferences.proxyCredentialId,
+    } : null,
+  });
+}
+
+/** 下载并验证当前新版，进度在设置页关闭后仍由全局状态接收 */
+export function updaterDownload(version: string, onProgress: (progress: UpdateProgress) => void): Promise<void> {
+  const channel = new Channel<UpdateProgress>();
+  channel.onmessage = onProgress;
+  return invoke("updater_download", { version, onProgress: channel });
+}
+
+/** 安装已验证的更新，调用前必须完成应用退出保护 */
+export function updaterInstall(version: string): Promise<void> {
+  return invoke("updater_install", { version });
+}
 
 /** 建立 SSH 连接，未知或变化的主机密钥会先返回确认信息 */
 export function sshConnect(
@@ -55,6 +88,11 @@ export function credentialsGetConnectionPassword(id: string): Promise<string | n
 /** 读取连接编辑器使用的私钥口令 */
 export function credentialsGetConnectionPassphrase(id: string): Promise<string | null> {
   return invoke("credentials_get_connection_passphrase", { id });
+}
+
+/** 读取代理编辑器使用的密码，仅用于当前表单草稿 */
+export function credentialsGetProxyPassword(id: string): Promise<string | null> {
+  return invoke("credentials_get_proxy_password", { id });
 }
 
 /** 批量比较代理密码，结果顺序与输入一致且不返回已存明文 */

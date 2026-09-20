@@ -97,11 +97,11 @@ export const useSettingsStore = defineStore("settings", () => {
       editorFontSize: normalizeEditorFontSize(next.editorFontSize),
       downloadPath: next.downloadPath.trim(),
     };
-    settings.value = normalized;
     if (store) {
       await store.set(STORE_KEY, normalized);
       await store.save();
     }
+    settings.value = normalized;
   }
 
   return { settings, init, update };

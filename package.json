@@ -2,13 +2,14 @@
   "name": "zt-shell",
   "private": true,
   "license": "MIT",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "node scripts/tauri.mjs",
+    "test": "node --test src/*.test.ts scripts/*.test.mjs"
   },
   "dependencies": {
     "@fontsource/cascadia-mono": "^5.2.3",
@@ -25,7 +26,7 @@
     "vue": "^3.5.13"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "^2.11.4",
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",

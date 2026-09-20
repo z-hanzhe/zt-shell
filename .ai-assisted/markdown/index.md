@@ -21,4 +21,5 @@
 | [监控](monitor.md) | Linux 远端指标采集、进程查询与按会话展示 | `ssh/monitor.rs`、`ssh/process.rs`、`monitor.ts` |
 | [前端](frontend.md) | Vue 组件、Pinia 状态和独立编辑器窗口 | `main.ts`、`src/components/` |
 | [Tauri 命令](commands.md) | 前后端命令边界、托管状态和权限 | `commands.rs`、`api.ts` |
-| [发布](release.md) | 多平台构建和发布草稿流程 | `.github/workflows/release.yml` |
+| [软件更新](updater.md) | 设置工作区、更新提醒、代理与安装保护 | `SettingsWorkspace.vue`、`updates.ts`、`updater.rs` |
+| [发布](release.md) | 多平台签名构建和自动发布 | `.github/workflows/release.yml` |

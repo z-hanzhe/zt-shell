@@ -89,6 +89,16 @@ body {
   background: #aab2ba;
 }
 
+/* 新版本提醒在标题栏与设置菜单中保持一致。 */
+.update-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
 /* 通用按钮 */
 .btn {
   display: inline-flex;
