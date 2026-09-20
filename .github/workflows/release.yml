@@ -156,7 +156,8 @@ jobs:
           set -euo pipefail
           version="$(node -p 'JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version')"
           notes="release-notes/$version.md"
-          mapfile -d '' assets < <(find release-assets -type f -print0)
+          # 签名已写入更新清单，公开附件只保留安装包、更新包和清单。
+          mapfile -d '' assets < <(find release-assets -type f ! -name '*.sig' -print0)
 
           if release_is_draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
             if [[ "$release_is_draft" != "true" ]]; then

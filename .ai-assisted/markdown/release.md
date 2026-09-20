@@ -7,6 +7,7 @@
 - `scripts/release.mjs` 负责版本与说明校验、按架构归档、签名密钥标识检查和官方静态更新清单生成。
 - `release-notes/<版本>.md` 是 GitHub Release 与应用内更新说明的共同来源。
 - 产物包括 Windows MSI/NSIS、macOS Intel 与 Apple Silicon DMG/应用归档，以及 Linux DEB/RPM/AppImage；更新清单按架构和原安装器类型分发。
+- Release 附件保留安装包、更新包和 `latest.json`；`.sig` 仅用于构建校验和生成清单，不单独公开上传。
 
 ## 发布约束
 
