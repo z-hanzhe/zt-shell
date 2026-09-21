@@ -369,6 +369,7 @@ export interface MonitorData {
   kernelName: string;
   kernel: string;
   architecture: string;
+  boardModel: string;
   uptime: number;
   cpuCount: number;
   cpuModel: string;

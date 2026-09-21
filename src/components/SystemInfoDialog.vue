@@ -143,6 +143,10 @@ function onDialogHeaderPointerDown(event: PointerEvent) {
               <dd :title="kernelVersion">{{ kernelVersion }}</dd>
             </div>
             <div class="overview-item">
+              <dt>设备型号</dt>
+              <dd :title="staticData.boardModel">{{ displayText(staticData.boardModel) }}</dd>
+            </div>
+            <div class="overview-item">
               <dt>硬件架构</dt>
               <dd>{{ displayText(staticData.architecture) }}</dd>
             </div>

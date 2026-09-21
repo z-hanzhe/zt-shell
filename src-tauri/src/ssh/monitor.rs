@@ -80,8 +80,8 @@ BEGIN {
       continue
     }
     if ((key == "model name" || key == "hardware" || key == "model" || key == "processor" ||
-         key == "cpu mhz" || key == "clock" || key == "cache size" || key == "bogomips") &&
-        !seen[key]++) {
+         key == "cpu implementer" || key == "cpu part" || key == "cpu mhz" || key == "clock" ||
+         key == "cache size" || key == "bogomips") && !seen[key]++) {
       cpu_info[++cpu_info_count] = cpu_line
     }
   }
@@ -118,14 +118,31 @@ BEGIN {
   exit 1
 }
 printf '###ARCH###\n'; uname -m 2>/dev/null
+printf '###BOARD###\n'
+if [ -r /sys/firmware/devicetree/base/model ]; then
+  tr -d '\000' < /sys/firmware/devicetree/base/model 2>/dev/null
+  printf '\n'
+fi
+printf '###COMPATIBLE###\n'
+if [ -r /sys/firmware/devicetree/base/compatible ]; then
+  tr '\000' '\n' < /sys/firmware/devicetree/base/compatible 2>/dev/null
+fi
+printf '###CPUFREQ###\n'
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || true
+printf '###CPUCACHE###\n'
+for path in /sys/devices/system/cpu/cpu0/cache/index*/size; do
+  [ -r "$path" ] && cat "$path"
+done 2>/dev/null
+printf '###CLOCK_TICKS###\n'
+getconf CLK_TCK 2>/dev/null || printf '100\n'
 printf '###PHYS###\n'
 for path in /sys/class/net/*; do
   [ -e "$path/device" ] && printf '%s\n' "${path##*/}"
 done 2>/dev/null
 printf '###DISK###\n'; df -kP 2>/dev/null
 printf '###PROC###\n'
-ps -ww -e --sort=-pcpu \
-  -o pid= -o ppid= -o pcpu= -o pmem= -o rss= -o args= 2>/dev/null |
+ps -ww -e \
+  -o pid= -o ppid= -o pmem= -o rss= -o args= 2>/dev/null |
 awk '
 function next_field(value) {
   sub(/^[[:space:]]*/, "", remaining)
@@ -134,16 +151,25 @@ function next_field(value) {
   sub(/^[^[:space:]]+/, "", remaining)
   return value
 }
-NR > 64 { exit }
 {
   remaining = $0
   pid = next_field()
   ppid = next_field()
-  cpu = next_field()
   mem = next_field()
   rss = next_field()
   sub(/^[[:space:]]*/, "", remaining)
   command = remaining
+
+  cpu_ticks = 0
+  start_time = 0
+  stat_path = "/proc/" pid "/stat"
+  if ((getline stat_line < stat_path) > 0) {
+    sub(/^.*\) /, "", stat_line)
+    split(stat_line, stat_fields, /[[:space:]]+/)
+    cpu_ticks = stat_fields[12] + stat_fields[13]
+    start_time = stat_fields[20]
+  }
+  close(stat_path)
 
   name = ""
   comm_path = "/proc/" pid "/comm"
@@ -151,8 +177,8 @@ NR > 64 { exit }
   close(comm_path)
   collector = (name == "ztshell-mon" && command ~ /__ZT_MONITOR_COLLECTOR__/) ||
               (name == "ztshell-proc" && command ~ /__ZT_PROCESS_COLLECTOR__/)
-  printf "%s\037%s\037%s\037%s\037%s\037%d\037%s\n", \
-    pid, ppid, cpu, mem, rss, collector, name
+  printf "%s\037%s\037%s\037%s\037%s\037%s\037%d\037%s\n", \
+    pid, ppid, mem, rss, cpu_ticks, start_time, collector, name
 }'
 printf '###END###\n'
 "####;
@@ -245,6 +271,8 @@ pub struct MonitorData {
     pub kernel: String,
     /// 硬件架构
     pub architecture: String,
+    /// 设备树中的主板型号
+    pub board_model: String,
     /// 运行时长（秒）
     pub uptime: u64,
     /// 逻辑 CPU 核心数
@@ -335,11 +363,19 @@ impl CpuTimes {
     }
 }
 
+/// 单个进程的累计 CPU 时间快照
+#[derive(Debug, Clone, Copy)]
+struct ProcessCpuSnapshot {
+    start_time: u64,
+    cpu_ticks: u64,
+}
+
 /// 一轮远端采样中用于下一轮差值计算的累计值
 #[derive(Debug, Clone, Default)]
 struct MonitorSnapshot {
     cpu: CpuTimes,
     net: HashMap<String, (u64, u64)>,
+    process_cpu: HashMap<u32, ProcessCpuSnapshot>,
     timestamp: f64,
 }
 
@@ -452,19 +488,19 @@ fn parse_leading_number(value: &str) -> f64 {
 /// 将 `/proc/cpuinfo` 的缓存大小转换为字节数
 fn parse_cache_size(value: &str) -> u64 {
     let mut parts = value.split_whitespace();
-    let amount = parts
-        .next()
-        .and_then(|part| part.parse::<f64>().ok())
-        .unwrap_or(0.0);
-    let multiplier = match parts
-        .next()
+    let amount_text = parts.next().unwrap_or_default();
+    let amount = parse_leading_number(amount_text);
+    let suffix = amount_text
+        .char_indices()
+        .find(|(_, ch)| !ch.is_ascii_digit() && *ch != '.')
+        .map(|(index, _)| &amount_text[index..])
+        .or_else(|| parts.next())
         .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "kb" | "kib" => 1024.0,
-        "mb" | "mib" => 1024.0 * 1024.0,
-        "gb" | "gib" => 1024.0 * 1024.0 * 1024.0,
+        .to_ascii_lowercase();
+    let multiplier = match suffix.as_str() {
+        "kb" | "kib" | "k" => 1024.0,
+        "mb" | "mib" | "m" => 1024.0 * 1024.0,
+        "gb" | "gib" | "g" => 1024.0 * 1024.0 * 1024.0,
         _ => 1.0,
     };
     (amount * multiplier) as u64
@@ -476,6 +512,8 @@ fn parse_cpu_info(raw: &str) -> (String, f64, u64, f64) {
     let mut frequency_mhz = 0.0;
     let mut cache = 0;
     let mut bogo_mips = 0.0;
+    let mut implementer = String::new();
+    let mut part = String::new();
 
     for line in raw.lines() {
         let Some((key, value)) = line.split_once(':') else {
@@ -492,6 +530,12 @@ fn parse_cpu_info(raw: &str) -> (String, f64, u64, f64) {
                 if model.is_empty() && value.chars().any(|ch| ch.is_ascii_alphabetic()) =>
             {
                 model = value.to_string();
+            }
+            "cpu implementer" if implementer.is_empty() => {
+                implementer = value.to_ascii_lowercase();
+            }
+            "cpu part" if part.is_empty() => {
+                part = value.to_ascii_lowercase();
             }
             "cpu mhz" if frequency_mhz == 0.0 => {
                 frequency_mhz = parse_leading_number(value);
@@ -512,7 +556,45 @@ fn parse_cpu_info(raw: &str) -> (String, f64, u64, f64) {
         }
     }
 
+    if model.is_empty() {
+        // ARM64 设备通常只提供 implementer/part，不能依赖 model name 字段。
+        model = match (implementer.as_str(), part.as_str()) {
+            ("0x41", "0xd03") => "ARM Cortex-A53".to_string(),
+            ("0x41", "0xd05") => "ARM Cortex-A55".to_string(),
+            ("0x41", "0xd0a") => "ARM Cortex-A75".to_string(),
+            ("0x41", "0xd0b") => "ARM Cortex-A76".to_string(),
+            ("0x41", "0xd0d") => "ARM Cortex-A77".to_string(),
+            ("0x41", "0xd41") => "ARM Cortex-X1".to_string(),
+            ("0x41", "0xd46") => "ARM Cortex-A510".to_string(),
+            ("0x41", "0xd47") => "ARM Cortex-A710".to_string(),
+            _ if !implementer.is_empty() || !part.is_empty() => {
+                format!("ARM implementer {implementer} part {part}")
+            }
+            _ => String::new(),
+        };
+    }
+
     (model, frequency_mhz, cache, bogo_mips)
+}
+
+/// 解析 sysfs 中以 kHz 表示的当前频率，并转换为 MHz
+fn parse_cpu_frequency(raw: &str) -> f64 {
+    let value = parse_leading_number(raw);
+    if value > 100_000.0 {
+        value / 1000.0
+    } else {
+        value
+    }
+}
+
+/// 从多个缓存层级中选择容量最大的一级
+fn parse_cpu_cache(raw: &str) -> u64 {
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(parse_cache_size)
+        .max()
+        .unwrap_or(0)
 }
 
 /// 解析 `df -kP` 输出，分别返回侧栏磁盘摘要与完整文件系统列表
@@ -556,7 +638,8 @@ struct MonitorProcessRow {
     ppid: u32,
     is_collector: bool,
     name: String,
-    cpu: f64,
+    cpu_ticks: u64,
+    start_time: u64,
     mem: f64,
     mem_bytes: u64,
 }
@@ -570,12 +653,12 @@ fn parse_monitor_roots(raw: &str) -> Vec<u32> {
         .collect()
 }
 
-/// 解析 `ps` 输出，名称位于固定数值列之后，允许名称本身包含空格
+/// 解析进程累计 CPU 时间，避免使用 ps 的进程生命周期平均值
 fn parse_monitor_processes(raw: &str) -> Vec<MonitorProcessRow> {
     raw.lines()
         .filter_map(|line| {
-            let fields: Vec<&str> = line.splitn(7, '\u{1f}').collect();
-            if fields.len() != 7 {
+            let fields: Vec<&str> = line.splitn(8, '\u{1f}').collect();
+            if fields.len() != 8 {
                 return None;
             }
             let pid = fields[0].trim().parse().ok()?;
@@ -585,11 +668,12 @@ fn parse_monitor_processes(raw: &str) -> Vec<MonitorProcessRow> {
             Some(MonitorProcessRow {
                 pid,
                 ppid: fields[1].trim().parse().unwrap_or(0),
-                cpu: fields[2].trim().parse().unwrap_or(0.0),
-                mem: fields[3].trim().parse().unwrap_or(0.0),
-                mem_bytes: fields[4].trim().parse::<u64>().unwrap_or(0) * 1024,
-                is_collector: fields[5].trim() == "1",
-                name: fields[6].trim().to_string(),
+                mem: fields[2].trim().parse().unwrap_or(0.0),
+                mem_bytes: fields[3].trim().parse::<u64>().unwrap_or(0) * 1024,
+                cpu_ticks: fields[4].trim().parse().unwrap_or(0),
+                start_time: fields[5].trim().parse().unwrap_or(0),
+                is_collector: fields[6].trim() == "1",
+                name: fields[7].trim().to_string(),
             })
         })
         .collect()
@@ -612,14 +696,30 @@ fn parse_monitor_data(
         kernel_name: get("KERNELNAME").to_string(),
         kernel: get("KERNEL").to_string(),
         architecture: get("ARCH").to_string(),
+        board_model: get("BOARD").trim().to_string(),
         cpu_count: get("CPUCOUNT").trim().parse().unwrap_or(0),
         ..Default::default()
     };
+    if data.board_model.is_empty() {
+        data.board_model = get("COMPATIBLE")
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default()
+            .to_string();
+    }
 
-    let (cpu_model, cpu_frequency_mhz, cpu_cache, cpu_bogo_mips) = parse_cpu_info(get("CPUINFO"));
+    let (cpu_model, cpu_info_frequency_mhz, cpu_info_cache, cpu_bogo_mips) =
+        parse_cpu_info(get("CPUINFO"));
     data.cpu_model = cpu_model;
-    data.cpu_frequency_mhz = cpu_frequency_mhz;
-    data.cpu_cache = cpu_cache;
+    data.cpu_frequency_mhz = parse_cpu_frequency(get("CPUFREQ"));
+    if data.cpu_frequency_mhz == 0.0 {
+        data.cpu_frequency_mhz = cpu_info_frequency_mhz;
+    }
+    data.cpu_cache = parse_cpu_cache(get("CPUCACHE"));
+    if data.cpu_cache == 0 {
+        data.cpu_cache = cpu_info_cache;
+    }
     data.cpu_bogo_mips = cpu_bogo_mips;
 
     let timestamp = get("NETTIME")
@@ -703,24 +803,58 @@ fn parse_monitor_data(
             .map(|process| (process.pid, process.ppid, process.is_collector)),
         parse_monitor_roots(get("MONITOR_META")),
     );
-    data.processes = process_rows
-        .into_iter()
-        .filter(|process| !excluded.contains(&process.pid))
-        .take(15)
-        .map(|process| ProcessInfo {
-            pid: process.pid,
-            name: process.name,
-            cpu: process.cpu,
-            mem: process.mem,
-            mem_bytes: process.mem_bytes,
+    let clock_ticks = get("CLOCK_TICKS")
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .unwrap_or(100);
+    let current_process_cpu: HashMap<u32, ProcessCpuSnapshot> = process_rows
+        .iter()
+        .map(|process| {
+            (
+                process.pid,
+                ProcessCpuSnapshot {
+                    start_time: process.start_time,
+                    cpu_ticks: process.cpu_ticks,
+                },
+            )
         })
         .collect();
+    let mut processes = process_rows
+        .into_iter()
+        .filter(|process| !excluded.contains(&process.pid))
+        .map(|process| {
+            let cpu = previous
+                .filter(|sample| interval > 0.0)
+                .and_then(|sample| sample.process_cpu.get(&process.pid))
+                .filter(|previous| previous.start_time == process.start_time)
+                .map(|previous| {
+                    process.cpu_ticks.saturating_sub(previous.cpu_ticks) as f64
+                        / clock_ticks as f64
+                        / interval
+                        * 100.0
+                })
+                .unwrap_or(0.0);
+            ProcessInfo {
+                pid: process.pid,
+                name: process.name,
+                cpu,
+                mem: process.mem,
+                mem_bytes: process.mem_bytes,
+            }
+        })
+        .collect::<Vec<_>>();
+    processes.sort_by(|left, right| right.cpu.total_cmp(&left.cpu));
+    processes.truncate(15);
+    data.processes = processes;
 
     Ok((
         data,
         MonitorSnapshot {
             cpu,
             net,
+            process_cpu: current_process_cpu,
             timestamp,
         },
     ))
@@ -799,6 +933,17 @@ bogomips : 6374.42"#;
         assert_approx_eq(bogo_mips, 6374.42);
     }
 
+    /// ARM64 常见的 cpuinfo 缺少 model name 时应根据 implementer/part 推导型号
+    #[test]
+    fn derives_arm_cpu_model_from_implementer_and_part() {
+        let raw = "processor : 0\nCPU implementer : 0x41\nCPU part : 0xd05\nBogoMIPS : 48.00\n";
+
+        let (model, _, _, bogo_mips) = parse_cpu_info(raw);
+
+        assert_eq!(model, "ARM Cortex-A55");
+        assert_approx_eq(bogo_mips, 48.0);
+    }
+
     /// CPU 信息缺少可选字段时应保留型号并让数值字段回退为零
     #[test]
     fn parses_partial_arm_cpu_information() {
@@ -810,6 +955,13 @@ bogomips : 6374.42"#;
         assert_eq!(frequency_mhz, 0.0);
         assert_eq!(cache, 0);
         assert_eq!(bogo_mips, 0.0);
+    }
+
+    /// sysfs CPU 频率与缓存应使用监控数据中的统一单位
+    #[test]
+    fn parses_sysfs_cpu_properties() {
+        assert_approx_eq(parse_cpu_frequency("1800000\n"), 1800.0);
+        assert_eq!(parse_cpu_cache("32K\n32K\n512K\n"), 512 * 1024);
     }
 
     /// 网络解析应保留回环接口并读取累计收发字节数
@@ -832,9 +984,10 @@ bogomips : 6374.42"#;
                          ###NET###\neth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0\n\
                          ###PHYS###\neth0\n\
                          ###MONITOR_META###\n900\n\
-                         ###PROC###\n900\x1f800\x1f300\x1f0.1\x1f10\x1f1\x1fztshell-mon\n\
-                         901\x1f900\x1f200\x1f0.1\x1f10\x1f0\x1fps\n\
-                         42\x1f1\x1f12.5\x1f1.5\x1f2048\x1f0\x1fapp worker\n\
+                         ###CLOCK_TICKS###\n100\n\
+                         ###PROC###\n900\x1f800\x1f0.1\x1f10\x1f300\x1f4\x1f1\x1fztshell-mon\n\
+                         901\x1f900\x1f0.1\x1f10\x1f200\x1f5\x1f0\x1fps\n\
+                         42\x1f1\x1f1.5\x1f2048\x1f12\x1f5\x1f0\x1fapp worker\n\
                          ###END###\n";
         let (first, first_snapshot) = parse_monitor_data(first_raw, None).unwrap();
 
@@ -850,13 +1003,15 @@ bogomips : 6374.42"#;
                           ###MEM###\nMemTotal: 1000 kB\nMemAvailable: 600 kB\n\
                           ###NET###\neth0: 1300 0 0 0 0 0 0 0 2600 0 0 0 0 0 0 0\n\
                           ###PHYS###\neth0\n\
-                          ###PROC###\n42\x1f1\x1f10.0\x1f1.5\x1f2048\x1f0\x1fapp worker\n\
+                          ###CLOCK_TICKS###\n100\n\
+                          ###PROC###\n42\x1f1\x1f1.5\x1f2048\x1f42\x1f5\x1f0\x1fapp worker\n\
                           ###END###\n";
         let (second, _) = parse_monitor_data(second_raw, Some(&first_snapshot)).unwrap();
 
         assert_approx_eq(second.cpu_usage, 50.0);
         assert_approx_eq(second.cpu_usage_breakdown.user, 20.0);
         assert_approx_eq(second.cpu_usage_breakdown.system, 30.0);
+        assert_eq!(second.processes[0].cpu, 10.0);
         assert_eq!(second.net_interfaces[0].rx_rate, 100);
         assert_eq!(second.net_interfaces[0].tx_rate, 200);
     }
@@ -882,6 +1037,12 @@ bogomips : 6374.42"#;
         assert!(!MONITOR_SCRIPT.contains("STAT1"));
         assert!(!MONITOR_SCRIPT.contains("NET1"));
         assert!(!MONITOR_SCRIPT.contains("head "));
+        assert!(!MONITOR_SCRIPT.contains("--sort=-pcpu"));
+        assert!(MONITOR_SCRIPT.contains("/proc/"));
+        assert!(MONITOR_SCRIPT.contains("cpu implementer"));
+        assert!(MONITOR_SCRIPT.contains("cpu part"));
+        assert!(MONITOR_SCRIPT.contains("###BOARD###"));
+        assert!(MONITOR_SCRIPT.contains("###CPUFREQ###"));
         assert!(MONITOR_SCRIPT.contains("###ERROR###"));
         assert!(MONITOR_SCRIPT.contains("__ZT_MONITOR_COLLECTOR__"));
     }
