@@ -4,6 +4,7 @@ import { computed, ref } from "vue";
 import Icon from "./Icon.vue";
 import ReleaseNotes from "./ReleaseNotes.vue";
 import UpdateProxyDialog from "./UpdateProxyDialog.vue";
+import { openExternalUrl } from "../api";
 import type { UpdatePreferences } from "../types";
 import { UPDATE_SOURCES, useUpdatesStore } from "../stores/updates";
 
@@ -11,6 +12,9 @@ const emit = defineEmits<{ (event: "install-update"): void }>();
 const updates = useUpdatesStore();
 const proxyDialogOpen = ref(false);
 const networkError = ref("");
+const openingReleasePage = ref(false);
+const releasePageError = ref("");
+const activeSource = computed(() => UPDATE_SOURCES.find((source) => source.id === updates.preferences.source));
 const networkLocked = computed(() => updates.busy || updates.phase === "ready");
 const percentage = computed(() => updates.progress.total ? Math.min(100, Math.floor(updates.progress.downloaded / updates.progress.total * 100)) : null);
 const status = computed(() => {
@@ -38,6 +42,38 @@ async function saveSource(event: Event): Promise<void> {
   }
 }
 
+/** 保存启动检查开关，失败时恢复为已保存的状态。 */
+async function saveAutoCheck(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  if (updates.busy) {
+    input.checked = updates.preferences.autoCheck;
+    return;
+  }
+  networkError.value = "";
+  try {
+    await updates.savePreferences({ ...updates.preferences, autoCheck: input.checked });
+  } catch (reason) {
+    networkError.value = `保存自动检查设置失败：${String(reason)}`;
+  } finally {
+    input.checked = updates.preferences.autoCheck;
+  }
+}
+
+/** 打开当前更新源的发布页面，不依赖检查结果。 */
+async function openSourceReleasePage(): Promise<void> {
+  const source = activeSource.value;
+  if (!source?.releaseUrl || openingReleasePage.value) return;
+  openingReleasePage.value = true;
+  releasePageError.value = "";
+  try {
+    await openExternalUrl(source.releaseUrl);
+  } catch (reason) {
+    releasePageError.value = `打开发布页面失败：${String(reason)}`;
+  } finally {
+    openingReleasePage.value = false;
+  }
+}
+
 /** 将下载字节数展示为便于阅读的大小。 */
 function size(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -50,14 +86,36 @@ function size(bytes: number): string {
     <section class="settings-card update-overview" aria-live="polite">
       <div class="update-overview-top">
         <div class="update-hero">
-          <div class="update-app-icon"><img src="/app-icon.png" alt="ZTShell" /></div>
-          <div class="update-hero-copy"><span class="settings-eyebrow">ZTShell</span><h2>{{ status }}</h2><p>当前版本 {{ updates.currentVersion ? `v${updates.currentVersion}` : "—" }}<template v-if="updates.latest"> <span class="update-arrow">→</span> <strong>v{{ updates.latest.version }}</strong></template></p></div>
+          <a
+            v-if="activeSource?.releaseUrl"
+            class="update-app-icon update-app-link"
+            :href="activeSource.releaseUrl"
+            :title="`打开 ${activeSource.name} 发布页面`"
+            :aria-label="`打开 ${activeSource.name} 发布页面`"
+            :aria-busy="openingReleasePage"
+            @click.prevent="openSourceReleasePage"
+          ><img src="/app-icon.png" alt="ZTShell" /></a>
+          <div v-else class="update-app-icon"><img src="/app-icon.png" alt="ZTShell" /></div>
+          <div class="update-hero-copy">
+            <span class="settings-eyebrow">ZTShell</span>
+            <h2>{{ status }}</h2>
+            <p>
+              当前版本 {{ updates.currentVersion ? `v${updates.currentVersion}` : "—" }}<template v-if="updates.latest"> <span class="update-arrow">→</span> <strong>v{{ updates.latest.version }}</strong></template><template v-if="activeSource?.releaseUrl">，<a
+                class="update-release-link"
+                :href="activeSource.releaseUrl"
+                :title="`打开 ${activeSource.name} 发布页面`"
+                :aria-busy="openingReleasePage"
+                @click.prevent="openSourceReleasePage"
+              >点击打开发布页</a></template>
+            </p>
+          </div>
         </div>
         <div class="update-check">
           <button v-if="updates.phase !== 'ready'" class="btn" :class="{ 'btn-primary': !updates.latest }" :disabled="updates.busy" @click="updates.check"><Icon name="refresh" :size="14" />{{ updates.phase === 'checking' ? '检查中…' : '检查更新' }}</button>
           <p v-if="updates.lastChecked" class="settings-caption">上次检查：{{ updates.lastChecked }}</p>
         </div>
       </div>
+      <p v-if="releasePageError" class="settings-error" role="alert">{{ releasePageError }}</p>
       <p v-if="updates.skipped && updates.phase === 'idle'" class="settings-hint">本版本不再提醒，下个新版本发布后会再次提示。你仍可随时下载此版本。</p>
       <p v-else-if="updates.phase === 'ready'" class="settings-hint">下载完成并已通过签名验证。安装时会退出程序并重新启动。</p>
       <p v-else-if="updates.phase === 'downloading'" class="settings-hint">你可以切换到其他标签页继续工作，下载完成后再安装。</p>
@@ -81,12 +139,19 @@ function size(bytes: number): string {
 
     <section class="settings-card">
       <h2><Icon name="network" :size="17" />更新来源与网络</h2>
-      <label class="settings-row">
-        <span class="settings-label">更新源<small>检查和下载安装包使用同一来源</small></span>
-        <select :value="updates.preferences.source" class="input settings-control" :disabled="networkLocked" @change="saveSource">
+      <label class="settings-row update-auto-check-row">
+        <span class="settings-label">启动时自动检查更新<small>每次打开软件时检查一次新版，关闭后需手动检查</small></span>
+        <span class="settings-toggle">
+          <input type="checkbox" role="switch" :checked="updates.preferences.autoCheck" :disabled="updates.busy" @change="saveAutoCheck" />
+          <span>{{ updates.preferences.autoCheck ? "启用" : "关闭" }}</span>
+        </span>
+      </label>
+      <div class="settings-row">
+        <label for="update-source" class="settings-label">选择更新源<small>检查和下载安装包使用同一来源</small></label>
+        <select id="update-source" :value="updates.preferences.source" class="input settings-control" :disabled="networkLocked" @change="saveSource">
           <option v-for="source in UPDATE_SOURCES" :key="source.id" :value="source.id">{{ source.name }}</option>
         </select>
-      </label>
+      </div>
       <div class="settings-row update-proxy-row">
         <span class="settings-label">
           <span>网络代理设置（{{ updates.preferences.useProxy ? "已启用" : "未启用" }}）</span>

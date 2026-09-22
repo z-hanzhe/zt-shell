@@ -4,6 +4,8 @@
 
 /** 更新源与代理偏好；关闭代理时使用直连 */
 export interface UpdatePreferences {
+  /** 是否在每次启动时自动检查一次新版 */
+  autoCheck: boolean;
   source: "github";
   useProxy: boolean;
   proxyUrl: string;

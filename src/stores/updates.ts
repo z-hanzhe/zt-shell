@@ -13,8 +13,14 @@ import {
 } from "../api";
 import type { SecretChange, UpdateInfo, UpdatePreferences, UpdateProgress } from "../types";
 
-/** 可选更新源，与原生更新源枚举保持一致。 */
-export const UPDATE_SOURCES = [{ id: "github", name: "GitHub" }] as const;
+/** 可选更新源与发布页面，与原生更新源枚举保持一致。 */
+export const UPDATE_SOURCES: ReadonlyArray<{
+  id: UpdatePreferences["source"];
+  name: string;
+  releaseUrl?: string;
+}> = [
+  { id: "github", name: "GitHub", releaseUrl: "https://github.com/z-hanzhe/zt-shell/releases" },
+];
 
 /** 校验并规范化代理，禁止在偏好中保存认证信息。 */
 export function normalizeUpdatePreferences(value: UpdatePreferences): UpdatePreferences {
@@ -34,6 +40,7 @@ export function normalizeUpdatePreferences(value: UpdatePreferences): UpdatePref
   const proxyUsername = value.proxyUsername?.trim() ?? "";
   if (proxyUsername.includes(":")) throw new Error("代理用户名不能包含冒号");
   return {
+    autoCheck: value.autoCheck !== false,
     source: value.source,
     useProxy: value.useProxy,
     proxyUrl,
@@ -44,6 +51,7 @@ export function normalizeUpdatePreferences(value: UpdatePreferences): UpdatePref
 
 export const useUpdatesStore = defineStore("updates", () => {
   const preferences = ref<UpdatePreferences>({
+    autoCheck: true,
     source: "github",
     useProxy: false,
     proxyUrl: "http://127.0.0.1:7897",
@@ -68,7 +76,7 @@ export const useUpdatesStore = defineStore("updates", () => {
   let store: Store | null = null;
   let initialization: Promise<void> | undefined;
 
-  /** 启动时只初始化和静默检查一次，不弹窗也不自动下载。 */
+  /** 启动时只初始化一次，按已保存偏好决定是否静默检查。 */
   function init(): Promise<void> {
     initialization ??= initialize();
     return initialization;
@@ -92,7 +100,7 @@ export const useUpdatesStore = defineStore("updates", () => {
     } finally {
       initializing.value = false;
     }
-    await check();
+    if (preferences.value.autoCheck) await check();
   }
 
   /** 手动或静默检查，失败时保留先前已发现的版本和提醒。 */
@@ -115,12 +123,12 @@ export const useUpdatesStore = defineStore("updates", () => {
     }
   }
 
-  /** 仅保存网络偏好与密码，后续检查须由用户手动发起。 */
+  /** 仅保存更新偏好与密码，后续检查须由用户手动发起。 */
   async function savePreferences(
     value: UpdatePreferences,
     passwordChange: SecretChange = { mode: "keep" }
   ): Promise<void> {
-    if (busy.value || phase.value === "ready") return;
+    if (busy.value) return;
     const next = normalizeUpdatePreferences(value);
     const previous = { ...preferences.value };
     // 密码引用由保存逻辑生成，不接受表单自带的凭据引用。
@@ -133,6 +141,12 @@ export const useUpdatesStore = defineStore("updates", () => {
     if (next.proxyCredentialId && !next.proxyUsername) {
       throw new Error("请填写代理用户名，或清除已保存的代理密码");
     }
+    const networkChanged = next.source !== previous.source ||
+      next.useProxy !== previous.useProxy ||
+      next.proxyUrl !== previous.proxyUrl ||
+      next.proxyUsername !== previous.proxyUsername ||
+      next.proxyCredentialId !== previous.proxyCredentialId;
+    if (networkChanged && phase.value === "ready") return;
     const newCredentialId = passwordChange.mode === "set" ? next.proxyCredentialId : null;
     saving.value = true;
     try {
@@ -145,9 +159,12 @@ export const useUpdatesStore = defineStore("updates", () => {
         await store.save();
       }
       preferences.value = next;
-      downloadReady.value = false;
-      lastChecked.value = "";
-      error.value = "";
+      // 自动检查开关只影响下次启动，不使已有检查结果或下载包失效。
+      if (networkChanged) {
+        downloadReady.value = false;
+        lastChecked.value = "";
+        error.value = "";
+      }
     } catch (reason) {
       // 保存失败时恢复插件内存快照，避免之后保存跳过记录时带入半完成的设置。
       if (store) await store.set("preferences", previous).catch(() => undefined);

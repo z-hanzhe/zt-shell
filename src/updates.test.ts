@@ -16,7 +16,8 @@ registerHooks({
     }
   },
 });
-const { useUpdatesStore, normalizeUpdatePreferences } = await import("./stores/updates.ts");
+const { UPDATE_SOURCES, useUpdatesStore, normalizeUpdatePreferences } = await import("./stores/updates.ts");
+const { openExternalUrl } = await import("./api.ts");
 
 /** 创建隔离的更新环境，不发出网络请求或运行安装器。 */
 function setup(saved = new Map(), handler = () => undefined, secrets = new Map()) {
@@ -50,9 +51,83 @@ test("启动并发初始化只检查一次，并使用保存的代理", async ()
   await Promise.all([store.init(), store.init(), store.init()]);
   const checks = calls.filter((call) => call.command === "updater_check");
   assert.equal(checks.length, 1);
+  assert.equal(store.preferences.autoCheck, true);
   assert.deepEqual(checks[0].args.proxy, { url: "http://127.0.0.1:8080", username: "", credentialId: null });
   assert.equal(store.hasUpdate, true);
   assert.equal(calls.some((call) => call.command === "updater_download"), false);
+});
+
+test("关闭自动检查后启动不发请求，仍可手动检查", async () => {
+  const saved = new Map([["preferences", { source: "github", useProxy: false, proxyUrl: "", autoCheck: false }]]);
+  const { store, calls } = setup(saved);
+  await Promise.all([store.init(), store.init()]);
+  assert.equal(store.preferences.autoCheck, false);
+  assert.equal(store.currentVersion, "0.2.7");
+  assert.equal(calls.some((call) => call.command === "updater_check"), false);
+  assert.equal(store.lastChecked, "");
+  await store.check();
+  assert.equal(calls.filter((call) => call.command === "updater_check").length, 1);
+  assert.equal(store.hasUpdate, true);
+});
+
+test("自动检查开关跨启动保留，重新开启只在下次启动自动检查一次", async () => {
+  const first = setup();
+  await first.store.init();
+  await first.store.savePreferences({ ...first.store.preferences, autoCheck: false });
+  assert.equal(first.saved.get("preferences").autoCheck, false);
+  assert.equal(first.calls.filter((call) => call.command === "updater_check").length, 1);
+  const second = setup(first.saved);
+  await second.store.init();
+  assert.equal(second.calls.some((call) => call.command === "updater_check"), false);
+  await second.store.savePreferences({ ...second.store.preferences, autoCheck: true });
+  await second.store.init();
+  assert.equal(second.calls.some((call) => call.command === "updater_check"), false);
+  const third = setup(second.saved);
+  await Promise.all([third.store.init(), third.store.init()]);
+  assert.equal(third.calls.filter((call) => call.command === "updater_check").length, 1);
+});
+
+test("修改自动检查开关不会丢失检查结果或已下载的更新包", async () => {
+  const { store, calls } = setup();
+  await store.init();
+  const checked = store.lastChecked;
+  const latest = store.latest;
+  await store.savePreferences({ ...store.preferences, autoCheck: false });
+  assert.equal(store.lastChecked, checked);
+  assert.equal(store.downloadReady, true);
+  assert.equal(store.latest, latest);
+  assert.equal(store.hasUpdate, true);
+  await store.download();
+  assert.equal(store.phase, "ready");
+  await store.savePreferences({ ...store.preferences, autoCheck: true });
+  assert.equal(store.preferences.autoCheck, true);
+  assert.equal(store.phase, "ready");
+  assert.equal(store.downloadReady, true);
+  assert.equal(store.lastChecked, checked);
+  assert.equal(calls.filter((call) => call.command === "updater_check").length, 1);
+  assert.equal(calls.filter((call) => call.command === "updater_download").length, 1);
+});
+
+test("自动检查设置保存失败时恢复原值", async () => {
+  const { store, saved } = setup(new Map(), (command) =>
+    command === "plugin:store|save" ? Promise.reject(new Error("磁盘不可写")) : undefined
+  );
+  await store.init();
+  await assert.rejects(store.savePreferences({ ...store.preferences, autoCheck: false }), /磁盘不可写/);
+  assert.equal(store.preferences.autoCheck, true);
+  assert.equal(saved.get("preferences").autoCheck, true);
+  assert.equal(store.downloadReady, true);
+});
+
+test("通过系统默认浏览器打开所选来源的发布页面，不触发更新检查", async () => {
+  const { store, calls } = setup(new Map([["preferences", { source: "github", useProxy: false, proxyUrl: "", autoCheck: false }]]));
+  await store.init();
+  const source = UPDATE_SOURCES.find((item) => item.id === store.preferences.source);
+  await openExternalUrl(source.releaseUrl);
+  const opened = calls.find((call) => call.command === "plugin:opener|open_url");
+  assert.equal(opened.args.url, "https://github.com/z-hanzhe/zt-shell/releases");
+  assert.equal(opened.args.with, undefined);
+  assert.equal(calls.some((call) => call.command === "updater_check"), false);
 });
 
 test("跳过记录跨重启保留，仅下一版本恢复红点", async () => {

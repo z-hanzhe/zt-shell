@@ -826,7 +826,7 @@ fn parse_monitor_data(
         .filter(|process| !excluded.contains(&process.pid))
         .map(|process| {
             let cpu = previous
-                .filter(|sample| interval > 0.0)
+                .filter(|_| interval > 0.0)
                 .and_then(|sample| sample.process_cpu.get(&process.pid))
                 .filter(|previous| previous.start_time == process.start_time)
                 .map(|previous| {

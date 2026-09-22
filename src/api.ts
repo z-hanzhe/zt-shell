@@ -3,6 +3,7 @@
  */
 
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   ConnectionConfig,
   ConnectionExportCredentialSources,
@@ -25,6 +26,11 @@ import type {
   UpdateProgress,
 } from "./types";
 import { runTransferCreation } from "./transferClose";
+
+/** 使用系统默认浏览器打开外部页面 */
+export function openExternalUrl(url: string): Promise<void> {
+  return openUrl(url);
+}
 
 /** 读取当前版本与安装能力 */
 export function updaterEnvironment(): Promise<UpdateEnvironment> {
