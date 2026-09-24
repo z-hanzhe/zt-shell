@@ -12,8 +12,8 @@ const emit = defineEmits<{ (event: "install-update"): void }>();
 const updates = useUpdatesStore();
 const proxyDialogOpen = ref(false);
 const networkError = ref("");
-const openingReleasePage = ref(false);
-const releasePageError = ref("");
+const openingSourcePage = ref(false);
+const sourcePageError = ref("");
 const activeSource = computed(() => UPDATE_SOURCES.find((source) => source.id === updates.preferences.source));
 const networkLocked = computed(() => updates.busy || updates.phase === "ready");
 const percentage = computed(() => updates.progress.total ? Math.min(100, Math.floor(updates.progress.downloaded / updates.progress.total * 100)) : null);
@@ -59,18 +59,17 @@ async function saveAutoCheck(event: Event): Promise<void> {
   }
 }
 
-/** 打开当前更新源的发布页面，不依赖检查结果。 */
-async function openSourceReleasePage(): Promise<void> {
-  const source = activeSource.value;
-  if (!source?.releaseUrl || openingReleasePage.value) return;
-  openingReleasePage.value = true;
-  releasePageError.value = "";
+/** 使用系统默认浏览器打开当前更新源的外部页面。 */
+async function openSourcePage(url: string | undefined, label: string): Promise<void> {
+  if (!url || openingSourcePage.value) return;
+  openingSourcePage.value = true;
+  sourcePageError.value = "";
   try {
-    await openExternalUrl(source.releaseUrl);
+    await openExternalUrl(url);
   } catch (reason) {
-    releasePageError.value = `打开发布页面失败：${String(reason)}`;
+    sourcePageError.value = `打开${label}失败：${String(reason)}`;
   } finally {
-    openingReleasePage.value = false;
+    openingSourcePage.value = false;
   }
 }
 
@@ -87,13 +86,13 @@ function size(bytes: number): string {
       <div class="update-overview-top">
         <div class="update-hero">
           <a
-            v-if="activeSource?.releaseUrl"
+            v-if="activeSource?.repositoryUrl"
             class="update-app-icon update-app-link"
-            :href="activeSource.releaseUrl"
-            :title="`打开 ${activeSource.name} 发布页面`"
-            :aria-label="`打开 ${activeSource.name} 发布页面`"
-            :aria-busy="openingReleasePage"
-            @click.prevent="openSourceReleasePage"
+            :href="activeSource.repositoryUrl"
+            :title="`打开 ${activeSource.name} 仓库首页`"
+            :aria-label="`打开 ${activeSource.name} 仓库首页`"
+            :aria-busy="openingSourcePage"
+            @click.prevent="openSourcePage(activeSource.repositoryUrl, '仓库首页')"
           ><img src="/app-icon.png" alt="ZTShell" /></a>
           <div v-else class="update-app-icon"><img src="/app-icon.png" alt="ZTShell" /></div>
           <div class="update-hero-copy">
@@ -104,8 +103,8 @@ function size(bytes: number): string {
                 class="update-release-link"
                 :href="activeSource.releaseUrl"
                 :title="`打开 ${activeSource.name} 发布页面`"
-                :aria-busy="openingReleasePage"
-                @click.prevent="openSourceReleasePage"
+                :aria-busy="openingSourcePage"
+                @click.prevent="openSourcePage(activeSource.releaseUrl, '发布页面')"
               >点击打开发布页</a></template>
             </p>
           </div>
@@ -115,7 +114,7 @@ function size(bytes: number): string {
           <p v-if="updates.lastChecked" class="settings-caption">上次检查：{{ updates.lastChecked }}</p>
         </div>
       </div>
-      <p v-if="releasePageError" class="settings-error" role="alert">{{ releasePageError }}</p>
+      <p v-if="sourcePageError" class="settings-error" role="alert">{{ sourcePageError }}</p>
       <p v-if="updates.skipped && updates.phase === 'idle'" class="settings-hint">本版本不再提醒，下个新版本发布后会再次提示。你仍可随时下载此版本。</p>
       <p v-else-if="updates.phase === 'ready'" class="settings-hint">下载完成并已通过签名验证。安装时会退出程序并重新启动。</p>
       <p v-else-if="updates.phase === 'downloading'" class="settings-hint">你可以切换到其他标签页继续工作，下载完成后再安装。</p>

@@ -55,7 +55,7 @@ const CONFIRM_THRESHOLD: u64 = 50;
 /// 文件总数上限（本次文件数与会话内未完成任务之和），超过时直接拒绝创建
 const MAX_TOTAL_FILES: u64 = 100;
 /// 进度推送节流间隔（毫秒）
-const TICK_MS: u64 = 300;
+const TICK_MS: u64 = 1000;
 /// 清理远端临时文件的最长等待时间
 const REMOTE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 /// 校验远端打包文件的最长等待时间
@@ -223,8 +223,8 @@ pub struct TransferManager {
     semaphore: Arc<Semaphore>,
     /// 已确保存在的远端目录缓存（键为 sessionId + \n + 路径）
     dir_cache: DashSet<String>,
-    /// 进度循环的速度跟踪（上次字节数与平滑速度）
-    speed_track: Mutex<HashMap<String, (u64, f64)>>,
+    /// 进度循环的速度跟踪（上次采样的字节数）
+    speed_track: Mutex<HashMap<String, u64>>,
     /// 进度循环的上次推送快照，用于增量推送
     snapshot: Mutex<HashMap<String, (u8, u64, u64, u64)>>,
 }
@@ -986,7 +986,7 @@ impl TransferManager {
         }
         let dt_secs = (dt_ms as f64 / 1000.0).max(0.001);
 
-        // 第一步：计算执行单元（非聚合节点）的瞬时速度（指数平滑）
+        // 第一步：计算执行单元（非聚合节点）在本周期内的传输速度
         {
             let mut track = self.speed_track.lock().unwrap();
             for id in &order {
@@ -1002,15 +1002,13 @@ impl TransferManager {
                     continue;
                 }
                 let cur = task.transferred.load(Ordering::SeqCst);
-                let entry = track.entry(id.clone()).or_insert((cur, 0.0));
-                let instant_speed = (cur.saturating_sub(entry.0)) as f64 / dt_secs;
-                let ema = if task.status() == ST_RUNNING {
-                    instant_speed * 0.5 + entry.1 * 0.5
+                let previous = track.insert(id.clone(), cur).unwrap_or(0);
+                let speed = if task.status() == ST_RUNNING {
+                    ((cur.saturating_sub(previous)) as f64 / dt_secs) as u64
                 } else {
-                    0.0
+                    0
                 };
-                *entry = (cur, ema);
-                task.speed.store(ema as u64, Ordering::SeqCst);
+                task.speed.store(speed, Ordering::SeqCst);
             }
         }
 
@@ -2004,6 +2002,28 @@ mod tests {
             started_once: AtomicBool::new(true),
             runner_lock: AsyncMutex::new(()),
         }
+    }
+
+    /// 每次采样按本周期字节增量计算速度，中断和重试不继承旧速度。
+    #[test]
+    fn progress_speed_uses_sampled_bytes() {
+        let manager = TransferManager::default();
+        let task = Arc::new(task_with_status(ST_RUNNING));
+        task.total.store(1000, Ordering::SeqCst);
+        manager.register(task.clone());
+
+        task.transferred.store(256, Ordering::SeqCst);
+        assert_eq!(manager.collect_progress(1000)[0].speed, 256);
+        task.transferred.store(384, Ordering::SeqCst);
+        assert_eq!(manager.collect_progress(1000)[0].speed, 128);
+        assert_eq!(manager.collect_progress(1000)[0].speed, 0);
+
+        assert!(task.control.interrupt());
+        assert_eq!(manager.collect_progress(1000)[0].speed, 0);
+        assert!(task.control.retry_failed());
+        assert!(task.control.start(task.control.generation()));
+        task.transferred.store(584, Ordering::SeqCst);
+        assert_eq!(manager.collect_progress(1000)[0].speed, 200);
     }
 
     /// 网络断开会把活动任务转为可重试失败，并使旧执行代际失效。

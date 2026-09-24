@@ -119,14 +119,18 @@ test("自动检查设置保存失败时恢复原值", async () => {
   assert.equal(store.downloadReady, true);
 });
 
-test("通过系统默认浏览器打开所选来源的发布页面，不触发更新检查", async () => {
+test("仓库图标与发布页文字分别使用当前更新源的地址，不触发更新检查", async () => {
   const { store, calls } = setup(new Map([["preferences", { source: "github", useProxy: false, proxyUrl: "", autoCheck: false }]]));
   await store.init();
   const source = UPDATE_SOURCES.find((item) => item.id === store.preferences.source);
+  await openExternalUrl(source.repositoryUrl);
   await openExternalUrl(source.releaseUrl);
-  const opened = calls.find((call) => call.command === "plugin:opener|open_url");
-  assert.equal(opened.args.url, "https://github.com/z-hanzhe/zt-shell/releases");
-  assert.equal(opened.args.with, undefined);
+  const opened = calls.filter((call) => call.command === "plugin:opener|open_url");
+  assert.deepEqual(opened.map((call) => call.args.url), [
+    "https://github.com/z-hanzhe/zt-shell",
+    "https://github.com/z-hanzhe/zt-shell/releases",
+  ]);
+  assert.equal(opened.every((call) => call.args.with === undefined), true);
   assert.equal(calls.some((call) => call.command === "updater_check"), false);
 });
 

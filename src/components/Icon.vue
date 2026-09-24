@@ -56,6 +56,7 @@ const paths: Record<string, string> = {
   pathToTerminal: "M6 4h12v4M6 20h12v-4M12 16V8M9 11l3-3 3 3",
   pathToFile: "M6 4h12v4M6 20h12v-4M12 8v8M9 13l3 3 3-3",
   shieldCheck: "M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8zM9 12l2 2 4-4",
+  check: "M20 6 9 17l-5-5",
   triangleAlert: "M10.3 3.7 2.2 18a2 2 0 0 0 1.7 3h16.2a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01",
 };
 

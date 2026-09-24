@@ -87,6 +87,7 @@ type ColumnKey =
   | "speed"
   | "eta"
   | "elapsed";
+type PathColumnKey = "localPath" | "remotePath";
 type Row = { task: TransferTask; depth: number; hasChildren: boolean };
 
 const columns: { key: ColumnKey; label: string }[] = [
@@ -101,6 +102,16 @@ const columns: { key: ColumnKey; label: string }[] = [
   { key: "eta", label: "预计剩余" },
   { key: "elapsed", label: "经过时间" },
 ];
+
+/** 路径列默认隐藏，表头菜单可单独切换 */
+const pathColumns = reactive<Record<PathColumnKey, boolean>>({ localPath: false, remotePath: false });
+const visibleColumns = computed(() =>
+  columns.filter((column) =>
+    column.key === "localPath" || column.key === "remotePath" ? pathColumns[column.key] : true
+  )
+);
+/** 表头的列显示菜单 */
+const headerMenu = reactive({ open: false, x: 0, y: 0 });
 
 /** 各列宽度 */
 const columnWidths = reactive<Record<ColumnKey, number>>({
@@ -314,6 +325,7 @@ function clearSelection() {
 function closeContextMenu() {
   contextMenu.open = false;
   contextMenu.targetId = "";
+  headerMenu.open = false;
 }
 
 /** 单选指定任务 */
@@ -448,8 +460,29 @@ function onListContextMenu(event: MouseEvent) {
   openContextMenu(event);
 }
 
+/** 表头右键：显示路径列开关，不改变任务选择 */
+function onHeaderContextMenu(event: MouseEvent) {
+  event.preventDefault();
+  closeContextMenu();
+  headerMenu.open = true;
+  headerMenu.x = Math.max(
+    CONTEXT_MENU_MARGIN,
+    Math.min(event.clientX, window.innerWidth - CONTEXT_MENU_WIDTH - CONTEXT_MENU_MARGIN)
+  );
+  headerMenu.y = Math.max(
+    CONTEXT_MENU_MARGIN,
+    Math.min(event.clientY, window.innerHeight - 2 * CONTEXT_MENU_ITEM_HEIGHT - 8 - CONTEXT_MENU_MARGIN)
+  );
+}
+
+/** 切换路径列的显示状态 */
+function togglePathColumn(key: PathColumnKey) {
+  pathColumns[key] = !pathColumns[key];
+}
+
 /** 定位右键菜单（按当前菜单项数计算高度，边缘收敛不超出视口） */
 function openContextMenu(event: MouseEvent, targetId = "") {
+  headerMenu.open = false;
   contextMenu.targetId = targetId;
   const height = contextMenuItems.value.length * CONTEXT_MENU_ITEM_HEIGHT + 8;
   contextMenu.open = true;
@@ -608,7 +641,7 @@ function moveSelection(delta: number) {
 function onKeyDown(event: KeyboardEvent) {
   if (!props.active || dialog.open || hasOpenModal()) return;
   if (event.key === "Escape") {
-    if (contextMenu.open) {
+    if (contextMenu.open || headerMenu.open) {
       closeContextMenu();
       return;
     }
@@ -649,7 +682,7 @@ watch(
 
 /** 点击应用任意非菜单区域时关闭右键菜单 */
 function onGlobalPointerDown(event: PointerEvent) {
-  if (!contextMenu.open) return;
+  if (!contextMenu.open && !headerMenu.open) return;
   const target = event.target as HTMLElement;
   if (target.closest(".transfer-context-menu")) return;
   closeContextMenu();
@@ -692,17 +725,17 @@ onBeforeUnmount(() => {
       @pointerdown="onListPointerDown"
       @contextmenu="onListContextMenu"
     >
-      <table v-if="rows.length">
+      <table>
         <colgroup>
           <col
-            v-for="column in columns"
+            v-for="column in visibleColumns"
             :key="column.key"
             :style="{ width: `${columnWidths[column.key]}px` }"
           />
         </colgroup>
-        <thead>
+        <thead @contextmenu.stop="onHeaderContextMenu">
           <tr>
-            <th v-for="column in columns" :key="column.key">
+            <th v-for="column in visibleColumns" :key="column.key">
               <span>{{ column.label }}</span>
               <span class="col-resizer" @mousedown.stop.prevent="startColumnResize(column.key, $event)"></span>
             </th>
@@ -744,7 +777,7 @@ onBeforeUnmount(() => {
               </div>
             </td>
             <td class="size" :title="sizeText(row.task)">{{ sizeText(row.task) }}</td>
-            <td :title="row.task.localPath">{{ row.task.localPath }}</td>
+            <td v-if="pathColumns.localPath" :title="row.task.localPath">{{ row.task.localPath }}</td>
             <td class="kind">
               <div class="cell-flex kind-flex">
                 <Icon
@@ -757,19 +790,37 @@ onBeforeUnmount(() => {
                 </span>
               </div>
             </td>
-            <td :title="row.task.remotePath">{{ row.task.remotePath }}</td>
+            <td v-if="pathColumns.remotePath" :title="row.task.remotePath">{{ row.task.remotePath }}</td>
             <td class="speed">{{ speedText(row.task) }}</td>
             <td class="mono">{{ etaText(row.task) }}</td>
             <td class="mono">{{ elapsedText(row.task) }}</td>
           </tr>
         </tbody>
       </table>
-      <div v-else class="tp-tip">暂无传输任务</div>
+      <div v-if="!rows.length" class="tp-tip">暂无传输任务</div>
       <div
         v-if="marquee.active"
         class="selection-marquee"
         :style="{ left: `${marquee.x}px`, top: `${marquee.y}px`, width: `${marquee.width}px`, height: `${marquee.height}px` }"
       ></div>
+      <div
+        v-if="headerMenu.open"
+        class="transfer-context-menu transfer-header-menu"
+        role="menu"
+        :style="{ left: `${headerMenu.x}px`, top: `${headerMenu.y}px` }"
+      >
+        <button
+          v-for="key in (['localPath', 'remotePath'] as const)"
+          :key="key"
+          role="menuitemcheckbox"
+          :aria-label="key === 'localPath' ? '本地路径' : '远程路径'"
+          :aria-checked="pathColumns[key]"
+          @click="togglePathColumn(key)"
+        >
+          <span class="menu-check"><Icon v-if="pathColumns[key]" name="check" :size="14" /></span>
+          {{ key === 'localPath' ? '本地路径' : '远程路径' }}
+        </button>
+      </div>
       <div
         v-if="contextMenu.open"
         class="transfer-context-menu"
@@ -1018,5 +1069,18 @@ onBeforeUnmount(() => {
 .transfer-context-menu button:disabled {
   color: #aab2bb;
   cursor: not-allowed;
+}
+.transfer-header-menu button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.menu-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
 }
 </style>

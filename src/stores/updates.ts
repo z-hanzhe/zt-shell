@@ -13,13 +13,19 @@ import {
 } from "../api";
 import type { SecretChange, UpdateInfo, UpdatePreferences, UpdateProgress } from "../types";
 
-/** 可选更新源与发布页面，与原生更新源枚举保持一致。 */
+/** 可选更新源与外部页面，与原生更新源枚举保持一致。 */
 export const UPDATE_SOURCES: ReadonlyArray<{
   id: UpdatePreferences["source"];
   name: string;
+  repositoryUrl?: string;
   releaseUrl?: string;
 }> = [
-  { id: "github", name: "GitHub", releaseUrl: "https://github.com/z-hanzhe/zt-shell/releases" },
+  {
+    id: "github",
+    name: "GitHub",
+    repositoryUrl: "https://github.com/z-hanzhe/zt-shell",
+    releaseUrl: "https://github.com/z-hanzhe/zt-shell/releases",
+  },
 ];
 
 /** 校验并规范化代理，禁止在偏好中保存认证信息。 */
