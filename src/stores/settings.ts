@@ -31,6 +31,14 @@ export interface AppSettings {
   monitorInterval: number;
 }
 
+/** 传输面板路径列的显示偏好 */
+export interface TransferPathColumns {
+  /** 显示本地路径 */
+  localPath: boolean;
+  /** 显示远程路径 */
+  remotePath: boolean;
+}
+
 /** 生成默认设置 */
 function defaults(downloadPath = ""): AppSettings {
   return {
@@ -62,18 +70,28 @@ export async function createDefaultAppSettings(): Promise<AppSettings> {
 
 const STORE_FILE = "settings.json";
 const STORE_KEY = "settings";
+const TRANSFER_PATH_COLUMNS_KEY = "transferPathColumns";
 
 export const useSettingsStore = defineStore("settings", () => {
   /** 当前设置 */
   const settings = ref<AppSettings>(defaults());
+  /** 路径列默认全部显示，独立于常规设置表单保存 */
+  const transferPathColumns = ref<TransferPathColumns>({ localPath: true, remotePath: true });
 
   let store: Store | null = null;
+  /** 串行保存路径列偏好，避免快速切换时旧状态覆盖新状态 */
+  let pathColumnSaveQueue: Promise<void> = Promise.resolve();
 
   /** 加载设置 */
   async function init() {
     const defaultSettings = await createDefaultAppSettings();
     settings.value = defaultSettings;
     store = await load(STORE_FILE, { defaults: {}, autoSave: true });
+    const savedPathColumns = await store.get<Partial<TransferPathColumns>>(TRANSFER_PATH_COLUMNS_KEY);
+    transferPathColumns.value = {
+      localPath: savedPathColumns?.localPath !== false,
+      remotePath: savedPathColumns?.remotePath !== false,
+    };
     const saved = await store.get<Partial<AppSettings>>(STORE_KEY);
     if (saved) {
       const merged = { ...defaultSettings, ...saved };
@@ -104,5 +122,19 @@ export const useSettingsStore = defineStore("settings", () => {
     settings.value = normalized;
   }
 
-  return { settings, init, update };
+  /** 立即切换路径列显示状态，并按操作顺序持久化 */
+  async function toggleTransferPathColumn(key: keyof TransferPathColumns): Promise<void> {
+    const next = { ...transferPathColumns.value, [key]: !transferPathColumns.value[key] };
+    transferPathColumns.value = next;
+    const currentStore = store;
+    if (!currentStore) return;
+    const operation = pathColumnSaveQueue.then(async () => {
+      await currentStore.set(TRANSFER_PATH_COLUMNS_KEY, next);
+      await currentStore.save();
+    });
+    pathColumnSaveQueue = operation.catch(() => undefined);
+    await operation;
+  }
+
+  return { settings, transferPathColumns, init, update, toggleTransferPathColumn };
 });

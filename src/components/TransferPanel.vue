@@ -14,6 +14,7 @@ import {
   transferRetryFailed,
 } from "../api";
 import { useTransfersStore } from "../stores/transfers";
+import { useSettingsStore, type TransferPathColumns } from "../stores/settings";
 import { hasOpenModal } from "../composables/useEscClose";
 import type { TransferStatus, TransferTask } from "../types";
 import { formatDuration, formatRate, formatSizeFixed } from "../utils";
@@ -28,6 +29,7 @@ const props = defineProps<{
 }>();
 
 const transfersStore = useTransfersStore();
+const settingsStore = useSettingsStore();
 
 /** 已展开的目录任务标识 */
 const expandedIds = ref<Set<string>>(new Set());
@@ -87,7 +89,7 @@ type ColumnKey =
   | "speed"
   | "eta"
   | "elapsed";
-type PathColumnKey = "localPath" | "remotePath";
+type PathColumnKey = keyof TransferPathColumns;
 type Row = { task: TransferTask; depth: number; hasChildren: boolean };
 
 const columns: { key: ColumnKey; label: string }[] = [
@@ -103,11 +105,11 @@ const columns: { key: ColumnKey; label: string }[] = [
   { key: "elapsed", label: "经过时间" },
 ];
 
-/** 路径列默认隐藏，表头菜单可单独切换 */
-const pathColumns = reactive<Record<PathColumnKey, boolean>>({ localPath: false, remotePath: false });
+/** 路径列默认显示，表头菜单的切换结果由设置 store 持久化 */
+const pathColumns = computed(() => settingsStore.transferPathColumns);
 const visibleColumns = computed(() =>
   columns.filter((column) =>
-    column.key === "localPath" || column.key === "remotePath" ? pathColumns[column.key] : true
+    column.key === "localPath" || column.key === "remotePath" ? pathColumns.value[column.key] : true
   )
 );
 /** 表头的列显示菜单 */
@@ -475,9 +477,14 @@ function onHeaderContextMenu(event: MouseEvent) {
   );
 }
 
-/** 切换路径列的显示状态 */
-function togglePathColumn(key: PathColumnKey) {
-  pathColumns[key] = !pathColumns[key];
+/** 切换并保存路径列的显示状态 */
+async function togglePathColumn(key: PathColumnKey): Promise<void> {
+  try {
+    await settingsStore.toggleTransferPathColumn(key);
+  } catch (error) {
+    closeContextMenu();
+    showMessage("保存失败", `无法保存表头显示设置：${String(error)}`);
+  }
 }
 
 /** 定位右键菜单（按当前菜单项数计算高度，边缘收敛不超出视口） */

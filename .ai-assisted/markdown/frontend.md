@@ -20,7 +20,7 @@
 | `connections.ts`、`proxies.ts` | 持久化连接元数据、分组文件夹、展开状态和共享代理；秘密凭据单独存入系统凭据库。 |
 | `monitor.ts` | 按会话采集、缓存监控数据和网卡历史。 |
 | `transfers.ts` | 监听传输事件并维护任务快照。 |
-| `settings.ts` | 持久化终端、编辑器、监控与默认下载目录偏好。 |
+| `settings.ts` | 持久化终端、编辑器、监控、默认下载目录与传输表头偏好；传输表头规则见 `transfer.md`。 |
 
 - `api.ts` 是所有 Tauri 调用的唯一封装入口，`types.ts` 是前端跨端类型入口。
 - `connectionTransfer.ts` 是连接导入导出 V1 文件契约、层级重建、名称冲突和代理复用规则的唯一数据边界。
