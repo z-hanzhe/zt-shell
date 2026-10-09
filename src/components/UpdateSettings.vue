@@ -2,11 +2,12 @@
 /** 更新页面：版本状态、更新说明和网络偏好。 */
 import { computed, ref } from "vue";
 import Icon from "./Icon.vue";
+import AppSelect from "./AppSelect.vue";
 import ReleaseNotes from "./ReleaseNotes.vue";
 import UpdateProxyDialog from "./UpdateProxyDialog.vue";
 import { openExternalUrl } from "../api";
 import type { UpdatePreferences } from "../types";
-import { UPDATE_SOURCES, useUpdatesStore } from "../stores/updates";
+import { UPDATE_PAGES, UPDATE_SOURCES, useUpdatesStore } from "../stores/updates";
 
 const emit = defineEmits<{ (event: "install-update"): void }>();
 const updates = useUpdatesStore();
@@ -14,7 +15,7 @@ const proxyDialogOpen = ref(false);
 const networkError = ref("");
 const openingSourcePage = ref(false);
 const sourcePageError = ref("");
-const activeSource = computed(() => UPDATE_SOURCES.find((source) => source.id === updates.preferences.source));
+const sourceOptions = UPDATE_SOURCES.map((source) => ({ value: source.id, label: source.name }));
 const networkLocked = computed(() => updates.busy || updates.phase === "ready");
 const percentage = computed(() => updates.progress.total ? Math.min(100, Math.floor(updates.progress.downloaded / updates.progress.total * 100)) : null);
 const status = computed(() => {
@@ -28,17 +29,14 @@ const status = computed(() => {
   return "保持 ZTShell 为最新版本";
 });
 /** 更新源选定后直接保存，不触发检查或修改代理配置。 */
-async function saveSource(event: Event): Promise<void> {
-  const select = event.target as HTMLSelectElement;
-  const source = select.value as UpdatePreferences["source"];
+async function saveSource(value: string): Promise<void> {
+  const source = value as UpdatePreferences["source"];
   if (networkLocked.value || source === updates.preferences.source) return;
   networkError.value = "";
   try {
     await updates.savePreferences({ ...updates.preferences, source });
   } catch (reason) {
     networkError.value = String(reason);
-  } finally {
-    select.value = updates.preferences.source;
   }
 }
 
@@ -59,9 +57,9 @@ async function saveAutoCheck(event: Event): Promise<void> {
   }
 }
 
-/** 使用系统默认浏览器打开当前更新源的外部页面。 */
-async function openSourcePage(url: string | undefined, label: string): Promise<void> {
-  if (!url || openingSourcePage.value) return;
+/** 使用系统默认浏览器打开 GitHub 项目的外部页面。 */
+async function openSourcePage(url: string, label: string): Promise<void> {
+  if (openingSourcePage.value) return;
   openingSourcePage.value = true;
   sourcePageError.value = "";
   try {
@@ -86,26 +84,24 @@ function size(bytes: number): string {
       <div class="update-overview-top">
         <div class="update-hero">
           <a
-            v-if="activeSource?.repositoryUrl"
             class="update-app-icon update-app-link"
-            :href="activeSource.repositoryUrl"
-            :title="`打开 ${activeSource.name} 仓库首页`"
-            :aria-label="`打开 ${activeSource.name} 仓库首页`"
+            :href="UPDATE_PAGES.repositoryUrl"
+            title="打开 GitHub 仓库首页"
+            aria-label="打开 GitHub 仓库首页"
             :aria-busy="openingSourcePage"
-            @click.prevent="openSourcePage(activeSource.repositoryUrl, '仓库首页')"
+            @click.prevent="openSourcePage(UPDATE_PAGES.repositoryUrl, '仓库首页')"
           ><img src="/app-icon.png" alt="ZTShell" /></a>
-          <div v-else class="update-app-icon"><img src="/app-icon.png" alt="ZTShell" /></div>
           <div class="update-hero-copy">
             <span class="settings-eyebrow">ZTShell</span>
             <h2>{{ status }}</h2>
             <p>
-              当前版本 {{ updates.currentVersion ? `v${updates.currentVersion}` : "—" }}<template v-if="updates.latest"> <span class="update-arrow">→</span> <strong>v{{ updates.latest.version }}</strong></template><template v-if="activeSource?.releaseUrl">，<a
+              当前版本 {{ updates.currentVersion ? `v${updates.currentVersion}` : "—" }}<template v-if="updates.latest"> <span class="update-arrow">→</span> <strong>v{{ updates.latest.version }}</strong></template>，<a
                 class="update-release-link"
-                :href="activeSource.releaseUrl"
-                :title="`打开 ${activeSource.name} 发布页面`"
+                :href="UPDATE_PAGES.releaseUrl"
+                title="打开 GitHub 发布页面"
                 :aria-busy="openingSourcePage"
-                @click.prevent="openSourcePage(activeSource.releaseUrl, '发布页面')"
-              >点击打开发布页</a></template>
+                @click.prevent="openSourcePage(UPDATE_PAGES.releaseUrl, '发布页面')"
+              >点击打开发布页</a>
             </p>
           </div>
         </div>
@@ -146,10 +142,16 @@ function size(bytes: number): string {
         </span>
       </label>
       <div class="settings-row">
-        <label for="update-source" class="settings-label">选择更新源<small>检查和下载安装包使用同一来源</small></label>
-        <select id="update-source" :value="updates.preferences.source" class="input settings-control" :disabled="networkLocked" @change="saveSource">
-          <option v-for="source in UPDATE_SOURCES" :key="source.id" :value="source.id">{{ source.name }}</option>
-        </select>
+        <label id="update-source-label" for="update-source" class="settings-label">选择更新源<small>检查和下载安装包使用同一来源</small></label>
+        <AppSelect
+          id="update-source"
+          class="settings-control update-source-select"
+          labelledby="update-source-label"
+          :model-value="updates.preferences.source"
+          :options="sourceOptions"
+          :disabled="networkLocked"
+          @update:model-value="saveSource"
+        />
       </div>
       <div class="settings-row update-proxy-row">
         <span class="settings-label">

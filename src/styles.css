@@ -162,10 +162,33 @@ body {
   color: var(--text);
   font-size: 12px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 .input:focus {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--row-hover);
+}
+
+/* 单位作为输入框内的展示后缀，不参与输入值。 */
+.input-with-unit {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+.input-with-unit .input {
+  width: 100%;
+  min-width: 0;
+  padding-right: 36px;
+}
+.input-unit {
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  pointer-events: none;
 }
 
 /* 弹窗遮罩与容器 */

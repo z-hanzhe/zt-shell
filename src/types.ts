@@ -6,7 +6,7 @@
 export interface UpdatePreferences {
   /** 是否在每次启动时自动检查一次新版 */
   autoCheck: boolean;
-  source: "github";
+  source: "github" | "gh-proxy.com" | "ghproxy.net" | "ghfast.top";
   useProxy: boolean;
   proxyUrl: string;
   /** 代理认证用户名，留空表示不认证 */

@@ -13,24 +13,26 @@ import {
 } from "../api";
 import type { SecretChange, UpdateInfo, UpdatePreferences, UpdateProgress } from "../types";
 
-/** 可选更新源与外部页面，与原生更新源枚举保持一致。 */
+/** GitHub 项目页面固定展示，不随更新源切换。 */
+export const UPDATE_PAGES = {
+  repositoryUrl: "https://github.com/z-hanzhe/zt-shell",
+  releaseUrl: "https://github.com/z-hanzhe/zt-shell/releases",
+} as const;
+
+/** 可选更新源按展示顺序排列，与原生更新源枚举保持一致。 */
 export const UPDATE_SOURCES: ReadonlyArray<{
   id: UpdatePreferences["source"];
   name: string;
-  repositoryUrl?: string;
-  releaseUrl?: string;
 }> = [
-  {
-    id: "github",
-    name: "GitHub",
-    repositoryUrl: "https://github.com/z-hanzhe/zt-shell",
-    releaseUrl: "https://github.com/z-hanzhe/zt-shell/releases",
-  },
+  { id: "github", name: "GitHub 官方更新源" },
+  { id: "gh-proxy.com", name: "gh-proxy.com 加速" },
+  { id: "ghproxy.net", name: "ghproxy.net 加速" },
+  { id: "ghfast.top", name: "ghfast.top 加速" },
 ];
 
 /** 校验并规范化代理，禁止在偏好中保存认证信息。 */
 export function normalizeUpdatePreferences(value: UpdatePreferences): UpdatePreferences {
-  if (value.source !== "github") throw new Error("暂不支持此更新源");
+  if (!UPDATE_SOURCES.some((source) => source.id === value.source)) throw new Error("暂不支持此更新源");
   const proxyUrl = value.proxyUrl.trim();
   if (proxyUrl || value.useProxy) {
     let url: URL;

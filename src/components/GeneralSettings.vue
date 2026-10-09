@@ -5,6 +5,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import Icon from "./Icon.vue";
 import AppDialog from "./AppDialog.vue";
+import AppSelect from "./AppSelect.vue";
 import { pathIsDir } from "../api";
 import { createDefaultAppSettings, useSettingsStore, type AppSettings } from "../stores/settings";
 import { UI_SCALE_OPTIONS } from "../uiScale";
@@ -101,15 +102,20 @@ async function submit(): Promise<void> {
 
     <section class="settings-card">
       <h2><Icon name="panelLeft" :size="17" />界面与编辑</h2>
-      <label class="settings-row">
-        <span class="settings-label">界面缩放<small>即时预览，保存后应用到所有窗口</small></span>
-        <select v-model.number="form.uiScale" class="input settings-control">
-          <option v-for="option in UI_SCALE_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
-        </select>
-      </label>
+      <div class="settings-row">
+        <label id="ui-scale-label" for="ui-scale" class="settings-label">界面缩放<small>即时预览，保存后应用到所有窗口</small></label>
+        <AppSelect
+          id="ui-scale"
+          v-model="form.uiScale"
+          class="settings-control"
+          labelledby="ui-scale-label"
+          :options="UI_SCALE_OPTIONS"
+          :disabled="submitting || resetting"
+        />
+      </div>
       <label class="settings-row">
         <span class="settings-label">编辑器字号<small>远端文本编辑器的默认文字大小</small></span>
-        <div class="settings-number"><input v-model.number="form.editorFontSize" class="input" type="number" :min="MIN_EDITOR_FONT_SIZE" :max="MAX_EDITOR_FONT_SIZE" required /><span>px</span></div>
+        <span class="settings-control input-with-unit"><input v-model.number="form.editorFontSize" class="input" type="number" :min="MIN_EDITOR_FONT_SIZE" :max="MAX_EDITOR_FONT_SIZE" required /><span class="input-unit">px</span></span>
       </label>
     </section>
 
@@ -117,7 +123,7 @@ async function submit(): Promise<void> {
       <h2><Icon name="terminal" :size="17" />终端</h2>
       <label class="settings-row">
         <span class="settings-label">终端字号<small>调整终端输出和输入文字的大小</small></span>
-        <div class="settings-number"><input v-model.number="form.fontSize" class="input" type="number" min="8" max="32" required /><span>px</span></div>
+        <span class="settings-control input-with-unit"><input v-model.number="form.fontSize" class="input" type="number" min="8" max="32" required /><span class="input-unit">px</span></span>
       </label>
       <label class="settings-row settings-row-wide">
         <span class="settings-label">字体<small>可填写多个字体名称，按顺序使用可用字体</small></span>
@@ -140,7 +146,7 @@ async function submit(): Promise<void> {
       </label>
       <label class="settings-row">
         <span class="settings-label">监控间隔(秒)<small>CPU、内存和网络数据的刷新频率</small></span>
-        <div class="settings-number"><input v-model.number="form.monitorInterval" class="input" type="number" min="1" max="30" required /><span>秒</span></div>
+        <span class="settings-control input-with-unit"><input v-model.number="form.monitorInterval" class="input" type="number" min="1" max="30" required /><span class="input-unit">秒</span></span>
       </label>
     </section>
 

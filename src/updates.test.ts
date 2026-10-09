@@ -16,7 +16,7 @@ registerHooks({
     }
   },
 });
-const { UPDATE_SOURCES, useUpdatesStore, normalizeUpdatePreferences } = await import("./stores/updates.ts");
+const { UPDATE_PAGES, UPDATE_SOURCES, useUpdatesStore, normalizeUpdatePreferences } = await import("./stores/updates.ts");
 const { openExternalUrl } = await import("./api.ts");
 
 /** 创建隔离的更新环境，不发出网络请求或运行安装器。 */
@@ -119,19 +119,42 @@ test("自动检查设置保存失败时恢复原值", async () => {
   assert.equal(store.downloadReady, true);
 });
 
-test("仓库图标与发布页文字分别使用当前更新源的地址，不触发更新检查", async () => {
-  const { store, calls } = setup(new Map([["preferences", { source: "github", useProxy: false, proxyUrl: "", autoCheck: false }]]));
-  await store.init();
-  const source = UPDATE_SOURCES.find((item) => item.id === store.preferences.source);
-  await openExternalUrl(source.repositoryUrl);
-  await openExternalUrl(source.releaseUrl);
-  const opened = calls.filter((call) => call.command === "plugin:opener|open_url");
-  assert.deepEqual(opened.map((call) => call.args.url), [
-    "https://github.com/z-hanzhe/zt-shell",
-    "https://github.com/z-hanzhe/zt-shell/releases",
+test("四个更新源按指定顺序展示，保存后跨启动使用对应来源检查", async () => {
+  assert.deepEqual(UPDATE_SOURCES.map((source) => [source.id, source.name]), [
+    ["github", "GitHub 官方更新源"],
+    ["gh-proxy.com", "gh-proxy.com 加速"],
+    ["ghproxy.net", "ghproxy.net 加速"],
+    ["ghfast.top", "ghfast.top 加速"],
   ]);
-  assert.equal(opened.every((call) => call.args.with === undefined), true);
-  assert.equal(calls.some((call) => call.command === "updater_check"), false);
+  for (const { id } of UPDATE_SOURCES) {
+    const first = setup();
+    await first.store.init();
+    await first.store.savePreferences({ ...first.store.preferences, source: id });
+    assert.equal(first.saved.get("preferences").source, id);
+    assert.equal(first.calls.filter((call) => call.command === "updater_check").length, 1);
+    const second = setup(first.saved);
+    await second.store.init();
+    assert.equal(second.store.preferences.source, id);
+    assert.equal(second.calls.find((call) => call.command === "updater_check").args.source, id);
+    assert.equal(second.calls.find((call) => call.command === "updater_check").args.proxy, null);
+  }
+  assert.throws(() => normalizeUpdatePreferences({ source: "unknown", useProxy: false, proxyUrl: "" }), /暂不支持此更新源/);
+});
+
+test("所有更新源的仓库图标与发布页文字始终打开 GitHub，不触发更新检查", async () => {
+  for (const { id } of UPDATE_SOURCES) {
+    const { store, calls } = setup(new Map([["preferences", { source: id, useProxy: false, proxyUrl: "", autoCheck: false }]]));
+    await store.init();
+    await openExternalUrl(UPDATE_PAGES.repositoryUrl);
+    await openExternalUrl(UPDATE_PAGES.releaseUrl);
+    const opened = calls.filter((call) => call.command === "plugin:opener|open_url");
+    assert.deepEqual(opened.map((call) => call.args.url), [
+      "https://github.com/z-hanzhe/zt-shell",
+      "https://github.com/z-hanzhe/zt-shell/releases",
+    ]);
+    assert.equal(opened.every((call) => call.args.with === undefined), true);
+    assert.equal(calls.some((call) => call.command === "updater_check"), false);
+  }
 });
 
 test("跳过记录跨重启保留，仅下一版本恢复红点", async () => {
@@ -199,6 +222,37 @@ test("切换代理后检查失败保留红点，但禁止使用旧代理下载",
   fail = false;
   await store.check();
   assert.equal(store.downloadReady, true);
+});
+
+test("切换更新源保留代理偏好，重新检查成功前禁止使用旧来源下载", async () => {
+  let fail = false;
+  const { store, calls } = setup(new Map([["preferences", {
+    source: "github", useProxy: true, proxyUrl: "http://localhost:1234", proxyUsername: "用户", proxyCredentialId: "updater-proxy:已保存",
+  }]]), (command) => {
+    if (command === "updater_check" && fail) return Promise.reject(new Error("更新源不可用"));
+  });
+  await store.init();
+  const proxy = calls.find((call) => call.command === "updater_check").args.proxy;
+  for (const source of ["gh-proxy.com", "ghproxy.net", "ghfast.top", "github"]) {
+    fail = true;
+    await store.savePreferences({ ...store.preferences, source });
+    assert.equal(store.downloadReady, false);
+    assert.equal(store.lastChecked, "");
+    await store.check();
+    assert.equal(store.hasUpdate, true);
+    assert.equal(store.downloadReady, false);
+    assert.equal(calls.filter((call) => call.command === "updater_check").at(-1).args.source, source);
+    assert.deepEqual(calls.filter((call) => call.command === "updater_check").at(-1).args.proxy, proxy);
+    await store.download();
+    assert.equal(calls.some((call) => call.command === "updater_download"), false);
+    fail = false;
+    await store.check();
+    assert.equal(store.downloadReady, true);
+  }
+  await store.download();
+  assert.equal(store.phase, "ready");
+  await store.savePreferences({ ...store.preferences, source: "gh-proxy.com" });
+  assert.equal(store.preferences.source, "github");
 });
 
 test("下载期间合并重复操作，校验成功后等待用户安装", async () => {

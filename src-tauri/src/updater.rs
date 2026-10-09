@@ -4,10 +4,11 @@ use std::time::Duration;
 
 use reqwest::Proxy;
 use serde::{Deserialize, Serialize};
+use serde_json::from_value;
 use tauri::{
     async_runtime::spawn_blocking, ipc::Channel, AppHandle, Manager, State, Url, WebviewWindow,
 };
-use tauri_plugin_updater::{Update, UpdaterExt};
+use tauri_plugin_updater::{Config as UpdaterConfig, Update, UpdaterExt};
 use tokio::sync::Mutex;
 
 use crate::credentials::{CredentialKind, CredentialManager};
@@ -22,11 +23,33 @@ struct PendingUpdate {
     bytes: Option<Vec<u8>>,
 }
 
-/// 支持的更新源；新增源时须同步前端选项和发布配置。
+/// 支持的更新源；新增源时须同步前端选项和跨端类型。
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UpdateSource {
     Github,
+    #[serde(rename = "gh-proxy.com")]
+    GhProxyCom,
+    #[serde(rename = "ghproxy.net")]
+    GhproxyNet,
+    #[serde(rename = "ghfast.top")]
+    GhfastTop,
+}
+
+impl UpdateSource {
+    /// 清单与安装包使用同一加速前缀，官方源保留原始地址。
+    fn resource_url(&self, url: &Url) -> Result<Url, String> {
+        let prefix = match self {
+            Self::Github => return Ok(url.clone()),
+            Self::GhProxyCom => "https://gh-proxy.com/",
+            Self::GhproxyNet => "https://ghproxy.net/",
+            Self::GhfastTop => "https://ghfast.top/",
+        };
+        if url.scheme() != "https" || url.host_str() != Some("github.com") {
+            return Err("加速更新源仅支持 GitHub HTTPS 资源地址".into());
+        }
+        Url::parse(&format!("{prefix}{url}")).map_err(|_| "更新加速地址格式不正确".to_string())
+    }
 }
 
 /// 更新代理的非秘密配置，密码只允许从系统凭据库读取。
@@ -132,11 +155,29 @@ pub async fn updater_check(
 ) -> Result<Option<UpdateInfo>, String> {
     ensure_main_window(&window)?;
     let mut pending = state.0.try_lock().map_err(|_| "更新操作正在进行中")?;
-    let mut builder = match source {
-        UpdateSource::Github => app.updater_builder(),
+    let mut builder = app
+        .updater_builder()
+        .timeout(Duration::from_secs(30))
+        .no_proxy();
+    if !matches!(source, UpdateSource::Github) {
+        // 共用配置中的官方清单和公钥，加速源只转换传输地址。
+        let config = app
+            .config()
+            .plugins
+            .0
+            .get("updater")
+            .ok_or("未找到更新配置")?;
+        let config: UpdaterConfig =
+            from_value(config.clone()).map_err(|error| format!("更新配置不正确：{error}"))?;
+        let endpoints = config
+            .endpoints
+            .iter()
+            .map(|url| source.resource_url(url))
+            .collect::<Result<Vec<_>, _>>()?;
+        builder = builder
+            .endpoints(endpoints)
+            .map_err(|error| format!("更新源配置不正确：{error}"))?;
     }
-    .timeout(Duration::from_secs(30))
-    .no_proxy();
     if let Some(config) = proxy {
         let password = if let Some(id) = &config.credential_id {
             if !id.starts_with("updater-proxy:") {
@@ -156,25 +197,27 @@ pub async fn updater_check(
         // 同一个客户端配置回调用于检查及下载，认证不会进入源站请求头。
         builder = builder.configure_client(move |client| client.no_proxy().proxy(proxy.clone()));
     }
-    let result = builder
+    let mut result = builder
         .build()
         .map_err(|error| error.to_string())?
         .check()
         .await
         .map_err(|error| format!("检查更新失败：{error}"))?;
+    if let Some(update) = result.as_mut() {
+        // 仅转换下载地址，继续由官方插件使用原清单签名验证安装包。
+        update.download_url = source.resource_url(&update.download_url)?;
+        // 检查与下载共享同一代理；大文件使用独立的下载超时。
+        update.timeout = Some(Duration::from_secs(30 * 60));
+    }
     let info = result.as_ref().map(|update| UpdateInfo {
         version: update.version.clone(),
         current_version: update.current_version.clone(),
         notes: update.body.clone().unwrap_or_default(),
         date: update.date.map(|date| date.to_string()),
     });
-    *pending = result.map(|mut update| {
-        // 检查与下载共享同一代理；大文件使用独立的下载超时。
-        update.timeout = Some(Duration::from_secs(30 * 60));
-        PendingUpdate {
-            update,
-            bytes: None,
-        }
+    *pending = result.map(|update| PendingUpdate {
+        update,
+        bytes: None,
     });
     Ok(info)
 }
@@ -252,6 +295,7 @@ pub async fn updater_install(
 mod tests {
     use reqwest::Client;
     use rustls::crypto::ring::default_provider;
+    use serde_json::{from_str, from_value, Value};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -259,7 +303,74 @@ mod tests {
         time::timeout,
     };
 
-    use super::{authenticated_proxy, parse_proxy, Duration, UpdateProxy};
+    use super::{
+        authenticated_proxy, parse_proxy, Duration, UpdateProxy, UpdateSource, UpdaterConfig, Url,
+    };
+
+    /// 四个前端来源标识必须能读取同一清单，并为各平台安装包保留版本及编码路径。
+    #[test]
+    fn routes_manifest_and_platform_downloads_through_selected_source() {
+        let config: Value = from_str(include_str!("../tauri.conf.json")).unwrap();
+        let config: UpdaterConfig = from_value(config["plugins"]["updater"].clone()).unwrap();
+        assert_eq!(config.endpoints.len(), 1);
+        let manifest = &config.endpoints[0];
+        assert_eq!(
+            manifest.as_str(),
+            "https://github.com/z-hanzhe/zt-shell/releases/latest/download/latest.json"
+        );
+        let sources = [
+            ("github", ""),
+            ("gh-proxy.com", "https://gh-proxy.com/"),
+            ("ghproxy.net", "https://ghproxy.net/"),
+            ("ghfast.top", "https://ghfast.top/"),
+        ];
+        let assets = [
+            "ZTShell_0.2.9_windows-x86_64-setup.exe",
+            "ZTShell_0.2.9_windows-x86_64.msi",
+            "ZTShell_0.2.9_darwin-aarch64.app.tar.gz",
+            "ZTShell_0.2.9_darwin-x86_64.app.tar.gz",
+            "ZTShell_0.2.9_linux-x86_64.AppImage",
+            "ZTShell_0.2.9_linux-x86_64.deb",
+            "ZTShell_0.2.9_linux-x86_64.rpm",
+            "ZTShell%20%E5%AE%89%E8%A3%85%E5%8C%85%2B.zip",
+        ];
+        for (id, prefix) in sources {
+            let source: UpdateSource = from_value(Value::String(id.into())).unwrap();
+            assert_eq!(
+                source.resource_url(manifest).unwrap().as_str(),
+                format!("{prefix}https://github.com/z-hanzhe/zt-shell/releases/latest/download/latest.json")
+            );
+            for asset in assets {
+                let original = format!(
+                    "https://github.com/z-hanzhe/zt-shell/releases/download/v0.2.9/{asset}"
+                );
+                let download = Url::parse(&original).unwrap();
+                assert_eq!(
+                    source.resource_url(&download).unwrap().as_str(),
+                    format!("{prefix}{original}")
+                );
+            }
+        }
+        assert!(from_value::<UpdateSource>(Value::String("unknown".into())).is_err());
+    }
+
+    /// 加速源拒绝不受支持的协议和域名，避免拼接出无法使用的代理地址。
+    #[test]
+    fn rejects_unsupported_accelerated_resource_urls() {
+        for source in [
+            UpdateSource::GhProxyCom,
+            UpdateSource::GhproxyNet,
+            UpdateSource::GhfastTop,
+        ] {
+            for value in [
+                "http://github.com/z-hanzhe/zt-shell/releases/download/v0.2.9/package.zip",
+                "https://example.com/package.zip",
+                "https://github.com.example.com/package.zip",
+            ] {
+                assert!(source.resource_url(&Url::parse(value).unwrap()).is_err());
+            }
+        }
+    }
 
     /// 检查和下载均通过代理隧道认证，特殊字符不得被当作地址分隔符。
     #[tokio::test]

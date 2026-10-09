@@ -7,6 +7,7 @@
 - 状态栏控制左右侧栏和底部工作区的可见性；收起不释放会话资源，默认显示左侧和底部、隐藏右侧。
 - `TerminalPanel.vue` 承载统一工作区选项卡，包含终端、系统信息、进程列表与设置视图；`Terminal.vue` 承载 xterm 会话视图，`BottomPanel.vue` 在文件管理与传输面板之间切换。
 - 设置工作区与更新流程见 [软件更新](updater.md)。
+- `AppSelect.vue` 提供字符串与数字值的共用单选控件；界面缩放与更新源选择共用该入口。
 - `HostKeyDialog.vue` 展示首次主机信任与密钥变化警告，由应用根组件协调等待确认的会话。
 - `ConnectionManager.vue`、`ConnectionEditor.vue`、`ProxySettings.vue` 和 `TunnelSettings.vue` 管理已保存连接及其扩展配置。
 - `TextEditorWindow.vue` 是单例独立工作区，使用 Monaco 编辑远端文件；`editorWindows.ts` 负责主窗口与编辑器窗口通信、会话关闭准备及关闭提交。

@@ -212,5 +212,5 @@ onBeforeUnmount(() => {
 .password-retry { margin-top: 8px; }
 .proxy-field small { color: var(--text-muted); line-height: 1.5; }
 .proxy-error { margin: 14px 0 0; color: var(--danger); line-height: 1.6; overflow-wrap: anywhere; }
-.update-proxy-dialog :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.update-proxy-dialog :focus-visible:not(.input) { outline: 2px solid var(--accent); outline-offset: 2px; }
 </style>
