@@ -53,7 +53,7 @@ let opened = false;
 // 原地重连期间抑制旧通道关闭事件，避免误将刚重连的会话标记为掉线
 let suppressClose = false;
 let pwdBuffer = "";
-let terminalWriteQueue: Promise<void> = Promise.resolve();
+let terminalCommandQueue: Promise<void> = Promise.resolve();
 const textEncoder = new TextEncoder();
 const outputDecoder = new TextDecoder();
 const pendingPwdRequests = new Map<string, (path: string) => void>();
@@ -181,17 +181,17 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-/** 将终端输入串行发送，保持 xterm 产生的数据顺序 */
-function enqueueTerminalWrite(command: () => Promise<void>): Promise<void> {
-  const result = terminalWriteQueue.then(command);
-  terminalWriteQueue = result.catch(() => {});
+/** 将终端开启、输入与尺寸变更串行发送，保持远端处理顺序 */
+function enqueueTerminalCommand(command: () => Promise<void>): Promise<void> {
+  const result = terminalCommandQueue.then(command);
+  terminalCommandQueue = result.catch(() => {});
   return result;
 }
 
 /** 按序写入终端字节 */
 function writeToTerminal(data: string): Promise<void> {
   const bytes = Array.from(textEncoder.encode(data));
-  return enqueueTerminalWrite(() => terminalWrite(props.sessionId, bytes));
+  return enqueueTerminalCommand(() => terminalWrite(props.sessionId, bytes));
 }
 
 /** 从输出中捕获专用 OSC 当前目录标记 */
@@ -334,7 +334,16 @@ async function setup() {
     writeToTerminal(data).catch(() => {});
   });
 
-  await terminalOpen(props.sessionId, t.cols, t.rows, createDataChannel(t));
+  // 尺寸变更与输入共用队列，防止旧尺寸覆盖新尺寸或滚动输入抢先到达远端
+  t.onResize(({ cols, rows }) => {
+    enqueueTerminalCommand(() => terminalResize(props.sessionId, cols, rows)).catch((error) => {
+      console.warn("同步终端尺寸失败", error);
+    });
+  });
+
+  await enqueueTerminalCommand(() =>
+    terminalOpen(props.sessionId, t.cols, t.rows, createDataChannel(t))
+  );
 
   // 尺寸自适应
   resizeObserver = new ResizeObserver(() => doFit());
@@ -344,7 +353,7 @@ async function setup() {
   if (props.active) requestAnimationFrame(() => t.focus());
 }
 
-/** 适配容器尺寸并同步到后端 */
+/** 适配容器尺寸，实际行列变化由 onResize 按序同步到后端 */
 function doFit() {
   if (!term.value || !fitAddon || !container.value) return;
   // 容器不可见（display:none）时尺寸为 0，跳过以免 fit 成 0 行导致视口错乱
@@ -353,9 +362,6 @@ function doFit() {
   }
   try {
     fitAddon.fit();
-    const cols = term.value.cols;
-    const rows = term.value.rows;
-    terminalResize(props.sessionId, cols, rows).catch(() => {});
   } catch {
     // 容器不可见时忽略
   }
@@ -398,7 +404,9 @@ async function reopen() {
   suppressClose = true;
   t.write("\r\n\x1b[33m[正在重连…]\x1b[0m\r\n");
   try {
-    await terminalOpen(props.sessionId, t.cols, t.rows, createDataChannel(t));
+    await enqueueTerminalCommand(() =>
+      terminalOpen(props.sessionId, t.cols, t.rows, createDataChannel(t))
+    );
     doFit();
     t.focus();
   } catch (error) {
