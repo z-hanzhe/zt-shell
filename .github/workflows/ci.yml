@@ -34,6 +34,9 @@ jobs:
         run: npm test
 
       - name: 检查类型与生产构建
+        env:
+          # 与发布构建保持一致，避免前端打包触及 Node.js 默认堆上限。
+          NODE_OPTIONS: --max-old-space-size=4096
         run: npm run build
 
   rust-test:

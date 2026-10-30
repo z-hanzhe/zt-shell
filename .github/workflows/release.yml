@@ -103,6 +103,8 @@ jobs:
       - name: 构建并签名安装包
         uses: tauri-apps/tauri-action@v1
         env:
+          # 显式提高前端构建堆上限，由 Tauri 传递给 npm 和 Vite 子进程。
+          NODE_OPTIONS: --max-old-space-size=4096
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.ZTSHELL_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.ZTSHELL_PRIVATE_KEY_PASSWORD }}
         with:
