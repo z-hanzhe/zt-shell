@@ -11,6 +11,8 @@
 - `HostKeyDialog.vue` 展示首次主机信任与密钥变化警告，由应用根组件协调等待确认的会话。
 - `ConnectionManager.vue`、`ConnectionEditor.vue`、`ProxySettings.vue` 和 `TunnelSettings.vue` 管理已保存连接及其扩展配置。
 - `TextEditorWindow.vue` 是单例独立工作区，使用 Monaco 编辑远端文件；`editorWindows.ts` 负责主窗口与编辑器窗口通信、会话关闭准备及关闭提交。
+- 编辑器存活状态须通过原生窗口核验；每次创建使用独立窗口标识，失效登记不得阻挡重新打开或会话关闭，仍存活的窗口不得仅因通信超时而丢弃文档。
+- 编辑器会话关闭提交须等待文档移除完成；工作区清空时还须等待原生窗口销毁，之后才允许后续打开操作。
 
 ## 状态与调用边界
 

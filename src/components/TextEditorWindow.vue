@@ -32,6 +32,7 @@ import type {
   EditorPrepareCloseRequestPayload,
   EditorReleaseClosePreparationPayload,
   EditorRequestCompletedPayload,
+  EditorSessionClosedPayload,
   TextEditorWindowOptions,
 } from "../editorProtocol";
 import {
@@ -1058,6 +1059,8 @@ onMounted(async () => {
     unlistenOpenDocument = await listen<EditorOpenRequestPayload>(
       EDITOR_OPEN_EVENT,
       async (event) => {
+        // 销毁期间不确认接收，让主窗口在确认窗口消失后重新创建工作区。
+        if (destroying) return;
         if (!isSessionCloseLocked(event.payload.document.sessionId)) {
           openDocument(event.payload.document);
         }
@@ -1111,7 +1114,10 @@ onMounted(async () => {
         void enqueueSessionClose(async () => {
           try {
             const shouldDestroy = await closeSessionDocuments(sessionId);
-            const response: EditorRequestCompletedPayload = { requestId };
+            const response: EditorSessionClosedPayload = {
+              requestId,
+              windowClosing: shouldDestroy,
+            };
             await emit(EDITOR_SESSION_CLOSED_EVENT, response).catch((error) =>
               console.warn("通知主窗口文本编辑标签已关闭失败", error)
             );

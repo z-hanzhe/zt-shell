@@ -1,6 +1,8 @@
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getAllWebviewWindows, WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { textEditorWindowExists } from "./api";
 import type {
+  EditorSessionClosedPayload,
   EditorCloseSessionRequestPayload,
   EditorClosePreparedPayload,
   EditorOpenRequestPayload,
@@ -23,6 +25,7 @@ import {
   EDITOR_READY_EVENT,
   EDITOR_RELEASE_CLOSE_PREPARATION_EVENT,
   EDITOR_SESSION_CLOSE_READY_EVENT,
+  EDITOR_SESSION_CLOSED_EVENT,
   EDITOR_WINDOW_LABEL,
   normalizeEditorFontSize,
   type EditorFontSizeChangedPayload,
@@ -98,19 +101,40 @@ function hasClosePreparation(sessionId: string): boolean {
   return closePreparationCounts.has(sessionId);
 }
 
+/** 查找仍有原生窗口的编辑器，忽略已经销毁但尚未清理的登记记录 */
+async function getEditorWindow(): Promise<WebviewWindow | null> {
+  const windows = await getAllWebviewWindows();
+  for (const window of windows) {
+    if (
+      (window.label === EDITOR_WINDOW_LABEL || window.label.startsWith(`${EDITOR_WINDOW_LABEL}-`)) &&
+      await textEditorWindowExists(window.label)
+    ) return window;
+  }
+  return null;
+}
+
+/** 等待原生窗口销毁完成，避免后续打开请求进入正在关闭的工作区 */
+async function waitForEditorWindowClosed(label: string): Promise<void> {
+  const deadline = Date.now() + EDITOR_RESPONSE_TIMEOUT;
+  while (await textEditorWindowExists(label)) {
+    if (Date.now() >= deadline) throw new Error("等待文本编辑器窗口关闭超时");
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+  }
+}
+
 /** 向仍存在的编辑器工作区发送事件，返回事件是否已发出 */
 async function emitToExistingEditor(eventName: string, payload: unknown): Promise<boolean> {
-  const existing = await WebviewWindow.getByLabel(EDITOR_WINDOW_LABEL);
+  const existing = await getEditorWindow();
   if (!existing) return false;
   try {
     await emitTo(
-      { kind: "WebviewWindow", label: EDITOR_WINDOW_LABEL },
+      { kind: "WebviewWindow", label: existing.label },
       eventName,
       payload
     );
     return true;
   } catch (error) {
-    if (await WebviewWindow.getByLabel(EDITOR_WINDOW_LABEL)) throw error;
+    if (await textEditorWindowExists(existing.label)) throw error;
     return false;
   }
 }
@@ -143,15 +167,18 @@ export function prepareTextEditorClose(
   async function release(): Promise<void> {
     if (released) return;
     const payload: EditorReleaseClosePreparationPayload = { requestId };
-    await enqueueEditorOperation(() =>
-      emitToExistingEditor(EDITOR_RELEASE_CLOSE_PREPARATION_EVENT, payload)
-    );
-    dropClosePreparation(targetIds);
     released = true;
+    try {
+      await enqueueEditorOperation(() =>
+        emitToExistingEditor(EDITOR_RELEASE_CLOSE_PREPARATION_EVENT, payload)
+      );
+    } finally {
+      dropClosePreparation(targetIds);
+    }
   }
 
   const preparation = enqueueEditorOperation(async () => {
-    const existing = await WebviewWindow.getByLabel(EDITOR_WINDOW_LABEL);
+    const existing = await getEditorWindow();
     if (!existing || targetIds.length === 0) return 0;
     const payload: EditorPrepareCloseRequestPayload = {
       requestId,
@@ -170,7 +197,7 @@ export function prepareTextEditorClose(
       );
       return result.dirtyCount;
     } catch (error) {
-      if (!(await WebviewWindow.getByLabel(EDITOR_WINDOW_LABEL))) return 0;
+      if (!(await textEditorWindowExists(existing.label))) return 0;
       throw error;
     }
   });
@@ -246,7 +273,7 @@ async function createEditorWindow(options: TextEditorWindowOptions): Promise<voi
       requestId,
       "文本编辑器启动超时",
       async () => {
-        editorWindow = new WebviewWindow(EDITOR_WINDOW_LABEL, {
+        editorWindow = new WebviewWindow(`${EDITOR_WINDOW_LABEL}-${requestId}`, {
           url: `index.html?${search.toString()}`,
           title: "ZTShell 文本编辑器",
           width: 1000,
@@ -281,18 +308,19 @@ async function openDocumentInExistingWindow(
 ): Promise<void> {
   const requestId = nextRequestId();
   const payload: EditorOpenRequestPayload = { requestId, document: options };
+  // 先唤起长期处于后台的工作区，再等待页面接收请求。
+  await raiseEditorWindow(editorWindow);
   await waitForEditorResponse<EditorRequestCompletedPayload>(
     EDITOR_OPENED_EVENT,
     requestId,
     "文本编辑器打开文件超时",
     () =>
       emitTo(
-        { kind: "WebviewWindow", label: EDITOR_WINDOW_LABEL },
+        { kind: "WebviewWindow", label: editorWindow.label },
         EDITOR_OPEN_EVENT,
         payload
       )
   );
-  await raiseEditorWindow(editorWindow);
 }
 
 /** 在单例编辑器工作区打开远端文档 */
@@ -301,10 +329,15 @@ export function openTextEditorWindow(options: TextEditorWindowOptions): Promise<
     if (hasClosePreparation(options.sessionId)) {
       throw new Error("会话正在关闭，暂时无法打开新的文本编辑标签");
     }
-    const existing = await WebviewWindow.getByLabel(EDITOR_WINDOW_LABEL);
+    const existing = await getEditorWindow();
     if (existing) {
-      await openDocumentInExistingWindow(existing, options);
-      return;
+      try {
+        await openDocumentInExistingWindow(existing, options);
+        return;
+      } catch (error) {
+        // 只有原生窗口已消失时才能重建，不能因响应超时丢弃未保存文档。
+        if (await textEditorWindowExists(existing.label)) throw error;
+      }
     }
     await createEditorWindow(options);
   });
@@ -313,7 +346,7 @@ export function openTextEditorWindow(options: TextEditorWindowOptions): Promise<
 /** 关闭指定会话在编辑器工作区中的全部文档 */
 export function closeTextEditorWindowsForSession(sessionId: string): Promise<void> {
   return enqueueEditorOperation(async () => {
-    const existing = await WebviewWindow.getByLabel(EDITOR_WINDOW_LABEL);
+    const existing = await getEditorWindow();
     if (!existing) return;
     const requestId = nextRequestId();
     const payload: EditorCloseSessionRequestPayload = { requestId, sessionId };
@@ -329,15 +362,26 @@ export function closeTextEditorWindowsForSession(sessionId: string): Promise<voi
         }
       );
     } catch (error) {
-      if (!(await WebviewWindow.getByLabel(EDITOR_WINDOW_LABEL))) return;
+      if (!(await textEditorWindowExists(existing.label))) return;
       await emitToExistingEditor(EDITOR_CANCEL_CLOSE_SESSION_EVENT, payload).catch(
         (cancelError) => console.warn("取消文本编辑关闭请求失败", cancelError)
       );
       throw error;
     }
     try {
-      await emitToExistingEditor(EDITOR_COMMIT_CLOSE_SESSION_EVENT, payload);
+      const result = await waitForEditorResponse<EditorSessionClosedPayload>(
+        EDITOR_SESSION_CLOSED_EVENT,
+        requestId,
+        "等待文本编辑器关闭会话文档超时",
+        async () => {
+          if (!(await emitToExistingEditor(EDITOR_COMMIT_CLOSE_SESSION_EVENT, payload))) {
+            throw new Error("文本编辑器窗口已关闭");
+          }
+        }
+      );
+      if (result.windowClosing) await waitForEditorWindowClosed(existing.label);
     } catch (error) {
+      if (!(await textEditorWindowExists(existing.label))) return;
       await emitToExistingEditor(EDITOR_CANCEL_CLOSE_SESSION_EVENT, payload).catch(
         (cancelError) => console.warn("取消文本编辑关闭请求失败", cancelError)
       );
@@ -352,9 +396,14 @@ export async function closeAllTextEditorWindows(): Promise<void> {
   const windows = (await getAllWebviewWindows()).filter((window) =>
     window.label.startsWith(EDITOR_WINDOW_PREFIX)
   );
-  await Promise.allSettled(windows.map((window) => window.destroy()));
-  const remaining = (await getAllWebviewWindows()).filter((window) =>
-    window.label.startsWith(EDITOR_WINDOW_PREFIX)
-  );
-  if (remaining.length > 0) throw new Error("关闭全部文本编辑窗口失败");
+  const results = await Promise.allSettled(windows.map(async (window) => {
+    if (!(await textEditorWindowExists(window.label))) return;
+    await window.destroy();
+    await waitForEditorWindowClosed(window.label);
+  }));
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure) {
+    console.warn("关闭全部文本编辑窗口失败", failure.reason);
+    throw new Error("关闭全部文本编辑窗口失败");
+  }
 }

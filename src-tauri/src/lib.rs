@@ -45,6 +45,7 @@ pub fn run() {
             updater::updater_install,
             connection_file::pick_connection_import_file,
             connection_file::save_connection_export_file,
+            commands::text_editor_window_exists,
             commands::credentials_set_many,
             commands::credentials_check_many,
             commands::credentials_get_connection_password,

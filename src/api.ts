@@ -27,6 +27,11 @@ import type {
 } from "./types";
 import { runTransferCreation } from "./transferClose";
 
+/** 检查编辑器的原生窗口是否仍存在，隐藏和最小化窗口仍返回存在 */
+export function textEditorWindowExists(label: string): Promise<boolean> {
+  return invoke("text_editor_window_exists", { label });
+}
+
 /** 使用系统默认浏览器打开外部页面 */
 export function openExternalUrl(url: string): Promise<void> {
   return openUrl(url);

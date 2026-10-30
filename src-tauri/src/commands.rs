@@ -1,7 +1,10 @@
 //! Tauri 命令层：将前端调用映射到 SSH 内核能力
 
+#[cfg(windows)]
+use std::ffi::c_void;
+use tauri::async_runtime::spawn_blocking;
 use tauri::ipc::{Channel, Response};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Error as TauriError, Manager, State};
 
 use crate::credentials::{
     CredentialCopy, CredentialKey, CredentialKind, CredentialManager, CredentialMatch,
@@ -17,11 +20,47 @@ use crate::ssh::sftp::{self, RemoveEntryArg};
 use crate::ssh::transfer::{RemoteItemArg, TransferCreateResult, TransferManager, TransferTaskDto};
 use crate::ssh::types::{ConnectOutcome, ConnectionConfig, FileEntry, HostKeyApproval};
 
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    /// 检查窗口句柄是否仍指向实际存在的原生窗口。
+    #[link_name = "IsWindow"]
+    fn is_window(handle: *mut c_void) -> i32;
+}
+
 /// 统一将内部错误转为字符串返回给前端
 type CmdResult<T> = Result<T, String>;
 
 fn map_err<T>(r: anyhow::Result<T>) -> CmdResult<T> {
     r.map_err(|e| e.to_string())
+}
+
+/// 检查编辑器的原生窗口是否仍存在，不将隐藏或最小化视为关闭。
+#[tauri::command]
+pub async fn text_editor_window_exists(app: AppHandle, label: String) -> CmdResult<bool> {
+    if !label.starts_with("editor-") {
+        return Err("只能检查文本编辑器窗口".into());
+    }
+    spawn_blocking(move || {
+        let Some(window) = app.get_webview_window(&label) else {
+            return Ok(false);
+        };
+        // Windows 还需核验句柄本身，避免已失效句柄被误当作隐藏窗口。
+        #[cfg(windows)]
+        let exists = window.hwnd().map(|handle| {
+            // IsWindow 只查询句柄，不持有或释放窗口资源。
+            unsafe { is_window(handle.0) != 0 }
+        });
+        #[cfg(not(windows))]
+        let exists = window.is_visible().map(|_| true);
+        match exists {
+            Ok(exists) => Ok(exists),
+            Err(TauriError::Runtime(_)) => Ok(false),
+            Err(error) => Err(format!("检查文本编辑器窗口失败：{error}")),
+        }
+    })
+    .await
+    .map_err(|error| format!("检查文本编辑器窗口失败：{error}"))?
 }
 
 /// 批量写入系统凭据库

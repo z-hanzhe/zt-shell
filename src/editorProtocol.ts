@@ -75,6 +75,12 @@ export interface EditorRequestCompletedPayload {
   requestId: string;
 }
 
+/** 会话文档关闭完成响应载荷 */
+export interface EditorSessionClosedPayload extends EditorRequestCompletedPayload {
+  /** 工作区已清空，即将销毁窗口 */
+  windowClosing: boolean;
+}
+
 /** 会话文档关闭准备响应载荷 */
 export interface EditorClosePreparedPayload extends EditorRequestCompletedPayload {
   /** 目标会话中尚未保存的文档数量 */
@@ -95,7 +101,7 @@ export interface EditorFontSizeChangedPayload {
   fontSize: number;
 }
 
-/** 单例编辑器工作区窗口标签 */
+/** 单例编辑器工作区窗口标签前缀，每次创建使用独立标识 */
 export const EDITOR_WINDOW_LABEL = "editor-workspace";
 /** 编辑器工作区就绪事件 */
 export const EDITOR_READY_EVENT = "editor://ready";
