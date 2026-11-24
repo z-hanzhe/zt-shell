@@ -10,6 +10,7 @@ use tokio::sync::watch;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
+use super::file_commands;
 use super::manager::SessionManager;
 use super::remote_command::shell_quote;
 use super::session::{wait_for_cancellation, OPERATION_CANCELLED_MESSAGE};
@@ -111,11 +112,62 @@ pub async fn list_dir(sftp: &SftpSession, path: &str) -> Result<Vec<FileEntry>> 
     Ok(entries)
 }
 
-/// 修改远端文件或目录的 Unix 权限位。
-///
-/// 权限修改使用 SFTP `SETSTAT`，不依赖远端 shell。递归处理目录时不跟随符号链接，
-/// `scope` 可限制为全部条目、仅文件或仅目录；中断不会回滚已经完成的修改。
+/// 批量修改 Unix 权限，普通模式使用远端命令，提权和仅支持 SFTP 的环境使用 SETSTAT。
 pub async fn set_permissions(
+    manager: &SessionManager,
+    session_id: &str,
+    paths: &[String],
+    mode: u32,
+    recursive: bool,
+    scope: &str,
+    cancellation: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    if paths.is_empty() {
+        return Err(anyhow!("未选择需要修改权限的文件或目录"));
+    }
+    validate_permission_mode(mode)?;
+    validate_permission_scope(scope)?;
+    validate_permission_application(recursive, scope)?;
+    for path in paths {
+        validate_permission_path(path)?;
+    }
+
+    let sudo = manager.file_operation_sudo(session_id).await?;
+    if !sudo {
+        let mode = file_commands::symbolic_mode(mode);
+        let commands = paths
+            .iter()
+            .map(|path| file_commands::permissions_command(path, &mode, recursive, scope))
+            .collect();
+        if file_commands::run_batch(manager, session_id, commands, "修改权限失败", cancellation)
+            .await?
+        {
+            return Ok(());
+        }
+    }
+
+    let sftp = tokio::select! {
+        biased;
+        _ = wait_for_cancellation(cancellation) => return Err(anyhow!(OPERATION_CANCELLED_MESSAGE)),
+        result = manager.sftp_for_mode(session_id, sudo) => result?,
+    };
+    for path in paths {
+        ensure_not_cancelled(Some(cancellation))?;
+        set_permissions_sftp(
+            &sftp,
+            path.trim_end_matches('/'),
+            mode,
+            recursive,
+            scope,
+            Some(cancellation),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// 使用 SFTP 更新单个目标及其后代的权限，中断时保留已经完成的修改。
+async fn set_permissions_sftp(
     sftp: &SftpSession,
     path: &str,
     mode: u32,
@@ -123,11 +175,6 @@ pub async fn set_permissions(
     scope: &str,
     cancellation: Option<&watch::Receiver<bool>>,
 ) -> Result<()> {
-    validate_permission_path(path)?;
-    validate_permission_mode(mode)?;
-    validate_permission_scope(scope)?;
-    validate_permission_application(recursive, scope)?;
-
     let root_metadata = sftp
         .symlink_metadata(path)
         .await
@@ -303,29 +350,22 @@ pub async fn remove_dir(sftp: &SftpSession, path: &str) -> Result<()> {
         .map_err(|e| anyhow!("删除目录失败：{}", format_sftp_error(&e)))
 }
 
-/// 递归删除远端目录及其全部内容
-///
-/// 通过 SFTP 遍历删除以保持与当前权限模式（普通/sudo 提权）一致，
-/// 先收集全部条目（父先于子）再逆序删除，确保先删文件与深层目录
-pub async fn remove_dir_all(sftp: &SftpSession, path: &str) -> Result<()> {
-    remove_dir_all_inner(sftp, path, None).await
-}
-
-/// 递归删除远端目录，并在每次 SFTP 请求之间响应中断
+/// 通过 SFTP 先收集条目再逆序删除，并在请求之间响应取消。
 async fn remove_dir_all_cancellable(
-    sftp: &SftpSession,
-    path: &str,
-    cancellation: &watch::Receiver<bool>,
-) -> Result<()> {
-    remove_dir_all_inner(sftp, path, Some(cancellation)).await
-}
-
-/// 递归删除的公共实现，中断不会回滚已经完成的删除
-async fn remove_dir_all_inner(
     sftp: &SftpSession,
     path: &str,
     cancellation: Option<&watch::Receiver<bool>>,
 ) -> Result<()> {
+    // 目录可能在确认后被换成符号链接，此时只移除链接。
+    ensure_not_cancelled(cancellation)?;
+    let metadata = sftp
+        .symlink_metadata(path)
+        .await
+        .map_err(|e| anyhow!("读取目录失败（{}）：{}", path, format_sftp_error(&e)))?;
+    ensure_not_cancelled(cancellation)?;
+    if metadata.file_type() == FileType::Symlink {
+        return remove_file(sftp, path).await;
+    }
     let mut all: Vec<(String, bool)> = vec![(path.to_string(), true)];
     let mut stack: Vec<String> = vec![path.to_string()];
     while let Some(dir) = stack.pop() {
@@ -357,7 +397,7 @@ async fn remove_dir_all_inner(
     Ok(())
 }
 
-/// 批量删除远端条目，普通目录使用独立 exec 通道，sudo 目录使用共享 SFTP 递归
+/// 批量删除远端条目，普通模式使用远端命令，提权和仅支持 SFTP 的环境通过 SFTP 删除。
 pub async fn remove_entries(
     manager: &SessionManager,
     session_id: &str,
@@ -371,41 +411,29 @@ pub async fn remove_entries(
         validate_removal_path(&entry.path)?;
     }
 
-    let sudo = manager.is_sudo(session_id).await?;
-    let needs_sftp = sudo || entries.iter().any(|entry| !entry.is_dir);
-    let sftp = if needs_sftp {
-        ensure_not_cancelled(Some(cancellation))?;
-        Some(manager.sftp(session_id).await?)
-    } else {
-        None
-    };
+    let sudo = manager.file_operation_sudo(session_id).await?;
+    if !sudo {
+        let commands = entries
+            .iter()
+            .map(|entry| file_commands::remove_command(&entry.path, entry.is_dir))
+            .collect();
+        if file_commands::run_batch(manager, session_id, commands, "删除失败", cancellation).await? {
+            return Ok(());
+        }
+    }
 
+    let sftp = tokio::select! {
+        biased;
+        _ = wait_for_cancellation(cancellation) => return Err(anyhow!(OPERATION_CANCELLED_MESSAGE)),
+        result = manager.sftp_for_mode(session_id, sudo) => result?,
+    };
     for entry in entries {
         ensure_not_cancelled(Some(cancellation))?;
-        if entry.is_dir && !sudo {
-            let command = format!(
-                "rm -rf -- {} && printf __ZTOK__ || printf __ZTFAIL__",
-                shell_quote(&entry.path)
-            );
-            let output = manager
-                .exec_cancellable(session_id, &command, cancellation)
-                .await?;
-            if !output.contains("__ZTOK__") {
-                return Err(anyhow!("删除目录失败，请检查文件权限"));
-            }
-        } else if entry.is_dir {
-            remove_dir_all_cancellable(
-                sftp.as_deref().ok_or_else(|| anyhow!("SFTP 会话未建立"))?,
-                &entry.path,
-                cancellation,
-            )
-            .await?;
+        let path = entry.path.trim_end_matches('/');
+        if entry.is_dir {
+            remove_dir_all_cancellable(&sftp, path, Some(cancellation)).await?;
         } else {
-            remove_file(
-                sftp.as_deref().ok_or_else(|| anyhow!("SFTP 会话未建立"))?,
-                &entry.path,
-            )
-            .await?;
+            remove_file(&sftp, path).await?;
         }
     }
     ensure_not_cancelled(Some(cancellation))

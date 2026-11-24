@@ -340,10 +340,10 @@ export function sftpCheckWritable(sessionId: string, path: string): Promise<bool
   return invoke("sftp_check_writable", { sessionId, path });
 }
 
-/** 修改远端文件或目录权限，支持递归应用范围。 */
+/** 批量修改远端文件或目录权限，支持递归应用范围。 */
 export function sftpSetPermissions(
   sessionId: string,
-  path: string,
+  paths: string[],
   mode: number,
   recursive: boolean,
   scope: "all" | "files" | "directories",
@@ -351,7 +351,7 @@ export function sftpSetPermissions(
 ): Promise<void> {
   return invoke("sftp_set_permissions", {
     sessionId,
-    path,
+    paths,
     mode,
     recursive,
     scope,

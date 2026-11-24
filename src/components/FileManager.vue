@@ -366,8 +366,13 @@ const contextMenuItems = computed<MenuItem[]>(() => {
       ],
     },
     { key: "permissions", action: "permissions", label: "修改权限", disabled: count === 0 },
-    // sudo 模式经 SFTP 递归删除，普通模式经 rm -rf 快速删除
-    { key: "delete", action: "delete", label: sudoActive.value ? "删除" : "删除(rm -rf)", disabled: count === 0 },
+    // 普通模式的目录删除会使用递归参数。
+    {
+      key: "delete",
+      action: "delete",
+      label: !sudoActive.value && selectedEntries.value.some((entry) => entry.isDir) ? "删除(rm -rf)" : "删除",
+      disabled: count === 0,
+    },
   ];
 });
 
@@ -1208,7 +1213,18 @@ function isFileViewCurrent(sessionId: string, directory: string, version: number
   );
 }
 
-/** 提交权限设置；多选条目逐项执行，任一失败即停止并提示。*/
+/** 判断原目录是否仍可刷新，切换会话时使旧会话的缓存失效。 */
+function isFileMutationViewCurrent(sessionId: string, directory: string, version: number): boolean {
+  if (isFileViewCurrent(sessionId, directory, version)) return true;
+  const cached = sessionUiStates.get(sessionId);
+  if (cached) {
+    delete cached.treeChildren[directory];
+    if (cached.cwd === directory) staleSessionIds.add(sessionId);
+  }
+  return false;
+}
+
+/** 批量提交权限设置，并在操作结束后刷新原目录。*/
 async function onPermissionConfirm(value: PermissionDialogValue) {
   const targets = selectedEntries.value;
   const sessionId = props.sessionId;
@@ -1226,7 +1242,6 @@ async function onPermissionConfirm(value: PermissionDialogValue) {
     return;
   }
   const targetCount = targetPaths.length;
-  let viewChanged = false;
   permissionDialog.saving = true;
   const operationId = beginFileOperation(
     "permissions",
@@ -1234,30 +1249,15 @@ async function onPermissionConfirm(value: PermissionDialogValue) {
     `正在修改 ${targetCount} 个项目的权限，请稍候…`
   );
   try {
-    for (const target of targetPaths) {
-      // 取消请求可能刚好落在批量条目之间，先阻止后续条目继续修改。
-      if (fileOperation.cancelling || fileOperation.id !== operationId) {
-        throw new Error("文件操作已中断");
-      }
-      if (!isFileViewCurrent(sessionId, directory, viewVersion)) {
-        viewChanged = true;
-        throw new Error("文件视图已切换，已停止后续权限修改");
-      }
-      await sftpSetPermissions(
-        sessionId,
-        target.path,
-        value.mode,
-        value.recursive,
-        value.scope,
-        operationId
-      );
-      if (fileOperation.cancelling) throw new Error("文件操作已中断");
-      if (!isFileViewCurrent(sessionId, directory, viewVersion)) {
-        viewChanged = true;
-        throw new Error("文件视图已切换，已停止后续权限修改");
-      }
-    }
-    const currentView = isFileViewCurrent(sessionId, directory, viewVersion);
+    await sftpSetPermissions(
+      sessionId,
+      targetPaths.map((target) => target.path),
+      value.mode,
+      value.recursive,
+      value.scope,
+      operationId
+    );
+    const currentView = isFileMutationViewCurrent(sessionId, directory, viewVersion);
     finishFileOperation(operationId);
     permissionDialog.open = false;
     permissionDialog.saving = false;
@@ -1272,10 +1272,10 @@ async function onPermissionConfirm(value: PermissionDialogValue) {
       targetCount === 1 ? ` [ ${targetPaths[0].name} ] 的权限已更新` : `${targetCount} 个项目的权限已更新`
     );
   } catch (error) {
-    const currentView = isFileViewCurrent(sessionId, directory, viewVersion);
+    const currentView = isFileMutationViewCurrent(sessionId, directory, viewVersion);
     finishFileOperation(operationId);
     permissionDialog.saving = false;
-    if (viewChanged || !currentView) {
+    if (!currentView) {
       // 视图已切换时不触碰新会话/目录的缓存，也不刷新同名路径。
       permissionDialog.open = false;
       return;
@@ -1773,9 +1773,7 @@ async function confirmFileOperationCancel() {
   fileOperation.cancelling = true;
   try {
     const accepted = await sftpCancelOperation(sessionId, operationId);
-    if (!accepted && fileOperation.id === operationId && fileOperation.kind !== "permissions") {
-      // 权限批处理由多个连续请求组成；请求间隙后端可能暂时没有登记该操作，
-      // 仍保留本地中断标记，让批处理循环在下一项开始前停止。
+    if (!accepted && fileOperation.id === operationId) {
       fileOperation.cancelling = false;
     }
   } catch (error) {
@@ -2050,6 +2048,9 @@ async function onDeleteSelected() {
 /** 批量删除文件或目录（目录连同其中全部内容一并删除），删除中显示进行中弹窗防止误操作 */
 async function deleteEntries(targets: FileEntry[]) {
   if (targets.length === 0) return;
+  const sessionId = props.sessionId;
+  const directory = cwd.value;
+  const viewVersion = sessionViewVersion;
   const dirCount = targets.filter((entry) => entry.isDir).length;
   let message: string;
   if (targets.length === 1) {
@@ -2063,27 +2064,33 @@ async function deleteEntries(targets: FileEntry[]) {
         : `是否删除 ${targets.length} 个文件？`;
   }
   const confirmed = await showConfirm("删除确认", message, "删除", true);
-  if (!confirmed) return;
+  if (!confirmed || !isFileViewCurrent(sessionId, directory, viewVersion)) return;
   const operationId = beginFileOperation("delete", "删除中", "正在删除，请稍候…");
   try {
     await sftpRemoveEntries(
-      props.sessionId,
-      targets.map((entry) => ({ path: joinPath(cwd.value, entry.name), isDir: entry.isDir })),
+      sessionId,
+      targets.map((entry) => ({ path: joinPath(directory, entry.name), isDir: entry.isDir })),
       operationId
     );
     finishFileOperation(operationId);
+    if (!isFileMutationViewCurrent(sessionId, directory, viewVersion)) return;
     clearSelection();
-    invalidateTreeDirs(cwd.value);
+    invalidateTreeDirs(directory);
     await refresh();
+    if (!isFileViewCurrent(sessionId, directory, viewVersion)) return;
     showMessage("删除完成", targets.length === 1 ? ` [ ${targets[0].name} ] 已删除` : `${targets.length} 个项目已删除`);
-  } catch (e) {
+  } catch (error) {
     finishFileOperation(operationId);
-    if (isOperationCancelled(e)) {
-      clearSelection();
-      invalidateTreeDirs(cwd.value);
-      await showOperationCancelled();
+    if (!isFileMutationViewCurrent(sessionId, directory, viewVersion)) return;
+    // 失败或中断前可能已删除部分条目，刷新实际状态。
+    clearSelection();
+    invalidateTreeDirs(directory);
+    await refresh();
+    if (!isFileViewCurrent(sessionId, directory, viewVersion)) return;
+    if (isOperationCancelled(error)) {
+      showMessage("操作已中断", "已停止后续处理，请检查已完成的部分。");
     } else {
-      showMessage("删除失败", String(e));
+      showMessage("删除失败", String(error));
     }
   }
 }

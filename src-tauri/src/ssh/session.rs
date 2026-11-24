@@ -34,6 +34,26 @@ const EXEC_KILL_TIMEOUT: Duration = Duration::from_secs(2);
 /// 通过独立通道终止远端命令进程组的最长等待时间
 const REMOTE_PROCESS_CANCEL_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// SSH exec 执行的输出与退出状态。
+pub(crate) struct ExecOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_status: Option<u32>,
+}
+
+/// 服务端明确拒绝 SSH exec 请求，远端命令未启动。
+#[derive(Debug)]
+pub(super) struct ExecRequestRejected;
+
+impl fmt::Display for ExecRequestRejected {
+    /// 返回拒绝执行时的提示。
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("服务器拒绝执行远端命令")
+    }
+}
+
+impl std::error::Error for ExecRequestRejected {}
+
 /// russh 客户端事件回调处理器
 pub(crate) struct ClientHandler {
     /// 远程传入隧道映射，用于处理服务端打开的 forwarded-tcpip 通道
@@ -372,7 +392,7 @@ impl SshSession {
 
     /// 在远端执行一条命令并返回标准输出（用于监控数据采集等一次性命令）
     pub async fn exec_command(self: &Arc<Self>, command: &str) -> Result<String> {
-        self.exec_command_inner(command, None, None).await
+        Ok(self.exec_command_inner(command, None, None).await?.stdout)
     }
 
     /// 在远端执行一条允许中断的命令，中断时终止远端进程组并关闭当前执行通道
@@ -381,6 +401,15 @@ impl SshSession {
         command: &str,
         cancellation: &mut watch::Receiver<bool>,
     ) -> Result<String> {
+        Ok(self.exec_command_cancellable_output(command, cancellation).await?.stdout)
+    }
+
+    /// 执行可中断命令，保留错误输出及远端退出状态。
+    pub(super) async fn exec_command_cancellable_output(
+        self: &Arc<Self>,
+        command: &str,
+        cancellation: &mut watch::Receiver<bool>,
+    ) -> Result<ExecOutput> {
         let plan = CancellableCommandPlan::new(command);
         let output = self
             .exec_command_inner(
@@ -389,7 +418,7 @@ impl SshSession {
                 Some(plan.cancel_command()),
             )
             .await?;
-        if plan.is_control_failure(&output) {
+        if plan.is_control_failure(&output.stdout) {
             return Err(anyhow!("远端无法建立安全的进程组控制环境"));
         }
         Ok(output)
@@ -401,7 +430,7 @@ impl SshSession {
         command: &str,
         mut cancellation: Option<&mut watch::Receiver<bool>>,
         remote_cancel_command: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<ExecOutput> {
         if cancellation
             .as_ref()
             .is_some_and(|receiver| *receiver.borrow())
@@ -470,7 +499,9 @@ impl SshSession {
             }
         }
 
-        let mut output = Vec::new();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_status = None;
         loop {
             let msg = if let Some(receiver) = cancellation.as_deref_mut() {
                 tokio::select! {
@@ -488,13 +519,27 @@ impl SshSession {
                 break;
             };
             match msg {
-                ChannelMsg::Data { data } => output.extend_from_slice(&data),
-                ChannelMsg::ExtendedData { .. } => {}
-                ChannelMsg::Eof | ChannelMsg::Close => break,
+                ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+                ChannelMsg::ExtendedData { data, ext: 1 } => {
+                    // 避免远端批量报错时累积过多诊断文本。
+                    let remaining = (16 * 1024_usize).saturating_sub(stderr.len());
+                    stderr.extend_from_slice(&data[..data.len().min(remaining)]);
+                }
+                ChannelMsg::ExitStatus { exit_status: status } => exit_status = Some(status),
+                ChannelMsg::Failure => {
+                    let _ = timeout(EXEC_CONTROL_TIMEOUT, channel.close()).await;
+                    return Err(ExecRequestRejected.into());
+                }
+                ChannelMsg::Eof if exit_status.is_some() => break,
+                ChannelMsg::Close => break,
                 _ => {}
             }
         }
-        Ok(String::from_utf8_lossy(&output).into_owned())
+        Ok(ExecOutput {
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            exit_status,
+        })
     }
 
     /// 基于本会话开启 SFTP 子系统通道，返回底层通道
@@ -691,6 +736,32 @@ e+JpiSq66Z6GIt0801skPh20jxOO3F52SoX1IeO5D5PXfZrfSZlw6S8c7bwyp2FHxDewRx
         ) -> Result<Auth, Self::Error> {
             Ok(Auth::Accept)
         }
+
+        /// 接受本地测试使用的 SSH 会话通道。
+        async fn channel_open_session(
+            &mut self,
+            _channel: russh::Channel<server::Msg>,
+            _session: &mut server::Session,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+
+        /// 模拟 exec 请求被拒绝，以及标准错误后才收到退出状态的顺序。
+        async fn exec_request(
+            &mut self,
+            channel: russh::ChannelId,
+            command: &[u8],
+            session: &mut server::Session,
+        ) -> Result<(), Self::Error> {
+            if command == b"reject" {
+                return session.channel_failure(channel);
+            }
+            session.channel_success(channel)?;
+            session.extended_data(channel, 1, "测试错误输出".as_bytes().into())?;
+            session.eof(channel)?;
+            session.exit_status_request(channel, 7)?;
+            session.close(channel)
+        }
     }
 
     /// 构造本地集成测试连接配置
@@ -872,7 +943,26 @@ e+JpiSq66Z6GIt0801skPh20jxOO3F52SoX1IeO5D5PXfZrfSZlw6S8c7bwyp2FHxDewRx
         .await
         .expect("授权后握手不应超时")
         .expect("授权后握手与认证应成功");
-        assert!(matches!(second, SessionConnectOutcome::Connected(_)));
+        let SessionConnectOutcome::Connected(session) = second else {
+            panic!("授权后主机密钥应通过验证");
+        };
+        // 退出状态可能在 EOF 后到达，文件操作仍需得到真实退出状态。
+        let session = Arc::new(session);
+        let output = timeout(
+            Duration::from_secs(5),
+            session.exec_command_inner("test", None, None),
+        )
+        .await
+        .expect("等待远端退出状态不应超时")
+        .expect("应收到远端执行结果");
+        assert_eq!(output.exit_status, Some(7));
+        assert_eq!(output.stderr, "测试错误输出");
+        let rejected = timeout(Duration::from_secs(5), session.exec_command("reject"))
+            .await
+            .expect("等待远端拒绝执行不应超时")
+            .expect_err("远端拒绝执行应返回错误");
+        assert!(rejected.is::<ExecRequestRejected>());
+        drop(session);
 
         server_task.await.expect("测试服务任务应正常结束");
         let _ = tokio::fs::remove_dir_all(directory).await;

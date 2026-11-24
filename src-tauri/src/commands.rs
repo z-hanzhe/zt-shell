@@ -5,6 +5,7 @@ use std::ffi::c_void;
 use tauri::async_runtime::spawn_blocking;
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Error as TauriError, Manager, State};
+use tokio::sync::watch;
 
 use crate::credentials::{
     CredentialCopy, CredentialKey, CredentialKind, CredentialManager, CredentialMatch,
@@ -337,35 +338,21 @@ pub async fn sftp_remove_file(
     session_id: String,
     path: String,
 ) -> CmdResult<()> {
-    let sftp = map_err(manager.sftp(&session_id).await)?;
-    map_err(sftp::remove_file(&sftp, &path).await)
+    let entries = [RemoveEntryArg { path, is_dir: false }];
+    let (_cancel_sender, mut cancellation) = watch::channel(false);
+    map_err(sftp::remove_entries(&manager, &session_id, &entries, &mut cancellation).await)
 }
 
 /// 删除远端目录及其全部内容
-///
-/// 普通模式经 exec 执行 rm -rf 快速删除；sudo 提权模式下 exec 通道不具备提权能力，
-/// 回落为 SFTP 递归删除以保持与文件管理权限一致
 #[tauri::command]
 pub async fn sftp_remove_dir(
     manager: State<'_, SessionManager>,
     session_id: String,
     path: String,
 ) -> CmdResult<()> {
-    // 防御空路径、根目录和路径穿越，保留原始路径中的合法空格。
-    map_err(sftp::validate_removal_path(&path))?;
-    if !map_err(manager.is_sudo(&session_id).await)? {
-        let command = format!(
-            "rm -rf -- {} && printf __ZTOK__ || printf __ZTFAIL__",
-            shell_quote(&path)
-        );
-        let output = map_err(manager.exec(&session_id, &command).await)?;
-        if !output.contains("__ZTOK__") {
-            return Err("删除目录失败，请检查文件权限".to_string());
-        }
-        return Ok(());
-    }
-    let sftp = map_err(manager.sftp(&session_id).await)?;
-    map_err(sftp::remove_dir_all(&sftp, &path).await)
+    let entries = [RemoveEntryArg { path, is_dir: true }];
+    let (_cancel_sender, mut cancellation) = watch::channel(false);
+    map_err(sftp::remove_entries(&manager, &session_id, &entries, &mut cancellation).await)
 }
 
 /// 创建远端目录
@@ -506,28 +493,22 @@ pub async fn sftp_remove_entries(
 pub async fn sftp_set_permissions(
     manager: State<'_, SessionManager>,
     session_id: String,
-    path: String,
+    paths: Vec<String>,
     mode: u32,
     recursive: bool,
     scope: String,
     operation_id: String,
 ) -> CmdResult<()> {
     let mut operation = map_err(manager.begin_operation(&session_id, &operation_id))?;
-    let sftp = tokio::select! {
-        biased;
-        _ = wait_for_cancellation(operation.cancellation()) => {
-            return Err(OPERATION_CANCELLED_MESSAGE.to_string());
-        }
-        result = manager.sftp(&session_id) => map_err(result)?,
-    };
     map_err(
         sftp::set_permissions(
-            &sftp,
-            &path,
+            &manager,
+            &session_id,
+            &paths,
             mode,
             recursive,
             &scope,
-            Some(operation.cancellation()),
+            operation.cancellation(),
         )
         .await,
     )

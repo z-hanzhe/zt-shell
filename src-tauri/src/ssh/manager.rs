@@ -16,7 +16,7 @@ use tokio::time::timeout;
 use super::host_keys::HostKeyStore;
 use super::monitor::MonitorRuntimeState;
 use super::proxy;
-use super::session::{SessionConnectOutcome, SshSession, TerminalCommand};
+use super::session::{ExecOutput, SessionConnectOutcome, SshSession, TerminalCommand};
 use super::transfer::TransferManager;
 use super::tunnel;
 use super::types::{ConnectOutcome, ConnectResult, ConnectionConfig, HostKeyApproval};
@@ -278,6 +278,19 @@ impl SessionManager {
             .await
     }
 
+    /// 执行需要检查远端退出状态的可中断命令。
+    pub(super) async fn exec_cancellable_output(
+        &self,
+        session_id: &str,
+        command: &str,
+        cancellation: &mut watch::Receiver<bool>,
+    ) -> Result<ExecOutput> {
+        self.entry(session_id)?
+            .session
+            .exec_command_cancellable_output(command, cancellation)
+            .await
+    }
+
     /// 登记一个可中断文件操作，操作结束时由返回的句柄自动清理
     pub fn begin_operation<'a>(
         &'a self,
@@ -333,6 +346,30 @@ impl SessionManager {
     pub async fn sftp(&self, session_id: &str) -> Result<Arc<SftpSession>> {
         let entry = self.entry(session_id)?;
         if *entry.sudo_active.lock().await {
+            Self::ensure_sudo_sftp(&entry).await
+        } else {
+            Self::ensure_normal_sftp(&entry).await
+        }
+    }
+
+    /// 检查文件管理功能是否启用，并读取本次操作使用的提权模式。
+    pub(super) async fn file_operation_sudo(&self, session_id: &str) -> Result<bool> {
+        let entry = self.entry(session_id)?;
+        if !entry.sftp_enabled {
+            return Err(anyhow!("SFTP 功能未开启"));
+        }
+        let active = *entry.sudo_active.lock().await;
+        Ok(active)
+    }
+
+    /// 按操作开始时选定的身份建立 SFTP 会话。
+    pub(super) async fn sftp_for_mode(
+        &self,
+        session_id: &str,
+        sudo: bool,
+    ) -> Result<Arc<SftpSession>> {
+        let entry = self.entry(session_id)?;
+        if sudo {
             Self::ensure_sudo_sftp(&entry).await
         } else {
             Self::ensure_normal_sftp(&entry).await

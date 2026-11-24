@@ -1,5 +1,6 @@
 //! SSH 内核模块：会话管理、终端、SFTP 文件操作与远程监控
 
+mod file_commands;
 pub(crate) mod host_keys;
 pub mod manager;
 pub mod monitor;
