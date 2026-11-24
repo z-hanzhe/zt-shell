@@ -338,7 +338,10 @@ pub async fn sftp_remove_file(
     session_id: String,
     path: String,
 ) -> CmdResult<()> {
-    let entries = [RemoveEntryArg { path, is_dir: false }];
+    let entries = [RemoveEntryArg {
+        path,
+        is_dir: false,
+    }];
     let (_cancel_sender, mut cancellation) = watch::channel(false);
     map_err(sftp::remove_entries(&manager, &session_id, &entries, &mut cancellation).await)
 }

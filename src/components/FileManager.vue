@@ -72,6 +72,10 @@ const selectionAnchor = ref("");
 const expandedDirs = ref<Set<string>>(new Set(["/"]));
 /** 目录树节点缓存 */
 const treeChildren = ref<Record<string, FileEntry[]>>({});
+/** 正在从远端读取子目录的路径 */
+const treeLoadingDirs = ref<Set<string>>(new Set());
+/** 目录树请求令牌，避免旧会话请求清理新会话的加载状态 */
+const treeLoadRequests = new Map<string, symbol>();
 /** 目录树宽度 */
 const treeWidth = ref(190);
 /** 目录树滚动容器 */
@@ -429,17 +433,35 @@ function appendTreeChildren(nodes: TreeNode[], path: string, depth: number) {
 }
 
 /** 取目录树指定目录的子目录 */
-async function loadTreeDir(path: string) {
-  if (!props.sessionId || !props.connected) return;
-  if (treeChildren.value[path]) return;
+async function loadTreeDir(path: string): Promise<boolean> {
+  if (!props.sessionId || !props.connected || treeChildren.value[path]) return false;
+  if (treeLoadingDirs.value.has(path)) return false;
   const version = sessionViewVersion;
   const sessionId = props.sessionId;
-  const list = await sftpList(sessionId, path);
-  if (version !== sessionViewVersion || sessionId !== props.sessionId || !props.connected) return;
-  treeChildren.value = {
-    ...treeChildren.value,
-    [path]: list.filter((e) => e.isDir).sort((a, b) => compareName(a.name, b.name)),
-  };
+  const requestToken = Symbol(path);
+  treeLoadRequests.set(path, requestToken);
+  treeLoadingDirs.value = new Set([...treeLoadingDirs.value, path]);
+  try {
+    const list = await sftpList(sessionId, path);
+    if (version !== sessionViewVersion || sessionId !== props.sessionId || !props.connected) return false;
+    treeChildren.value = {
+      ...treeChildren.value,
+      [path]: list.filter((e) => e.isDir).sort((a, b) => compareName(a.name, b.name)),
+    };
+    return true;
+  } catch (error) {
+    if (version === sessionViewVersion && sessionId === props.sessionId && props.connected) {
+      showMessage("目录展开失败", String(error));
+    }
+    return false;
+  } finally {
+    if (treeLoadRequests.get(path) === requestToken) {
+      treeLoadRequests.delete(path);
+      const next = new Set(treeLoadingDirs.value);
+      next.delete(path);
+      treeLoadingDirs.value = next;
+    }
+  }
 }
 
 /** 使目录树缓存失效，下次需要时重新加载真实目录 */
@@ -1446,13 +1468,14 @@ function selectTreeNode(path: string) {
 
 /** 展开或收起目录树节点 */
 async function toggleTreeNode(path: string) {
-  if (path === "/") return;
+  if (path === "/" || treeLoadingDirs.value.has(path)) return;
   const next = new Set(expandedDirs.value);
-  if (next.has(path) && path !== "/") {
+  if (next.has(path)) {
     next.delete(path);
   } else {
+    const loaded = await loadTreeDir(path);
+    if (!loaded && !treeChildren.value[path]) return;
     next.add(path);
-    await loadTreeDir(path);
   }
   expandedDirs.value = next;
 }
@@ -1529,6 +1552,8 @@ onBeforeUnmount(() => {
   if (fileOperation.id) {
     void sftpCancelOperation(fileOperation.sessionId, fileOperation.id);
   }
+  treeLoadRequests.clear();
+  treeLoadingDirs.value = new Set();
   stopResize?.();
   unlistenDragDrop?.();
   unlistenEditorSaved?.();
@@ -2243,6 +2268,8 @@ watch(
   () => [props.sessionId, props.connected] as const,
   async ([id, conn]) => {
     const version = ++sessionViewVersion;
+    treeLoadRequests.clear();
+    treeLoadingDirs.value = new Set();
     if (lastSessionId !== id) {
       stashSessionUiState(lastSessionId);
       lastSessionId = id;
@@ -2374,11 +2401,26 @@ defineExpose({ setPathFromTerminal });
           @click="selectTreeNode(node.path)"
           @dblclick.stop="onTreeDblClick(node.path)"
         >
-          <button v-if="node.path !== '/'" class="tree-toggle" @click.stop="toggleTreeNode(node.path)">
+          <button
+            v-if="node.path !== '/'"
+            class="tree-toggle"
+            :disabled="treeLoadingDirs.has(node.path)"
+            :aria-label="treeLoadingDirs.has(node.path) ? '正在加载目录' : expandedDirs.has(node.path) ? '收起目录' : '展开目录'"
+            @click.stop="toggleTreeNode(node.path)"
+          >
             <Icon
+              v-if="treeLoadingDirs.has(node.path)"
+              name="refresh"
+              :size="11"
+              class="tree-loading-icon"
+              aria-hidden="true"
+            />
+            <Icon
+              v-else
               name="chevronRight"
               :size="11"
               :class="{ expanded: expandedDirs.has(node.path) }"
+              aria-hidden="true"
             />
           </button>
           <Icon name="folder" :size="13" class="ic-folder" />
@@ -2719,8 +2761,22 @@ defineExpose({ setPathFromTerminal });
   cursor: pointer;
   flex: 0 0 14px;
 }
+.tree-toggle:disabled {
+  color: #7d8b98;
+  cursor: wait;
+}
 .tree-toggle .expanded {
   transform: rotate(90deg);
+}
+.tree-loading-icon {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: tree-loading-spin 0.8s linear infinite;
+}
+@keyframes tree-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .ic-folder {
   color: #e0b64a;

@@ -417,7 +417,8 @@ pub async fn remove_entries(
             .iter()
             .map(|entry| file_commands::remove_command(&entry.path, entry.is_dir))
             .collect();
-        if file_commands::run_batch(manager, session_id, commands, "删除失败", cancellation).await? {
+        if file_commands::run_batch(manager, session_id, commands, "删除失败", cancellation).await?
+        {
             return Ok(());
         }
     }

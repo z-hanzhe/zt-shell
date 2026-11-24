@@ -401,7 +401,10 @@ impl SshSession {
         command: &str,
         cancellation: &mut watch::Receiver<bool>,
     ) -> Result<String> {
-        Ok(self.exec_command_cancellable_output(command, cancellation).await?.stdout)
+        Ok(self
+            .exec_command_cancellable_output(command, cancellation)
+            .await?
+            .stdout)
     }
 
     /// 执行可中断命令，保留错误输出及远端退出状态。
@@ -525,7 +528,9 @@ impl SshSession {
                     let remaining = (16 * 1024_usize).saturating_sub(stderr.len());
                     stderr.extend_from_slice(&data[..data.len().min(remaining)]);
                 }
-                ChannelMsg::ExitStatus { exit_status: status } => exit_status = Some(status),
+                ChannelMsg::ExitStatus {
+                    exit_status: status,
+                } => exit_status = Some(status),
                 ChannelMsg::Failure => {
                     let _ = timeout(EXEC_CONTROL_TIMEOUT, channel.close()).await;
                     return Err(ExecRequestRejected.into());
