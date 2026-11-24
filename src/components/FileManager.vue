@@ -210,6 +210,11 @@ type DialogState = {
   resolve?: (value: string | boolean | null) => void;
 };
 
+const IMAGE_SUFFIXES = new Set([
+  ".jpg", ".jpeg", ".jfif", ".png", ".gif", ".webp", ".svg", ".bmp",
+  ".tif", ".tiff", ".ico", ".avif", ".heic", ".heif",
+]);
+
 const ARCHIVE_SUFFIXES = [
   ".tar.gz",
   ".tgz",
@@ -401,9 +406,23 @@ function fileType(entry: FileEntry): string {
   if (entry.name === "...") return "上级目录";
   if (entry.isDir) return "文件夹";
   if (entry.isSymlink) return "链接";
+  if (isExtractableArchive(entry.name)) return "压缩文件";
   const dot = entry.name.lastIndexOf(".");
   if (dot > 0) return `${entry.name.slice(dot + 1).toUpperCase()} 文件`;
   return "文件";
+}
+
+/** 根据文件条目选择图标及对应样式。 */
+function fileIcon(entry: FileEntry): { name: string; class: string } {
+  let name = "file";
+  if (entry.isDir) {
+    name = "folder";
+  } else if (isExtractableArchive(entry.name)) {
+    name = "archive";
+  } else if (IMAGE_SUFFIXES.has(entry.name.slice(entry.name.lastIndexOf(".")).toLowerCase())) {
+    name = "image";
+  }
+  return { name, class: `ic-${name}` };
 }
 
 /** 构造返回上级目录的虚拟条目 */
@@ -2475,11 +2494,7 @@ defineExpose({ setPathFromTerminal });
               @dblclick="onOpen(entry)"
             >
               <td class="name" :title="cellTitle(entry, 'name')">
-                <Icon
-                  :name="entry.isDir ? 'folder' : 'file'"
-                  :size="14"
-                  :class="entry.isDir ? 'ic-folder' : 'ic-file'"
-                />
+                <Icon v-bind="fileIcon(entry)" :size="14" />
                 <span class="ellipsis">{{ entry.name }}</span>
               </td>
               <td class="size" :title="cellTitle(entry, 'size')">{{ entry.isDir ? "" : formatShort(entry.size) }}</td>
@@ -2780,6 +2795,14 @@ defineExpose({ setPathFromTerminal });
 }
 .ic-folder {
   color: #e0b64a;
+  flex: 0 0 auto;
+}
+.ic-archive {
+  color: #7a68a8;
+  flex: 0 0 auto;
+}
+.ic-image {
+  color: #397c72;
   flex: 0 0 auto;
 }
 .ic-file {
