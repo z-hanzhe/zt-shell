@@ -152,14 +152,14 @@ pub async fn set_permissions(
         result = manager.sftp_for_mode(session_id, sudo) => result?,
     };
     for path in paths {
-        ensure_not_cancelled(Some(cancellation))?;
+        ensure_not_cancelled(cancellation)?;
         set_permissions_sftp(
             &sftp,
             path.trim_end_matches('/'),
             mode,
             recursive,
             scope,
-            Some(cancellation),
+            cancellation,
         )
         .await?;
     }
@@ -173,7 +173,7 @@ async fn set_permissions_sftp(
     mode: u32,
     recursive: bool,
     scope: &str,
-    cancellation: Option<&watch::Receiver<bool>>,
+    cancellation: &watch::Receiver<bool>,
 ) -> Result<()> {
     let root_metadata = sftp
         .symlink_metadata(path)
@@ -220,7 +220,7 @@ async fn collect_permission_targets(
     sftp: &SftpSession,
     root: &str,
     targets: &mut Vec<(String, FileType)>,
-    cancellation: Option<&watch::Receiver<bool>>,
+    cancellation: &watch::Receiver<bool>,
 ) -> Result<()> {
     let mut stack = vec![root.to_string()];
     while let Some(directory) = stack.pop() {
@@ -328,7 +328,7 @@ pub async fn write_file_cancellable(
     data: &[u8],
     cancellation: &mut watch::Receiver<bool>,
 ) -> Result<()> {
-    ensure_not_cancelled(Some(cancellation))?;
+    ensure_not_cancelled(cancellation)?;
     tokio::select! {
         biased;
         _ = wait_for_cancellation(cancellation) => Err(anyhow!(OPERATION_CANCELLED_MESSAGE)),
@@ -354,7 +354,7 @@ pub async fn remove_dir(sftp: &SftpSession, path: &str) -> Result<()> {
 async fn remove_dir_all_cancellable(
     sftp: &SftpSession,
     path: &str,
-    cancellation: Option<&watch::Receiver<bool>>,
+    cancellation: &watch::Receiver<bool>,
 ) -> Result<()> {
     // 目录可能在确认后被换成符号链接，此时只移除链接。
     ensure_not_cancelled(cancellation)?;
@@ -429,15 +429,15 @@ pub async fn remove_entries(
         result = manager.sftp_for_mode(session_id, sudo) => result?,
     };
     for entry in entries {
-        ensure_not_cancelled(Some(cancellation))?;
+        ensure_not_cancelled(cancellation)?;
         let path = entry.path.trim_end_matches('/');
         if entry.is_dir {
-            remove_dir_all_cancellable(&sftp, path, Some(cancellation)).await?;
+            remove_dir_all_cancellable(&sftp, path, cancellation).await?;
         } else {
             remove_file(&sftp, path).await?;
         }
     }
-    ensure_not_cancelled(Some(cancellation))
+    ensure_not_cancelled(cancellation)
 }
 
 /// 创建远端目录
@@ -1343,8 +1343,8 @@ pub fn validate_removal_path(path: &str) -> Result<()> {
 }
 
 /// 在 SFTP 安全边界检查是否收到中断通知
-fn ensure_not_cancelled(cancellation: Option<&watch::Receiver<bool>>) -> Result<()> {
-    if cancellation.is_some_and(|receiver| *receiver.borrow()) {
+fn ensure_not_cancelled(cancellation: &watch::Receiver<bool>) -> Result<()> {
+    if *cancellation.borrow() {
         return Err(anyhow!(OPERATION_CANCELLED_MESSAGE));
     }
     Ok(())

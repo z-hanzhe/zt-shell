@@ -228,16 +228,6 @@ export function sftpWrite(
   return invoke("sftp_write", { sessionId, path, data, operationId: operationId ?? null });
 }
 
-/** 删除文件 */
-export function sftpRemoveFile(sessionId: string, path: string): Promise<void> {
-  return invoke("sftp_remove_file", { sessionId, path });
-}
-
-/** 删除目录 */
-export function sftpRemoveDir(sessionId: string, path: string): Promise<void> {
-  return invoke("sftp_remove_dir", { sessionId, path });
-}
-
 /** 创建目录 */
 export function sftpCreateDir(sessionId: string, path: string): Promise<void> {
   return invoke("sftp_create_dir", { sessionId, path });

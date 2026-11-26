@@ -5,7 +5,6 @@ use std::ffi::c_void;
 use tauri::async_runtime::spawn_blocking;
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Error as TauriError, Manager, State};
-use tokio::sync::watch;
 
 use crate::credentials::{
     CredentialCopy, CredentialKey, CredentialKind, CredentialManager, CredentialMatch,
@@ -329,33 +328,6 @@ pub async fn sftp_write(
     }
     let sftp = map_err(manager.sftp(&session_id).await)?;
     map_err(sftp::write_file(&sftp, &path, &data).await)
-}
-
-/// 删除远端文件
-#[tauri::command]
-pub async fn sftp_remove_file(
-    manager: State<'_, SessionManager>,
-    session_id: String,
-    path: String,
-) -> CmdResult<()> {
-    let entries = [RemoveEntryArg {
-        path,
-        is_dir: false,
-    }];
-    let (_cancel_sender, mut cancellation) = watch::channel(false);
-    map_err(sftp::remove_entries(&manager, &session_id, &entries, &mut cancellation).await)
-}
-
-/// 删除远端目录及其全部内容
-#[tauri::command]
-pub async fn sftp_remove_dir(
-    manager: State<'_, SessionManager>,
-    session_id: String,
-    path: String,
-) -> CmdResult<()> {
-    let entries = [RemoveEntryArg { path, is_dir: true }];
-    let (_cancel_sender, mut cancellation) = watch::channel(false);
-    map_err(sftp::remove_entries(&manager, &session_id, &entries, &mut cancellation).await)
 }
 
 /// 创建远端目录

@@ -68,14 +68,14 @@ const sudoActive = ref(false);
 const selectedNames = ref<Set<string>>(new Set());
 /** 多选锚点，用于 Shift 范围选择 */
 const selectionAnchor = ref("");
+/** 当前会话的目录进入历史，记录来源目录和进入时选中的条目 */
+const directoryHistory = ref<Array<{ path: string; selectedName: string }>>([]);
 /** 已展开的目录路径 */
 const expandedDirs = ref<Set<string>>(new Set(["/"]));
 /** 目录树节点缓存 */
 const treeChildren = ref<Record<string, FileEntry[]>>({});
-/** 正在从远端读取子目录的路径 */
-const treeLoadingDirs = ref<Set<string>>(new Set());
-/** 目录树请求令牌，避免旧会话请求清理新会话的加载状态 */
-const treeLoadRequests = new Map<string, symbol>();
+/** 正在读取的目录及请求令牌，同时用于显示加载状态和识别过期请求 */
+const treeLoadRequests = reactive(new Map<string, symbol>());
 /** 目录树宽度 */
 const treeWidth = ref(190);
 /** 目录树滚动容器 */
@@ -454,12 +454,11 @@ function appendTreeChildren(nodes: TreeNode[], path: string, depth: number) {
 /** 取目录树指定目录的子目录 */
 async function loadTreeDir(path: string): Promise<boolean> {
   if (!props.sessionId || !props.connected || treeChildren.value[path]) return false;
-  if (treeLoadingDirs.value.has(path)) return false;
+  if (treeLoadRequests.has(path)) return false;
   const version = sessionViewVersion;
   const sessionId = props.sessionId;
   const requestToken = Symbol(path);
   treeLoadRequests.set(path, requestToken);
-  treeLoadingDirs.value = new Set([...treeLoadingDirs.value, path]);
   try {
     const list = await sftpList(sessionId, path);
     if (version !== sessionViewVersion || sessionId !== props.sessionId || !props.connected) return false;
@@ -474,12 +473,7 @@ async function loadTreeDir(path: string): Promise<boolean> {
     }
     return false;
   } finally {
-    if (treeLoadRequests.get(path) === requestToken) {
-      treeLoadRequests.delete(path);
-      const next = new Set(treeLoadingDirs.value);
-      next.delete(path);
-      treeLoadingDirs.value = next;
-    }
+    if (treeLoadRequests.get(path) === requestToken) treeLoadRequests.delete(path);
   }
 }
 
@@ -518,6 +512,44 @@ async function setCwd(path: string) {
   cwd.value = normalizePath(path);
   clearSelection();
   await refresh();
+  await syncTreeToCwd();
+}
+
+/** 按访问顺序回退一层，并在刷新后的文件列表中恢复选中项。 */
+async function goBackInDirectoryHistory(): Promise<void> {
+  const target = directoryHistory.value[directoryHistory.value.length - 1];
+  if (!target || loading.value) return;
+  const sessionId = props.sessionId;
+  const version = sessionViewVersion;
+  const from = cwd.value;
+  loading.value = true;
+  let children: FileEntry[];
+  try {
+    children = await sftpList(sessionId, target.path);
+  } catch (cause) {
+    if (!isFileViewCurrent(sessionId, from, version)) return;
+    // 目录消失时当前层成为回退边界。临时断网或权限错误允许重试。
+    if (/no such file|not a directory/i.test(String(cause))) {
+      directoryHistory.value = [];
+    } else {
+      showMessage("返回目录失败", String(cause));
+    }
+    return;
+  } finally {
+    if (isFileViewCurrent(sessionId, from, version)) loading.value = false;
+  }
+  if (!isFileViewCurrent(sessionId, from, version)) return;
+  directoryHistory.value.pop();
+  cwd.value = target.path;
+  error.value = "";
+  clearSelection();
+  applyDirectoryEntries(sessionId, target.path, children);
+  if (children.some((entry) => entry.isDir && entry.name === target.selectedName)) {
+    selectSingle(target.selectedName);
+    await nextTick();
+    if (!isFileViewCurrent(sessionId, target.path, version)) return;
+    scrollListRowIntoView(entryRows().find((row) => row.dataset.name === target.selectedName));
+  }
   await syncTreeToCwd();
 }
 
@@ -677,6 +709,22 @@ function handleNavKey(event: KeyboardEvent): boolean {
   if (target.closest?.("input, textarea, select, .xterm")) return false;
   if (target.closest?.(".dir-tree") || (activeZone === "tree" && target === document.body)) {
     return handleTreeNavKey(event);
+  }
+  if (event.key === "Enter" || event.key === "Backspace") {
+    const list = fileListRef.value;
+    if (!list || list.offsetParent === null || !(target instanceof HTMLElement) ||
+        target.closest("button, [contenteditable]") ||
+        (!list.contains(target) && !(target === document.body && activeZone === "list")) ||
+        event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
+    event.preventDefault();
+    if (event.repeat || loading.value) return true;
+    if (event.key === "Backspace") {
+      void goBackInDirectoryHistory();
+    } else {
+      const selected = selectedEntries.value;
+      if (selected.length === 1 && selected[0].isDir) enterDir(selected[0].name);
+    }
+    return true;
   }
   const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : event.key === "PageDown" ? PAGE_STEP : event.key === "PageUp" ? -PAGE_STEP : 0;
   if (step === 0) return false;
@@ -1407,6 +1455,16 @@ async function toggleSudo(event: Event) {
   }
 }
 
+/** 将已经读取的目录同步到右侧列表、上次位置和目录树缓存。 */
+function applyDirectoryEntries(sessionId: string, path: string, children: FileEntry[]): void {
+  entries.value = children;
+  sessionDirectories.set(sessionId, path);
+  treeChildren.value = {
+    ...treeChildren.value,
+    [path]: children.filter((entry) => entry.isDir).sort((a, b) => compareName(a.name, b.name)),
+  };
+}
+
 /** 刷新当前目录 */
 async function refresh() {
   if (!props.sessionId || !props.connected) {
@@ -1421,12 +1479,7 @@ async function refresh() {
   try {
     const nextEntries = await sftpList(sessionId, path);
     if (version !== sessionViewVersion || sessionId !== props.sessionId || path !== cwd.value) return;
-    entries.value = nextEntries;
-    sessionDirectories.set(sessionId, path);
-    treeChildren.value = {
-      ...treeChildren.value,
-      [path]: nextEntries.filter((e) => e.isDir).sort((a, b) => compareName(a.name, b.name)),
-    };
+    applyDirectoryEntries(sessionId, path, nextEntries);
   } catch (e) {
     if (version !== sessionViewVersion || sessionId !== props.sessionId || path !== cwd.value) return;
     error.value = String(e);
@@ -1440,7 +1493,9 @@ async function refresh() {
 
 /** 进入目录 */
 function enterDir(name: string) {
-  setCwd(joinPath(cwd.value, name));
+  if (loading.value) return;
+  directoryHistory.value.push({ path: cwd.value, selectedName: name });
+  void setCwd(joinPath(cwd.value, name));
 }
 
 /** 双击条目：目录则进入 */
@@ -1487,16 +1542,12 @@ function selectTreeNode(path: string) {
 
 /** 展开或收起目录树节点 */
 async function toggleTreeNode(path: string) {
-  if (path === "/" || treeLoadingDirs.value.has(path)) return;
-  const next = new Set(expandedDirs.value);
-  if (next.has(path)) {
-    next.delete(path);
-  } else {
-    const loaded = await loadTreeDir(path);
-    if (!loaded && !treeChildren.value[path]) return;
-    next.add(path);
+  if (path === "/" || treeLoadRequests.has(path)) return;
+  if (expandedDirs.value.has(path)) {
+    expandedDirs.value.delete(path);
+  } else if (treeChildren.value[path] || await loadTreeDir(path)) {
+    expandedDirs.value.add(path);
   }
-  expandedDirs.value = next;
 }
 
 /** 双击目录树节点切换展开状态 */
@@ -1572,7 +1623,6 @@ onBeforeUnmount(() => {
     void sftpCancelOperation(fileOperation.sessionId, fileOperation.id);
   }
   treeLoadRequests.clear();
-  treeLoadingDirs.value = new Set();
   stopResize?.();
   unlistenDragDrop?.();
   unlistenEditorSaved?.();
@@ -2288,7 +2338,6 @@ watch(
   async ([id, conn]) => {
     const version = ++sessionViewVersion;
     treeLoadRequests.clear();
-    treeLoadingDirs.value = new Set();
     if (lastSessionId !== id) {
       stashSessionUiState(lastSessionId);
       lastSessionId = id;
@@ -2296,6 +2345,7 @@ watch(
     clearSelection();
     cancelTypeahead();
     if (id && conn) {
+      directoryHistory.value = [];
       const cached = sessionUiStates.get(id);
       if (cached) {
         // 切回已浏览过的会话：恢复目录、sudo 开关与树展开状态（后端 sudo 状态本就按会话保留）
@@ -2331,6 +2381,7 @@ watch(
       await syncTreeToCwd();
     } else {
       // 断开或无会话：丢弃可能过期的内容快照，最后成功访问目录继续保留
+      directoryHistory.value = [];
       sessionUiStates.delete(id);
       staleSessionIds.delete(id);
       sudoActive.value = false;
@@ -2423,12 +2474,12 @@ defineExpose({ setPathFromTerminal });
           <button
             v-if="node.path !== '/'"
             class="tree-toggle"
-            :disabled="treeLoadingDirs.has(node.path)"
-            :aria-label="treeLoadingDirs.has(node.path) ? '正在加载目录' : expandedDirs.has(node.path) ? '收起目录' : '展开目录'"
+            :disabled="treeLoadRequests.has(node.path)"
+            :aria-label="treeLoadRequests.has(node.path) ? '正在加载目录' : expandedDirs.has(node.path) ? '收起目录' : '展开目录'"
             @click.stop="toggleTreeNode(node.path)"
           >
             <Icon
-              v-if="treeLoadingDirs.has(node.path)"
+              v-if="treeLoadRequests.has(node.path)"
               name="refresh"
               :size="11"
               class="tree-loading-icon"
